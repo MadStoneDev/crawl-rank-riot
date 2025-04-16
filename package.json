@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "main": "/src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
+    "build": "tsc",
+    "lint": "eslint . --ext .ts",
+    "test": "jest"
   },
   "repository": {
     "type": "git",
@@ -15,5 +19,37 @@
     "url": "https://github.com/MadStoneDev/crawl-rank-riot/issues"
   },
   "homepage": "https://github.com/MadStoneDev/crawl-rank-riot#readme",
-  "description": ""
+  "description": "",
+  "devDependencies": {
+    "@types/cheerio": "^0.22.35",
+    "@types/cors": "^2.8.17",
+    "@types/node": "^22.14.1",
+    "@types/node-cron": "^3.0.11",
+    "@types/p-queue": "^3.1.0",
+    "@types/uuid": "^10.0.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.1",
+    "supabase": "^2.20.12",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
+    "@types/express": "^4.17.17",
+    "axios": "^1.8.4",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.5.0",
+    "node-cron": "^3.0.3",
+    "p-queue": "^8.1.0",
+    "puppeteer-core": "^24.6.1",
+    "robots-parser": "^3.0.1",
+    "uuid": "^11.1.0",
+    "winston": "^3.17.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
