@@ -13,7 +13,11 @@ app.use(express.json());
 
 app.use(
   cors({
-    origin: ["https://rankriot.app", "http://localhost:3000"],
+    origin: [
+      "https://rankriot.app",
+      "http://localhost:3123",
+      "https://crawl.rankriot.app",
+    ],
     methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
   }),

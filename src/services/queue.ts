@@ -1,20 +1,51 @@
-import PQueue from "p-queue";
 import logger from "../utils/logger";
+
 import { QueueItem } from "../types";
 
-// Create a singleton queue that can be used across the application
+let PQueue: any;
+
+const importPQueue = async () => {
+  const module = await import("p-queue");
+  PQueue = module.default;
+};
+
+// Initialize PQueue before using it
 class CrawlQueue {
-  private queue: PQueue;
+  private queue: any;
+  private initialized: boolean = false;
   private urlsInQueue: Set<string> = new Set();
   private urlsSeen: Set<string> = new Set();
 
   constructor(concurrency: number = 3) {
+    this.initializeQueue(concurrency);
+  }
+
+  private async initializeQueue(concurrency: number): Promise<void> {
+    if (!PQueue) {
+      await importPQueue();
+    }
+
     this.queue = new PQueue({ concurrency });
+    this.initialized = true;
 
     // Log when queue is idle
     this.queue.on("idle", () => {
-      logger.info("Queue is idle");
+      console.log("Queue is idle");
     });
+  }
+
+  // Make sure queue is initialized before using it
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await new Promise<void>((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (this.initialized) {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 100);
+      });
+    }
   }
 
   // Add a URL to the queue
@@ -22,6 +53,8 @@ class CrawlQueue {
     item: QueueItem,
     executor: (item: QueueItem) => Promise<void>,
   ): Promise<void> {
+    await this.ensureInitialized();
+
     const normalizedUrl = this.normalizeUrl(item.url);
 
     if (
