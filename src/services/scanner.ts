@@ -7,6 +7,7 @@ import { Scan, Project } from "../types";
 import config from "../config";
 import logger from "../utils/logger";
 import * as crawler from "./crawler";
+import { sendCompletionEmail } from "./notifications";
 
 // Map to track active scans
 const activeScans = new Map<string, boolean>();
@@ -134,6 +135,23 @@ export async function startScan(scanId: string): Promise<void> {
         completed_at: new Date().toISOString(),
       })
       .eq("id", scanId);
+
+    // Email the user if they have an email address
+    if (scan.projects.notification_email) {
+      const issuesResult = await supabase
+        .from("issues")
+        .select("*", { count: "exact", head: true })
+        .eq("scan_id", scanId);
+
+      const issueCount = issuesResult.count || 0;
+
+      await sendCompletionEmail(
+        scan.projects.notification_email,
+        scan.projects.name,
+        scanId,
+        issueCount,
+      );
+    }
 
     // Update the project's last_scan_at
     await supabase

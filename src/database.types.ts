@@ -404,6 +404,7 @@ export type Database = {
           id: string
           last_scan_at: string | null
           name: string
+          notification_email: string | null
           robots_txt: Json | null
           scan_frequency: string | null
           settings: Json | null
@@ -417,6 +418,7 @@ export type Database = {
           id?: string
           last_scan_at?: string | null
           name: string
+          notification_email?: string | null
           robots_txt?: Json | null
           scan_frequency?: string | null
           settings?: Json | null
@@ -430,6 +432,7 @@ export type Database = {
           id?: string
           last_scan_at?: string | null
           name?: string
+          notification_email?: string | null
           robots_txt?: Json | null
           scan_frequency?: string | null
           settings?: Json | null

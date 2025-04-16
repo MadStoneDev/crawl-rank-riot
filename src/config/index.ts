@@ -11,6 +11,10 @@ interface Config {
     serviceKey: string;
   };
   crawler: CrawlOptions;
+  mailersend: {
+    apiKey: string;
+    enabled: boolean;
+  };
   scanFrequencies: {
     daily: string;
     weekly: string;
@@ -31,6 +35,10 @@ const config: Config = {
     delay: 1000, // 1 second between requests
     maxPages: 100, // Default page limit
     respectRobotsTxt: true,
+  },
+  mailersend: {
+    apiKey: process.env.MAILERSEND_API_TOKEN || "",
+    enabled: process.env.MAILERSEND_ENABLED === "true",
   },
   scanFrequencies: {
     daily: "0 0 * * *", // Run at midnight every day
