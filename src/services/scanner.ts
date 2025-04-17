@@ -12,7 +12,47 @@ import { sendCompletionEmail } from "./notifications";
 // Map to track active scans
 const activeScans = new Map<string, boolean>();
 
-// Queue a new scan
+/**
+ * Updates the queue positions of all queued scans
+ * This ensures proper queue order is maintained when scans are added/removed
+ */
+async function updateQueuePositions(): Promise<void> {
+  try {
+    // Get all queued scans ordered by current position and creation date as fallback
+    const { data: queuedScans, error } = await supabase
+      .from("scans")
+      .select("id")
+      .eq("status", "queued")
+      .order("queue_position", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error || !queuedScans) {
+      throw new Error(`Error getting queued scans: ${error?.message}`);
+    }
+
+    // Update each scan with its new position
+    for (let i = 0; i < queuedScans.length; i++) {
+      const { error: updateError } = await supabase
+        .from("scans")
+        .update({ queue_position: i })
+        .eq("id", queuedScans[i].id);
+
+      if (updateError) {
+        logger.warn(
+          `Error updating queue position for scan ${queuedScans[i].id}: ${updateError.message}`,
+        );
+      }
+    }
+
+    logger.debug(`Updated queue positions for ${queuedScans.length} scans`);
+  } catch (error) {
+    logger.error(`Error updating queue positions: ${error}`);
+  }
+}
+
+/**
+ * Queue a new scan for a project
+ */
 export async function queueScan(projectId: string): Promise<Scan> {
   try {
     // Get the project
@@ -26,7 +66,7 @@ export async function queueScan(projectId: string): Promise<Scan> {
       throw new Error(`Project not found: ${projectId}`);
     }
 
-    // Check for ongoing scans
+    // Check for ongoing scans for this project
     const { data: ongoingScans, error: scanError } = await supabase
       .from("scans")
       .select("id")
@@ -38,7 +78,7 @@ export async function queueScan(projectId: string): Promise<Scan> {
       throw new Error(`Error checking for ongoing scans: ${scanError.message}`);
     }
 
-    // Count the queue
+    // Count the total number of queued scans to determine position
     const { count, error: countError } = await supabase
       .from("scans")
       .select("*", { count: "exact", head: true })
@@ -50,15 +90,16 @@ export async function queueScan(projectId: string): Promise<Scan> {
 
     // Create a new scan
     const scanId = uuidv4();
-    const queue_position = ongoingScans?.length
-      ? ongoingScans.length
-      : count || 0;
+    const queue_position = count || 0;
 
     const newScan: any = {
       id: scanId,
       project_id: projectId,
       status: "queued",
       queue_position,
+      pages_scanned: 0,
+      links_scanned: 0,
+      issues_found: 0,
     };
 
     const { data: scan, error: insertError } = await supabase
@@ -71,10 +112,13 @@ export async function queueScan(projectId: string): Promise<Scan> {
       throw new Error(`Error creating scan: ${insertError?.message}`);
     }
 
-    logger.info(`Queued new scan ${scanId} for project ${projectId}`);
+    logger.info(
+      `Queued new scan ${scanId} for project ${projectId} at position ${queue_position}`,
+    );
 
-    // If no ongoing scans, start this one immediately
-    if (ongoingScans?.length === 0) {
+    // If no ongoing scans for this project, and no other scans in the queue,
+    // start this one immediately
+    if (ongoingScans?.length === 0 && queue_position === 0) {
       // Start scan process in the background
       startScan(scanId).catch((err) => {
         logger.error(`Error in background scan process: ${err}`);
@@ -90,10 +134,43 @@ export async function queueScan(projectId: string): Promise<Scan> {
   }
 }
 
-// Start a scan
+/**
+ * Update scan progress during crawling
+ */
+export async function updateScanProgress(
+  scanId: string,
+  pagesScanned: number,
+  linksScanned: number,
+  issuesFound: number,
+): Promise<void> {
+  try {
+    await supabase
+      .from("scans")
+      .update({
+        pages_scanned: pagesScanned,
+        links_scanned: linksScanned,
+        issues_found: issuesFound,
+        last_progress_update: new Date().toISOString(),
+      })
+      .eq("id", scanId);
+
+    logger.debug(
+      `Updated progress for scan ${scanId}: ${pagesScanned} pages, ${linksScanned} links, ${issuesFound} issues`,
+    );
+  } catch (error) {
+    logger.error(`Error updating scan progress: ${error}`);
+  }
+}
+
+/**
+ * Start a scan with the given ID
+ */
 export async function startScan(scanId: string): Promise<void> {
   // If scan is already running, ignore
   if (activeScans.has(scanId)) {
+    logger.warn(
+      `Scan ${scanId} is already active, ignoring duplicate start request`,
+    );
     return;
   }
 
@@ -101,7 +178,7 @@ export async function startScan(scanId: string): Promise<void> {
     // Mark scan as active
     activeScans.set(scanId, true);
 
-    // Get the scan
+    // Get the scan with project information
     const { data: scan, error: scanError } = await supabase
       .from("scans")
       .select("*, projects(*)")
@@ -119,8 +196,15 @@ export async function startScan(scanId: string): Promise<void> {
         status: "in_progress",
         started_at: new Date().toISOString(),
         queue_position: null,
+        pages_scanned: 0,
+        links_scanned: 0,
+        issues_found: 0,
+        last_progress_update: new Date().toISOString(),
       })
       .eq("id", scanId);
+
+    // Update queue positions after removing this scan from the queue
+    await updateQueuePositions();
 
     logger.info(`Starting scan ${scanId} for project ${scan.project_id}`);
 
@@ -172,6 +256,7 @@ export async function startScan(scanId: string): Promise<void> {
       .update({
         status: "failed",
         completed_at: new Date().toISOString(),
+        error_message: error instanceof Error ? error.message : "Unknown error",
       })
       .eq("id", scanId);
 
@@ -189,7 +274,9 @@ export async function startScan(scanId: string): Promise<void> {
   }
 }
 
-// Get scan status
+/**
+ * Get the status of a scan
+ */
 export async function getScanStatus(scanId: string): Promise<Scan | null> {
   try {
     const { data, error } = await supabase
@@ -209,15 +296,17 @@ export async function getScanStatus(scanId: string): Promise<Scan | null> {
   }
 }
 
-// Process the next scan in the queue
+/**
+ * Process the next scan in the queue
+ */
 async function processNextInQueue(): Promise<void> {
   try {
-    // Find the next queued scan
+    // Find the next queued scan based on queue position
     const { data: nextScans, error } = await supabase
       .from("scans")
       .select("id")
       .eq("status", "queued")
-      .order("created_at", { ascending: true })
+      .order("queue_position", { ascending: true })
       .limit(1);
 
     if (error || !nextScans || nextScans.length === 0) {
@@ -226,19 +315,75 @@ async function processNextInQueue(): Promise<void> {
 
     const nextScanId = nextScans[0].id;
 
-    // Start the next scan
-    startScan(nextScanId).catch((err) => {
-      logger.error(`Error starting next scan: ${err}`);
-    });
+    // Add a small delay to avoid race conditions
+    setTimeout(() => {
+      startScan(nextScanId).catch((err) => {
+        logger.error(`Error starting next scan: ${err}`);
+      });
+    }, 1000);
   } catch (error) {
     logger.error(`Error processing next scan in queue: ${error}`);
   }
 }
 
-// Initialize the scheduler for automatic scans
+/**
+ * Check for abandoned scans (scans that are in_progress but have been
+ * running for too long) and mark them as failed
+ */
+async function handleAbandonedScans(): Promise<void> {
+  try {
+    // Look for scans that have been in progress for over 2 hours
+    const twoHoursAgo = new Date();
+    twoHoursAgo.setHours(twoHoursAgo.getHours() - 2);
+
+    const { data: abandonedScans, error } = await supabase
+      .from("scans")
+      .select("id")
+      .eq("status", "in_progress")
+      .lt("started_at", twoHoursAgo.toISOString());
+
+    if (error) {
+      throw new Error(`Error finding abandoned scans: ${error.message}`);
+    }
+
+    if (abandonedScans && abandonedScans.length > 0) {
+      logger.warn(
+        `Found ${abandonedScans.length} abandoned scans, marking as failed`,
+      );
+
+      for (const scan of abandonedScans) {
+        await supabase
+          .from("scans")
+          .update({
+            status: "failed",
+            completed_at: new Date().toISOString(),
+            error_message: "Scan timed out",
+          })
+          .eq("id", scan.id);
+
+        // Remove from active scans if it's there
+        activeScans.delete(scan.id);
+      }
+
+      // Process the next scan if we cleared out some abandoned ones
+      await processNextInQueue();
+    }
+  } catch (error) {
+    logger.error(`Error handling abandoned scans: ${error}`);
+  }
+}
+
+/**
+ * Initialize the scheduler for automatic scans
+ */
 export async function initScheduler(): Promise<void> {
   try {
     logger.info("Initializing scheduler for automatic scans");
+
+    // Check for abandoned scans every 15 minutes
+    cron.schedule("*/15 * * * *", async () => {
+      await handleAbandonedScans();
+    });
 
     // Schedule daily scans
     cron.schedule(config.scanFrequencies.daily, async () => {
@@ -255,13 +400,21 @@ export async function initScheduler(): Promise<void> {
       await scheduleFrequencyScans("monthly");
     });
 
+    // Process any pending scans on startup
+    setTimeout(async () => {
+      logger.info("Processing any pending scans from before server restart");
+      await processNextInQueue();
+    }, 5000);
+
     logger.info("Scheduler initialized");
   } catch (error) {
     logger.error(`Error initializing scheduler: ${error}`);
   }
 }
 
-// Schedule scans for projects with a specific frequency
+/**
+ * Schedule scans for projects with a specific frequency
+ */
 async function scheduleFrequencyScans(frequency: string): Promise<void> {
   try {
     logger.info(`Scheduling ${frequency} scans`);

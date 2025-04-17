@@ -6,7 +6,7 @@ let PQueue: any;
 
 const importPQueue = async () => {
   const module = await import("p-queue");
-  PQueue = module.default;
+  return module.default;
 };
 
 // Initialize PQueue before using it
@@ -21,9 +21,8 @@ class CrawlQueue {
   }
 
   private async initializeQueue(concurrency: number): Promise<void> {
-    if (!PQueue) {
-      await importPQueue();
-    }
+    const PQueue = await importPQueue();
+    this.queue = new PQueue({ concurrency: concurrency });
 
     this.queue = new PQueue({ concurrency });
     this.initialized = true;
