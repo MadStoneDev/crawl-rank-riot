@@ -16,7 +16,7 @@ const supabaseKey = process.env.SUPABASE_SERVICE_KEY || "";
 // Validate environment variables
 if (!supabaseUrl || !supabaseKey) {
   console.error(
-    "Error: Missing required environment variables SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY",
+    "Error: Missing required environment variables SUPABASE_URL or SUPABASE_SERVICE_KEY",
   );
   // Continue execution, but log the error
 }
