@@ -1,11 +1,25 @@
 ﻿import { Router, Request, Response } from "express";
+
+import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 
 import { crawlWebsite } from "../services/crawler";
 
+// Load environment variables
+dotenv.config();
+
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY || "";
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+// Validate environment variables
+if (!supabaseUrl || !supabaseKey) {
+  console.error(
+    "Error: Missing required environment variables SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY",
+  );
+  // Continue execution, but log the error
+}
+
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const router = Router();
@@ -40,6 +54,7 @@ router.post("/scan", async (req: Request, res: Response) => {
       return res.status(404).json({
         status: "error",
         message: "Project not found",
+        details: projectError,
       });
     }
 
@@ -71,13 +86,14 @@ router.post("/scan", async (req: Request, res: Response) => {
       return res.status(500).json({
         status: "error",
         message: "Failed to create scan record",
+        details: scanError,
       });
     }
 
     // Parse crawler options with defaults
     const crawlerOptions = {
-      maxDepth: options?.maxDepth || 5,
-      maxPages: options?.maxPages || 500,
+      maxDepth: options?.maxDepth || 3,
+      maxPages: options?.maxPages || 100,
       concurrentRequests: options?.concurrentRequests || 5,
       timeout: options?.timeout || 120000, // 2 minutes
     };
