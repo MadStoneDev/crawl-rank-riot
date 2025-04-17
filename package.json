@@ -23,6 +23,7 @@
   },
   "homepage": "https://github.com/MadStoneDev/crawl-rank-riot#readme",
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
     "axios": "^1.8.4",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
