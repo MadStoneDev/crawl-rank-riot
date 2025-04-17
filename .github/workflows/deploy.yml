@@ -30,4 +30,4 @@ jobs:
             git reset --hard origin/main || (echo "Failed to reset" && exit 1)
             npm ci || (echo "Failed to install dependencies" && exit 1)
             npm run build || (echo "Failed to build" && exit 1)
-            pm2 restart rankriot-crawler || pm2 start dist/app.js --name rankriot-crawler
+            pm2 restart rankriot-crawler || pm2 start dist/app.ts --name rankriot-crawler
