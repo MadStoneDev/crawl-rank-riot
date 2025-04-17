@@ -1,9 +1,10 @@
 import logger from "../utils/logger";
 import { QueueItem } from "../types";
 
-// Use dynamic import for p-queue
+// Use dynamic import for p-queue with proper error handling
 const importPQueue = async () => {
   try {
+    // Dynamic import (ESM compatible approach)
     const module = await import("p-queue");
     return module.default;
   } catch (error) {
@@ -26,10 +27,10 @@ class CrawlQueue {
 
   private async initializeQueue(concurrency: number): Promise<void> {
     try {
-      // Import PQueue dynamically
+      // Import PQueue dynamically to handle ESM module
       const PQueueModule = await importPQueue();
 
-      // Create a single instance of the queue
+      // Create a new queue instance with the specified concurrency
       this.queue = new PQueueModule({ concurrency });
 
       // Set up event listeners
@@ -63,24 +64,34 @@ class CrawlQueue {
     item: QueueItem,
     executor: (item: QueueItem) => Promise<void>,
   ): Promise<void> {
-    await this.ensureInitialized();
+    try {
+      await this.ensureInitialized();
 
-    const normalizedUrl = this.normalizeUrl(item.url);
+      const normalizedUrl = this.normalizeUrl(item.url);
 
-    if (
-      this.urlsSeen.has(normalizedUrl) ||
-      this.urlsInQueue.has(normalizedUrl)
-    ) {
-      return;
+      if (
+        this.urlsSeen.has(normalizedUrl) ||
+        this.urlsInQueue.has(normalizedUrl)
+      ) {
+        return;
+      }
+
+      this.urlsInQueue.add(normalizedUrl);
+      this.urlsSeen.add(normalizedUrl);
+
+      const priority = item.priority || 0;
+      await this.queue.add(() => this.executeTask(item, executor), {
+        priority: -priority,
+      });
+    } catch (error) {
+      logger.error(`Error adding item to queue: ${error}`);
+      // Directly execute the task if queue fails
+      try {
+        await executor(item);
+      } catch (execError) {
+        logger.error(`Error executing task directly: ${execError}`);
+      }
     }
-
-    this.urlsInQueue.add(normalizedUrl);
-    this.urlsSeen.add(normalizedUrl);
-
-    const priority = item.priority || 0;
-    await this.queue.add(() => this.executeTask(item, executor), {
-      priority: -priority,
-    });
   }
 
   private async executeTask(
@@ -146,10 +157,24 @@ class CrawlQueue {
   // Clear queue and tracking sets
   async clear(): Promise<void> {
     try {
+      if (!this.initialized) {
+        // If not initialized, just create new sets
+        this.urlsInQueue = new Set();
+        this.urlsSeen = new Set();
+        return;
+      }
+
       await this.ensureInitialized();
 
       logger.debug("Clearing queue and tracking sets");
-      this.queue.clear();
+      if (this.queue && typeof this.queue.clear === "function") {
+        this.queue.clear();
+      } else {
+        logger.warn("Queue clear method not available, creating new queue");
+        const concurrency = 3; // Default concurrency
+        this.initPromise = this.initializeQueue(concurrency);
+      }
+
       this.urlsInQueue.clear();
       this.urlsSeen.clear();
       logger.debug("Queue and tracking sets cleared successfully");
@@ -164,9 +189,13 @@ class CrawlQueue {
   // Pause queue
   async pause(): Promise<void> {
     try {
+      if (!this.initialized || !this.queue) return;
+
       await this.ensureInitialized();
-      this.queue.pause();
-      logger.debug("Queue paused");
+      if (typeof this.queue.pause === "function") {
+        this.queue.pause();
+        logger.debug("Queue paused");
+      }
     } catch (error) {
       logger.error(`Error pausing queue: ${error}`);
     }
@@ -175,9 +204,13 @@ class CrawlQueue {
   // Resume queue
   async resume(): Promise<void> {
     try {
+      if (!this.initialized || !this.queue) return;
+
       await this.ensureInitialized();
-      this.queue.start();
-      logger.debug("Queue resumed");
+      if (typeof this.queue.start === "function") {
+        this.queue.start();
+        logger.debug("Queue resumed");
+      }
     } catch (error) {
       logger.error(`Error resuming queue: ${error}`);
     }
