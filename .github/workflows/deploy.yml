@@ -25,8 +25,9 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
-            cd /var/www/rankriot-crawler
-            git pull origin main
-            npm ci
-            npm run build
+            cd /var/www/rankriot-crawler || (echo "Failed to change directory" && exit 1)
+            git fetch origin || (echo "Failed to fetch" && exit 1)
+            git reset --hard origin/main || (echo "Failed to reset" && exit 1)
+            npm ci || (echo "Failed to install dependencies" && exit 1)
+            npm run build || (echo "Failed to build" && exit 1)
             pm2 restart rankriot-crawler || pm2 start dist/server.js --name rankriot-crawler
