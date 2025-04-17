@@ -30,6 +30,32 @@ app.get("/api/test", (req: Request, res: Response) => {
   });
 });
 
+// Simple test endpoint
+app.post("/api/test", (req: Request, res: Response) => {
+  try {
+    const { url, email } = req.body;
+
+    if (!url || !email) {
+      return res.status(400).json({ error: "URL and email are required" });
+    }
+
+    res.json({
+      status: "success",
+      message: "Data received successfully",
+      data: {
+        url,
+        email,
+      },
+    });
+  } catch (error) {
+    console.error("Unexpected error during test endpoint:", error);
+    res.status(500).json({
+      error: "An unexpected error occurred. Please try again.",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
 // Start the server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
