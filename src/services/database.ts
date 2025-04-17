@@ -1,5 +1,5 @@
 ﻿import dotenv from "dotenv";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 // Load environment variables
 dotenv.config();
@@ -14,7 +14,16 @@ if (!supabaseUrl || !supabaseKey) {
   );
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+let supabase: SupabaseClient<any, "public", any> | null = null;
+
+try {
+  if (supabaseUrl && supabaseKey) {
+    supabase = createClient(supabaseUrl, supabaseKey);
+    console.log("Supabase client initialized successfully");
+  }
+} catch (error) {
+  console.error("Error initializing Supabase client:", error);
+}
 
 /**
  * Main function to store scan results in the database
@@ -30,6 +39,10 @@ export async function storeScanResults(
     );
     console.log(`Processing ${scanResults.length} pages...`);
 
+    if (!supabase) {
+      throw new Error("Supabase client not initialized");
+    }
+
     // Map to track URL to page ID
     const urlToPageId: Record<string, string> = {};
 
@@ -38,13 +51,10 @@ export async function storeScanResults(
       const pageId = await storePageData(projectId, page);
       if (pageId) {
         urlToPageId[page.url] = pageId;
-
-        // 2. Create a snapshot for this page
-        await createPageSnapshot(scanId, pageId, page);
       }
     }
 
-    // 3. Process links (need to have all pages stored first to create proper relationships)
+    // 2. Process links (need to have all pages stored first to create proper relationships)
     for (const page of scanResults) {
       const sourcePageId = urlToPageId[page.url];
       if (!sourcePageId) continue;
@@ -68,16 +78,26 @@ export async function storeScanResults(
       );
     }
 
-    // 4. Identify potential issues and create records
+    // 3. Identify potential issues and create records
+    let issuesCount = 0;
     for (const page of scanResults) {
       const pageId = urlToPageId[page.url];
       if (pageId) {
-        await detectAndStoreIssues(projectId, scanId, pageId, page);
+        const pageIssuesCount = await detectAndStoreIssues(
+          projectId,
+          scanId,
+          pageId,
+          page,
+        );
+        issuesCount += pageIssuesCount;
       }
     }
 
+    // 4. Store a snapshot of the entire scan results
+    await createScanSnapshot(scanId, scanResults);
+
     // 5. Update scan record with completion details
-    await updateScanRecord(scanId, scanResults);
+    await updateScanRecord(scanId, scanResults, issuesCount);
 
     console.log(`Successfully stored scan results for project ${projectId}`);
     return { success: true };
@@ -95,6 +115,8 @@ async function storePageData(
   page: any,
 ): Promise<string | null> {
   try {
+    if (!supabase) return null;
+
     // First, upsert the data
     const { error } = await supabase.from("pages").upsert(
       {
@@ -162,33 +184,24 @@ async function storePageData(
 }
 
 /**
- * Create a snapshot of the page in scan_page_snapshots
+ * Create a snapshot of the entire scan in scan_snapshots
  */
-async function createPageSnapshot(scanId: string, pageId: string, page: any) {
+async function createScanSnapshot(scanId: string, scanResults: any[]) {
   try {
-    const { error } = await supabase.from("scan_page_snapshots").insert({
+    if (!supabase) return;
+
+    const { error } = await supabase.from("scan_snapshots").insert({
       scan_id: scanId,
-      page_id: pageId,
-      url: page.url,
-      title: page.title,
-      meta_description: page.meta_description,
-      h1s: page.h1s,
-      h2s: page.h2s,
-      h3s: page.h3s,
-      h4s: page.h4s,
-      h5s: page.h5s,
-      h6s: page.h6s,
-      content_length: page.content_length,
-      http_status: page.http_status,
-      is_indexable: page.is_indexable,
-      snapshot_data: page, // Store the entire page data as JSON
+      snapshot_data: scanResults, // Store the entire scan results array
     });
 
     if (error) {
-      console.error(`Error creating snapshot for page ${page.url}:`, error);
+      console.error(`Error creating scan snapshot for scan ${scanId}:`, error);
+    } else {
+      console.log(`Successfully created snapshot for scan ${scanId}`);
     }
   } catch (error) {
-    console.error(`Error in createPageSnapshot for ${page.url}:`, error);
+    console.error(`Error in createScanSnapshot for ${scanId}:`, error);
   }
 }
 
@@ -202,6 +215,8 @@ async function storePageLinks(
   urlToPageId: Record<string, string>,
   linkType: "internal" | "external",
 ) {
+  if (!supabase) return;
+
   // Process in batches to avoid hitting rate limits
   const batchSize = 50;
 
@@ -252,6 +267,8 @@ async function detectAndStoreIssues(
   pageId: string,
   page: any,
 ) {
+  if (!supabase) return 0;
+
   const issues = [];
 
   // Check for missing title
@@ -426,15 +443,13 @@ async function detectAndStoreIssues(
 /**
  * Update the scan record with completion details
  */
-async function updateScanRecord(scanId: string, scanResults: any[]) {
+async function updateScanRecord(
+  scanId: string,
+  scanResults: any[],
+  issuesCount: number = 0,
+) {
   try {
-    // Count total issues
-    const { count } = await supabase
-      .from("issues")
-      .select("*", { count: "exact", head: true })
-      .eq("scan_id", scanId);
-
-    const issuesCount = count || 0;
+    if (!supabase) return;
 
     // Calculate total links
     const totalInternalLinks = scanResults.reduce(
@@ -495,19 +510,3 @@ function calculateAverage(pages: any[], property: string) {
   const sum = pages.reduce((total, page) => total + (page[property] || 0), 0);
   return Math.round(sum / pages.length);
 }
-
-// Regarding backlinks:
-/**
- * Note on backlinks vs page_links:
- *
- * - page_links table: stores links found on pages of your website (both internal and external)
- *   These are discovered during crawling your own site.
- *
- * - backlinks table: stores links from other websites that point to your website
- *   These are typically discovered through separate tools or APIs (like Ahrefs, Moz, etc.)
- *
- * To populate the backlinks table, you would need to:
- * 1. Use a separate API to discover backlinks to your site
- * 2. Run a separate crawler that visits those external sites and confirms the links
- * 3. Store the external->your site links in the backlinks table
- */

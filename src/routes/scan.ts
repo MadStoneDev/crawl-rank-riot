@@ -18,10 +18,19 @@ if (!supabaseUrl || !supabaseKey) {
   console.error(
     "Error: Missing required environment variables SUPABASE_URL or SUPABASE_SERVICE_KEY",
   );
-  // Continue execution, but log the error
+} else {
+  console.log("Supabase environment variables are set");
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+let supabase = null;
+try {
+  if (supabaseUrl && supabaseKey) {
+    supabase = createClient(supabaseUrl, supabaseKey);
+    console.log("Supabase client initialized successfully");
+  }
+} catch (error) {
+  console.error("Error initializing Supabase client:", error);
+}
 
 const router = Router();
 
@@ -41,6 +50,13 @@ router.post("/scan", async (req: Request, res: Response) => {
       return res.status(400).json({
         status: "error",
         message: "Email is required",
+      });
+    }
+
+    if (!supabase) {
+      return res.status(500).json({
+        status: "error",
+        message: "Database connection not available",
       });
     }
 
@@ -118,11 +134,15 @@ router.post("/scan", async (req: Request, res: Response) => {
 
     try {
       // Run the crawler in the background
+      console.log(`Starting crawl for ${url} with options:`, crawlerOptions);
       const scanResults = await crawlWebsite(
         url,
         crawlerOptions,
         scanId,
         project_id,
+      );
+      console.log(
+        `Crawl completed for ${url}, found ${scanResults.length} pages`,
       );
 
       // Store all the scan results in the database
@@ -136,13 +156,15 @@ router.post("/scan", async (req: Request, res: Response) => {
       // Mark scan as failed if any error occurs
       console.error(`Error in scan process for scan ${scanId}:`, error);
 
-      await supabase
-        .from("scans")
-        .update({
-          status: "failed",
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", scanId);
+      if (supabase) {
+        await supabase
+          .from("scans")
+          .update({
+            status: "failed",
+            completed_at: new Date().toISOString(),
+          })
+          .eq("id", scanId);
+      }
     }
   } catch (error) {
     console.error("Error in scan endpoint:", error);
