@@ -54,6 +54,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "backlinks_page_id_fkey"
+            columns: ["page_id"]
+            isOneToOne: false
+            referencedRelation: "pages"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "backlinks_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
@@ -142,6 +149,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "issues_page_id_fkey"
+            columns: ["page_id"]
+            isOneToOne: false
+            referencedRelation: "pages"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "issues_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
@@ -199,6 +213,13 @@ export type Database = {
             referencedRelation: "projects"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "keywords_target_page_id_fkey"
+            columns: ["target_page_id"]
+            isOneToOne: false
+            referencedRelation: "pages"
+            referencedColumns: ["id"]
+          },
         ]
       }
       page_links: {
@@ -213,6 +234,7 @@ export type Database = {
           is_followed: boolean | null
           link_type: string
           project_id: string
+          rel_attributes: Json | null
           source_page_id: string
           updated_at: string | null
         }
@@ -227,6 +249,7 @@ export type Database = {
           is_followed?: boolean | null
           link_type: string
           project_id: string
+          rel_attributes?: Json | null
           source_page_id: string
           updated_at?: string | null
         }
@@ -241,15 +264,30 @@ export type Database = {
           is_followed?: boolean | null
           link_type?: string
           project_id?: string
+          rel_attributes?: Json | null
           source_page_id?: string
           updated_at?: string | null
         }
         Relationships: [
           {
+            foreignKeyName: "page_links_destination_page_id_fkey"
+            columns: ["destination_page_id"]
+            isOneToOne: false
+            referencedRelation: "pages"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "page_links_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "page_links_source_page_id_fkey"
+            columns: ["source_page_id"]
+            isOneToOne: false
+            referencedRelation: "pages"
             referencedColumns: ["id"]
           },
         ]
@@ -267,24 +305,32 @@ export type Database = {
           h1s: Json | null
           h2s: Json | null
           h3s: Json | null
+          h4s: Json | null
+          h5s: Json | null
+          h6s: Json | null
           has_robots_nofollow: boolean | null
           has_robots_noindex: boolean | null
           http_status: number | null
           id: string
-          image_count: number | null
+          images: Json | null
           is_indexable: boolean | null
           js_count: number | null
+          keywords: Json | null
           load_time_ms: number | null
           meta_description: string | null
+          meta_description_length: number | null
           open_graph: Json | null
           project_id: string
           redirect_url: string | null
+          schema_types: Json | null
           size_bytes: number | null
           structured_data: Json | null
           title: string | null
+          title_length: number | null
           twitter_card: Json | null
           updated_at: string | null
           url: string
+          word_count: number | null
         }
         Insert: {
           canonical_url?: string | null
@@ -298,24 +344,32 @@ export type Database = {
           h1s?: Json | null
           h2s?: Json | null
           h3s?: Json | null
+          h4s?: Json | null
+          h5s?: Json | null
+          h6s?: Json | null
           has_robots_nofollow?: boolean | null
           has_robots_noindex?: boolean | null
           http_status?: number | null
           id?: string
-          image_count?: number | null
+          images?: Json | null
           is_indexable?: boolean | null
           js_count?: number | null
+          keywords?: Json | null
           load_time_ms?: number | null
           meta_description?: string | null
+          meta_description_length?: number | null
           open_graph?: Json | null
           project_id: string
           redirect_url?: string | null
+          schema_types?: Json | null
           size_bytes?: number | null
           structured_data?: Json | null
           title?: string | null
+          title_length?: number | null
           twitter_card?: Json | null
           updated_at?: string | null
           url: string
+          word_count?: number | null
         }
         Update: {
           canonical_url?: string | null
@@ -329,24 +383,32 @@ export type Database = {
           h1s?: Json | null
           h2s?: Json | null
           h3s?: Json | null
+          h4s?: Json | null
+          h5s?: Json | null
+          h6s?: Json | null
           has_robots_nofollow?: boolean | null
           has_robots_noindex?: boolean | null
           http_status?: number | null
           id?: string
-          image_count?: number | null
+          images?: Json | null
           is_indexable?: boolean | null
           js_count?: number | null
+          keywords?: Json | null
           load_time_ms?: number | null
           meta_description?: string | null
+          meta_description_length?: number | null
           open_graph?: Json | null
           project_id?: string
           redirect_url?: string | null
+          schema_types?: Json | null
           size_bytes?: number | null
           structured_data?: Json | null
           title?: string | null
+          title_length?: number | null
           twitter_card?: Json | null
           updated_at?: string | null
           url?: string
+          word_count?: number | null
         }
         Relationships: [
           {
@@ -404,8 +466,6 @@ export type Database = {
           id: string
           last_scan_at: string | null
           name: string
-          notification_email: string | null
-          robots_txt: Json | null
           scan_frequency: string | null
           settings: Json | null
           updated_at: string | null
@@ -418,8 +478,6 @@ export type Database = {
           id?: string
           last_scan_at?: string | null
           name: string
-          notification_email?: string | null
-          robots_txt?: Json | null
           scan_frequency?: string | null
           settings?: Json | null
           updated_at?: string | null
@@ -432,8 +490,6 @@ export type Database = {
           id?: string
           last_scan_at?: string | null
           name?: string
-          notification_email?: string | null
-          robots_txt?: Json | null
           scan_frequency?: string | null
           settings?: Json | null
           updated_at?: string | null
@@ -457,6 +513,9 @@ export type Database = {
           h1s: Json | null
           h2s: Json | null
           h3s: Json | null
+          h4s: Json | null
+          h5s: Json | null
+          h6s: Json | null
           http_status: number | null
           id: string
           is_indexable: boolean | null
@@ -474,6 +533,9 @@ export type Database = {
           h1s?: Json | null
           h2s?: Json | null
           h3s?: Json | null
+          h4s?: Json | null
+          h5s?: Json | null
+          h6s?: Json | null
           http_status?: number | null
           id?: string
           is_indexable?: boolean | null
@@ -491,6 +553,9 @@ export type Database = {
           h1s?: Json | null
           h2s?: Json | null
           h3s?: Json | null
+          h4s?: Json | null
+          h5s?: Json | null
+          h6s?: Json | null
           http_status?: number | null
           id?: string
           is_indexable?: boolean | null
@@ -526,10 +591,8 @@ export type Database = {
           id: string
           issues_found: number | null
           links_scanned: number | null
-          notification_email: string | null
           pages_scanned: number | null
           project_id: string
-          queue_position: number | null
           started_at: string | null
           status: string | null
           summary_stats: Json | null
@@ -541,10 +604,8 @@ export type Database = {
           id?: string
           issues_found?: number | null
           links_scanned?: number | null
-          notification_email?: string | null
           pages_scanned?: number | null
           project_id: string
-          queue_position?: number | null
           started_at?: string | null
           status?: string | null
           summary_stats?: Json | null
@@ -556,10 +617,8 @@ export type Database = {
           id?: string
           issues_found?: number | null
           links_scanned?: number | null
-          notification_email?: string | null
           pages_scanned?: number | null
           project_id?: string
-          queue_position?: number | null
           started_at?: string | null
           status?: string | null
           summary_stats?: Json | null

@@ -44,6 +44,313 @@ interface ScanResult {
   }>;
 }
 
+// Function to normalize URLs to avoid duplicate scanning
+function normalizeUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+
+    // Convert to lowercase
+    let normalized = `${urlObj.protocol}//${urlObj.hostname.toLowerCase()}${
+      urlObj.pathname
+    }`;
+
+    // Remove trailing slash for non-root paths
+    if (normalized.length > 1 && normalized.endsWith("/")) {
+      normalized = normalized.slice(0, -1);
+    }
+
+    // Keep the query params if they exist
+    if (urlObj.search) {
+      normalized += urlObj.search;
+    }
+
+    return normalized;
+  } catch (error) {
+    return url; // Return original if parsing fails
+  }
+}
+
+// Function to extract visible text content from HTML
+function extractVisibleText($: cheerio.CheerioAPI): string {
+  // Remove script and style elements that contain non-visible content
+  $("script, style, meta, link, noscript").remove();
+
+  // Get the text content
+  let text = $("body").text();
+
+  // Replace multiple spaces, tabs and newlines with a single space
+  text = text.replace(/\s+/g, " ");
+
+  // Trim leading and trailing whitespace
+  return text.trim();
+}
+
+// Function to extract keywords from visible text
+function extractKeywords(
+  text: string,
+  maxKeywords: number = 20,
+): { word: string; count: number }[] {
+  // Define a list of stop words and code-related terms to exclude
+  const stopWords = new Set([
+    // Common stop words
+    "a",
+    "about",
+    "above",
+    "after",
+    "again",
+    "against",
+    "all",
+    "am",
+    "an",
+    "and",
+    "any",
+    "are",
+    "as",
+    "at",
+    "be",
+    "because",
+    "been",
+    "before",
+    "being",
+    "below",
+    "between",
+    "both",
+    "but",
+    "by",
+    "could",
+    "did",
+    "do",
+    "does",
+    "doing",
+    "down",
+    "during",
+    "each",
+    "few",
+    "for",
+    "from",
+    "further",
+    "had",
+    "has",
+    "have",
+    "having",
+    "he",
+    "her",
+    "here",
+    "hers",
+    "herself",
+    "him",
+    "himself",
+    "his",
+    "how",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "itself",
+    "me",
+    "more",
+    "most",
+    "my",
+    "myself",
+    "no",
+    "nor",
+    "not",
+    "of",
+    "off",
+    "on",
+    "once",
+    "only",
+    "or",
+    "other",
+    "ought",
+    "our",
+    "ours",
+    "ourselves",
+    "out",
+    "over",
+    "own",
+    "same",
+    "she",
+    "should",
+    "so",
+    "some",
+    "such",
+    "than",
+    "that",
+    "the",
+    "their",
+    "theirs",
+    "them",
+    "themselves",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "through",
+    "to",
+    "too",
+    "under",
+    "until",
+    "up",
+    "very",
+    "was",
+    "we",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "who",
+    "whom",
+    "why",
+    "with",
+    "would",
+    "you",
+    "your",
+    "yours",
+    "yourself",
+
+    // Code-related terms to exclude
+    "null",
+    "undefined",
+    "function",
+    "const",
+    "var",
+    "let",
+    "return",
+    "import",
+    "export",
+    "default",
+    "class",
+    "classname",
+    "props",
+    "children",
+    "div",
+    "span",
+    "component",
+    "static",
+    "font",
+    "width",
+    "height",
+    "margin",
+    "padding",
+    "border",
+    "flex",
+    "grid",
+    "container",
+    "wrapper",
+    "header",
+    "footer",
+    "main",
+    "section",
+    "article",
+    "nav",
+    "aside",
+    "true",
+    "false",
+    "object",
+    "array",
+    "string",
+    "number",
+    "boolean",
+    "void",
+    "interface",
+    "type",
+    "extends",
+    "implements",
+    "module",
+    "namespace",
+    "chunks",
+    "styles",
+    "jsx",
+    "async",
+    "await",
+    "promise",
+    "then",
+    "catch",
+    "try",
+    "finally",
+    "throw",
+    "new",
+    "this",
+    "super",
+    "static",
+    "hover",
+    "focus",
+    "active",
+    "disabled",
+    "selected",
+    "checked",
+    "readonly",
+    "required",
+    "optional",
+    "sm",
+    "md",
+    "lg",
+    "xl",
+    "2xl",
+    "responsive",
+    "mobile",
+    "desktop",
+    "tablet",
+    "neutral",
+    "primary",
+    "secondary",
+    "success",
+    "error",
+    "warning",
+    "info",
+    "light",
+    "dark",
+    "shadow",
+    "opacity",
+    "transform",
+    "transition",
+    "animation",
+    "keyframes",
+    "scale",
+    "rotate",
+    "translate",
+    "skew",
+    "filter",
+    "blur",
+    "brightness",
+    "contrast",
+    "grayscale",
+    "invert",
+    "saturate",
+    "sepia",
+    "rgba",
+    "hsla",
+  ]);
+
+  // Normalize text: convert to lowercase and replace non-alphanumeric chars with spaces
+  const normalizedText = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+
+  // Split into words, filter by length and stopwords
+  const words = normalizedText.split(/\s+/).filter(
+    (word) => word.length > 3 && !stopWords.has(word) && /^[a-z]+$/.test(word), // Only pure alphabetic words
+  );
+
+  // Count word frequencies
+  const wordCounts: Record<string, number> = {};
+  for (const word of words) {
+    wordCounts[word] = (wordCounts[word] || 0) + 1;
+  }
+
+  // Convert to array, sort by frequency, and take top N
+  return Object.entries(wordCounts)
+    .map(([word, count]) => ({ word, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, maxKeywords);
+}
+
 export async function scanWebsite(
   url: string,
   depth: number = 0,
@@ -53,6 +360,9 @@ export async function scanWebsite(
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       url = "https://" + url;
     }
+
+    // Normalize the URL to avoid duplicate scans
+    const normalizedUrl = normalizeUrl(url);
 
     const startTime = Date.now();
     let firstByteTime = 0;
@@ -110,12 +420,17 @@ export async function scanWebsite(
       .map((_, el) => $(el).text().trim())
       .get();
 
-    // Calculate content length and word count
-    const content = $("body").text().trim();
-    const contentLength = content.length;
-    const wordCount = content
+    // Extract visible text content (excluding scripts, styles, etc.)
+    const visibleContent = extractVisibleText($);
+
+    // Calculate content length and word count from visible text only
+    const contentLength = visibleContent.length;
+    const wordCount = visibleContent
       .split(/\s+/)
       .filter((word) => word.length > 0).length;
+
+    // Extract keywords from visible text
+    const keywords = extractKeywords(visibleContent);
 
     // Extract Open Graph data
     const openGraph: Record<string, string> = {};
@@ -184,7 +499,11 @@ export async function scanWebsite(
           fullSrc = `${baseUrl.origin}${src}`;
         } else if (!src.startsWith("http://") && !src.startsWith("https://")) {
           // Handle relative URLs that don't start with a slash
-          fullSrc = new URL(src, url).href;
+          try {
+            fullSrc = new URL(src, url).href;
+          } catch (e) {
+            return null; // Skip invalid URLs
+          }
         }
 
         return { src: fullSrc, alt };
@@ -227,7 +546,11 @@ export async function scanWebsite(
       // Handle relative URLs
       if (href.startsWith("/")) {
         href = `${baseUrl.origin}${href}`;
-      } else if (!href.startsWith("http://") && !href.startsWith("https://")) {
+      } else if (
+        !href.startsWith("http://") &&
+        !href.startsWith("https://") &&
+        !href.startsWith("mailto:")
+      ) {
         // Handle relative URLs that don't start with a slash
         try {
           href = new URL(href, url).href;
@@ -237,7 +560,16 @@ export async function scanWebsite(
       }
 
       try {
-        const linkUrl = new URL(href);
+        // For mailto: links, don't try to parse as URL
+        let isInternal = false;
+
+        if (href.startsWith("mailto:")) {
+          isInternal = false;
+        } else {
+          const linkUrl = new URL(href);
+          isInternal = linkUrl.hostname === baseUrl.hostname;
+        }
+
         const linkData = {
           url: href,
           anchor_text: anchorText,
@@ -245,8 +577,11 @@ export async function scanWebsite(
         };
 
         // Check if it's an internal or external link
-        if (linkUrl.hostname === baseUrl.hostname) {
-          if (!internalLinks.some((link) => link.url === href)) {
+        if (isInternal) {
+          // Normalize internal URLs
+          linkData.url = normalizeUrl(href);
+
+          if (!internalLinks.some((link) => link.url === linkData.url)) {
             internalLinks.push(linkData);
           }
         } else {
@@ -259,159 +594,14 @@ export async function scanWebsite(
       }
     });
 
-    // Extract keywords (simple implementation - can be improved)
-    const stopWords = new Set([
-      "a",
-      "about",
-      "above",
-      "after",
-      "again",
-      "against",
-      "all",
-      "am",
-      "an",
-      "and",
-      "any",
-      "are",
-      "as",
-      "at",
-      "be",
-      "because",
-      "been",
-      "before",
-      "being",
-      "below",
-      "between",
-      "both",
-      "but",
-      "by",
-      "could",
-      "did",
-      "do",
-      "does",
-      "doing",
-      "down",
-      "during",
-      "each",
-      "few",
-      "for",
-      "from",
-      "further",
-      "had",
-      "has",
-      "have",
-      "having",
-      "he",
-      "her",
-      "here",
-      "hers",
-      "herself",
-      "him",
-      "himself",
-      "his",
-      "how",
-      "i",
-      "if",
-      "in",
-      "into",
-      "is",
-      "it",
-      "its",
-      "itself",
-      "me",
-      "more",
-      "most",
-      "my",
-      "myself",
-      "no",
-      "nor",
-      "not",
-      "of",
-      "off",
-      "on",
-      "once",
-      "only",
-      "or",
-      "other",
-      "ought",
-      "our",
-      "ours",
-      "ourselves",
-      "out",
-      "over",
-      "own",
-      "same",
-      "she",
-      "should",
-      "so",
-      "some",
-      "such",
-      "than",
-      "that",
-      "the",
-      "their",
-      "theirs",
-      "them",
-      "themselves",
-      "then",
-      "there",
-      "these",
-      "they",
-      "this",
-      "those",
-      "through",
-      "to",
-      "too",
-      "under",
-      "until",
-      "up",
-      "very",
-      "was",
-      "we",
-      "were",
-      "what",
-      "when",
-      "where",
-      "which",
-      "while",
-      "who",
-      "whom",
-      "why",
-      "with",
-      "would",
-      "you",
-      "your",
-      "yours",
-      "yourself",
-      "yourselves",
-    ]);
-
-    const words = content
-      .toLowerCase()
-      .split(/\W+/)
-      .filter(
-        (word) =>
-          word.length > 3 && !stopWords.has(word) && /^[a-z]+$/.test(word),
-      );
-
-    const wordFrequency: Record<string, number> = {};
-    for (const word of words) {
-      wordFrequency[word] = (wordFrequency[word] || 0) + 1;
-    }
-
-    const keywords = Object.entries(wordFrequency)
-      .map(([word, count]) => ({ word, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 20); // Get top 20 keywords
-
     // Determine redirect URL
     const redirectUrl =
       response.request?.res?.responseUrl !== url
-        ? response.request?.res?.responseUrl
+        ? normalizeUrl(response.request?.res?.responseUrl)
         : null;
 
     return {
-      url: url,
+      url: normalizedUrl, // Use normalized URL
       title: metaTitle,
       meta_description: metaDescription,
       h1s: h1Tags,
@@ -451,7 +641,7 @@ export async function scanWebsite(
       const contentType = error.response?.headers["content-type"] || "";
 
       return {
-        url: url,
+        url: normalizeUrl(url),
         title: "",
         meta_description: "",
         h1s: [],

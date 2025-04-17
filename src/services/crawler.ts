@@ -1,5 +1,31 @@
 ﻿import { scanWebsite } from "./scan";
 
+// Import the normalizeUrl function from scanWebsite or define it here
+function normalizeUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+
+    // Convert to lowercase
+    let normalized = `${urlObj.protocol}//${urlObj.hostname.toLowerCase()}${
+      urlObj.pathname
+    }`;
+
+    // Remove trailing slash for non-root paths
+    if (normalized.length > 1 && normalized.endsWith("/")) {
+      normalized = normalized.slice(0, -1);
+    }
+
+    // Keep the query params if they exist
+    if (urlObj.search) {
+      normalized += urlObj.search;
+    }
+
+    return normalized;
+  } catch (error) {
+    return url; // Return original if parsing fails
+  }
+}
+
 interface CrawlOptions {
   maxDepth?: number;
   maxPages?: number;
@@ -22,6 +48,9 @@ export async function crawlWebsite(
       /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
       /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
       /#.*/i, // URLs with hash
+      /\?s=/i, // Search results
+      /\?p=\d+/i, // WordPress pagination
+      /\?(utm_|fbclid|gclid)/i, // Tracking parameters
     ],
   } = options;
 
@@ -33,6 +62,8 @@ export async function crawlWebsite(
   ) {
     normalizedSeedUrl = "https://" + normalizedSeedUrl;
   }
+
+  normalizedSeedUrl = normalizeUrl(normalizedSeedUrl);
 
   // Extract the domain from seed URL
   const seedUrlObj = new URL(normalizedSeedUrl);
@@ -56,16 +87,19 @@ export async function crawlWebsite(
 
   // Create the crawling promise
   const crawlPromise = new Promise<any[]>(async (resolve) => {
-    let activeCrawls = 0;
+    const activeCrawls = Array(concurrentRequests).fill(false);
 
-    const processNext = async () => {
+    const processNext = async (crawlerId: number) => {
       // Check if we've reached limits
       if (
         queue.length === 0 ||
         pagesScanned.length >= maxPages ||
         Date.now() - startTime > timeout
       ) {
-        if (activeCrawls === 0) {
+        activeCrawls[crawlerId] = false;
+
+        // If all crawlers are inactive, resolve the promise
+        if (!activeCrawls.some(Boolean)) {
           resolve(pagesScanned);
         }
         return;
@@ -76,18 +110,21 @@ export async function crawlWebsite(
 
       // Skip if already visited or exceeds max depth
       if (urlsVisited.has(url) || depth > maxDepth) {
-        processNext();
+        // Continue with next URL
+        setImmediate(() => processNext(crawlerId));
         return;
       }
 
-      // Mark as visited
+      // Mark as visited and crawler as active
       urlsVisited.add(url);
-      activeCrawls++;
+      activeCrawls[crawlerId] = true;
 
       try {
         // Scan the page
         console.log(
-          `Crawling (${pagesScanned.length + 1}/${maxPages}): ${url}`,
+          `Crawler ${crawlerId} processing (${
+            pagesScanned.length + 1
+          }/${maxPages}): ${url}`,
         );
         const result = await scanWebsite(url, depth);
 
@@ -121,17 +158,16 @@ export async function crawlWebsite(
         console.error(`Error crawling ${url}:`, error);
       }
 
-      // Decrement active crawls
-      activeCrawls--;
+      // Mark crawler as inactive
+      activeCrawls[crawlerId] = false;
 
       // Process next URL
-      processNext();
+      setImmediate(() => processNext(crawlerId));
     };
 
     // Start concurrent crawlers
-    const concurrentPromises = [];
     for (let i = 0; i < concurrentRequests; i++) {
-      concurrentPromises.push(processNext());
+      processNext(i);
     }
   });
 
