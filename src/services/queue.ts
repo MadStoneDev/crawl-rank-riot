@@ -1,49 +1,51 @@
 import logger from "../utils/logger";
-
 import { QueueItem } from "../types";
 
-let PQueue: any;
-
+// Use dynamic import for p-queue
 const importPQueue = async () => {
   const module = await import("p-queue");
   return module.default;
 };
 
-// Initialize PQueue before using it
 class CrawlQueue {
-  private queue: any;
+  private queue: any = null;
   private initialized: boolean = false;
   private urlsInQueue: Set<string> = new Set();
   private urlsSeen: Set<string> = new Set();
+  private initPromise: Promise<void> | null = null;
 
   constructor(concurrency: number = 3) {
-    this.initializeQueue(concurrency);
+    // Start initialization immediately but don't wait for it
+    this.initPromise = this.initializeQueue(concurrency);
   }
 
   private async initializeQueue(concurrency: number): Promise<void> {
-    const PQueue = await importPQueue();
-    this.queue = new PQueue({ concurrency: concurrency });
+    try {
+      // Import PQueue dynamically
+      const PQueueModule = await importPQueue();
 
-    this.queue = new PQueue({ concurrency });
-    this.initialized = true;
+      // Create a single instance of the queue
+      this.queue = new PQueueModule({ concurrency });
 
-    // Log when queue is idle
-    this.queue.on("idle", () => {
-      console.log("Queue is idle");
-    });
+      // Set up event listeners
+      this.queue.on("idle", () => {
+        logger.debug("Queue is idle");
+      });
+
+      this.initialized = true;
+      logger.debug("Queue initialized successfully");
+    } catch (error) {
+      logger.error(`Failed to initialize queue: ${error}`);
+      throw error;
+    }
   }
 
   // Make sure queue is initialized before using it
   private async ensureInitialized(): Promise<void> {
     if (!this.initialized) {
-      await new Promise<void>((resolve) => {
-        const checkInterval = setInterval(() => {
-          if (this.initialized) {
-            clearInterval(checkInterval);
-            resolve();
-          }
-        }, 100);
-      });
+      logger.debug("Waiting for queue initialization...");
+      await this.initPromise;
+      logger.debug("Queue initialization complete");
     }
   }
 
@@ -117,12 +119,12 @@ class CrawlQueue {
 
   // Get queue size
   get size(): number {
-    return this.queue.size;
+    return this.queue?.size || 0;
   }
 
   // Get pending count
   get pending(): number {
-    return this.queue.pending;
+    return this.queue?.pending || 0;
   }
 
   // Check if a URL has been seen
@@ -131,20 +133,31 @@ class CrawlQueue {
   }
 
   // Clear queue and tracking sets
-  clear(): void {
-    this.queue.clear();
+  async clear(): Promise<void> {
+    await this.ensureInitialized();
+
+    if (this.queue) {
+      this.queue.clear();
+    }
+
     this.urlsInQueue.clear();
     this.urlsSeen.clear();
   }
 
   // Pause queue
-  pause(): void {
-    this.queue.pause();
+  async pause(): Promise<void> {
+    await this.ensureInitialized();
+    if (this.queue) {
+      this.queue.pause();
+    }
   }
 
   // Resume queue
-  resume(): void {
-    this.queue.start();
+  async resume(): Promise<void> {
+    await this.ensureInitialized();
+    if (this.queue) {
+      this.queue.start();
+    }
   }
 }
 
