@@ -2,20 +2,24 @@
 import * as cheerio from "cheerio";
 
 interface ScanResult {
-  page_url: string;
-  meta_title: string;
+  url: string;
+  title: string;
   meta_description: string;
-  h1_tags: string[];
-  h2_tags: string[];
-  h3_tags: string[];
+  h1s: string[];
+  h2s: string[];
+  h3s: string[];
+  h4s: string[];
+  h5s: string[];
+  h6s: string[];
   content_length: number;
+  word_count: number;
   open_graph: Record<string, string>;
   twitter_card: Record<string, string>;
-  canonical_url: string;
+  canonical_url: string | null;
   http_status: number;
   is_indexable: boolean;
-  has_noindex: boolean;
-  has_nofollow: boolean;
+  has_robots_noindex: boolean;
+  has_robots_nofollow: boolean;
   depth: number;
   redirect_url: string | null;
   content_type: string;
@@ -23,11 +27,21 @@ interface ScanResult {
   load_time_ms: number;
   first_byte_time_ms: number;
   structured_data: any[];
-  images: string[];
+  schema_types: string[];
+  images: Array<{ src: string; alt: string }>;
   js_count: number;
   css_count: number;
-  internal_links: string[];
-  external_links: string[];
+  keywords: { word: string; count: number }[];
+  internal_links: Array<{
+    url: string;
+    anchor_text: string;
+    rel_attributes: string[];
+  }>;
+  external_links: Array<{
+    url: string;
+    anchor_text: string;
+    rel_attributes: string[];
+  }>;
 }
 
 export async function scanWebsite(
@@ -86,10 +100,22 @@ export async function scanWebsite(
     const h3Tags = $("h3")
       .map((_, el) => $(el).text().trim())
       .get();
+    const h4Tags = $("h4")
+      .map((_, el) => $(el).text().trim())
+      .get();
+    const h5Tags = $("h5")
+      .map((_, el) => $(el).text().trim())
+      .get();
+    const h6Tags = $("h6")
+      .map((_, el) => $(el).text().trim())
+      .get();
 
-    // Calculate content length
+    // Calculate content length and word count
     const content = $("body").text().trim();
     const contentLength = content.length;
+    const wordCount = content
+      .split(/\s+/)
+      .filter((word) => word.length > 0).length;
 
     // Extract Open Graph data
     const openGraph: Record<string, string> = {};
@@ -112,7 +138,7 @@ export async function scanWebsite(
     });
 
     // Extract canonical URL
-    const canonicalUrl = $('link[rel="canonical"]').attr("href") || "";
+    const canonicalUrl = $('link[rel="canonical"]').attr("href") || null;
 
     // Check robots meta tags
     const robotsContent = $('meta[name="robots"]').attr("content") || "";
@@ -122,30 +148,49 @@ export async function scanWebsite(
     // Determine if page is indexable
     const isIndexable = !hasNoindex;
 
-    // Extract structured data
+    // Extract structured data and schema types
     const structuredData: any[] = [];
+    const schemaTypes: string[] = [];
     $('script[type="application/ld+json"]').each((_, el) => {
       try {
         const data = JSON.parse($(el).html() || "{}");
         structuredData.push(data);
+
+        // Extract schema types
+        if (data["@type"]) {
+          if (Array.isArray(data["@type"])) {
+            schemaTypes.push(...data["@type"]);
+          } else {
+            schemaTypes.push(data["@type"]);
+          }
+        }
       } catch (e) {
         console.error("Error parsing JSON-LD:", e);
       }
     });
 
-    // Extract images
+    // Extract images with alt text
     const images = $("img")
-      .map((_, el) => $(el).attr("src") || "")
-      .get()
-      .filter((src) => src.length > 0)
-      .map((src) => {
+      .map((_, el) => {
+        const src = $(el).attr("src") || "";
+        const alt = $(el).attr("alt") || "";
+
+        if (src.length === 0) return null;
+
         // Handle relative URLs
+        let fullSrc = src;
         if (src.startsWith("/")) {
           const baseUrl = new URL(url);
-          return `${baseUrl.origin}${src}`;
+          fullSrc = `${baseUrl.origin}${src}`;
+        } else if (!src.startsWith("http://") && !src.startsWith("https://")) {
+          // Handle relative URLs that don't start with a slash
+          fullSrc = new URL(src, url).href;
         }
-        return src;
-      });
+
+        return { src: fullSrc, alt };
+      })
+      .get()
+      .filter((image): image is { src: string; alt: string } => image !== null);
 
     // Count JavaScript files
     const jsCount = $("script[src]").length;
@@ -155,11 +200,24 @@ export async function scanWebsite(
 
     // Extract links and categorize them
     const baseUrl = new URL(url);
-    const internalLinks: string[] = [];
-    const externalLinks: string[] = [];
+    const internalLinks: Array<{
+      url: string;
+      anchor_text: string;
+      rel_attributes: string[];
+    }> = [];
+    const externalLinks: Array<{
+      url: string;
+      anchor_text: string;
+      rel_attributes: string[];
+    }> = [];
 
     $("a[href]").each((_, el) => {
       let href = $(el).attr("href") || "";
+      const anchorText = $(el).text().trim();
+      const relAttr = $(el).attr("rel") || "";
+      const relAttributes = relAttr
+        .split(" ")
+        .filter((attr) => attr.length > 0);
 
       // Skip empty, javascript, and anchor links
       if (!href || href.startsWith("javascript:") || href === "#") {
@@ -171,26 +229,180 @@ export async function scanWebsite(
         href = `${baseUrl.origin}${href}`;
       } else if (!href.startsWith("http://") && !href.startsWith("https://")) {
         // Handle relative URLs that don't start with a slash
-        href = new URL(href, url).href;
+        try {
+          href = new URL(href, url).href;
+        } catch (e) {
+          return; // Skip invalid URLs
+        }
       }
 
       try {
         const linkUrl = new URL(href);
+        const linkData = {
+          url: href,
+          anchor_text: anchorText,
+          rel_attributes: relAttributes,
+        };
 
         // Check if it's an internal or external link
         if (linkUrl.hostname === baseUrl.hostname) {
-          if (!internalLinks.includes(href)) {
-            internalLinks.push(href);
+          if (!internalLinks.some((link) => link.url === href)) {
+            internalLinks.push(linkData);
           }
         } else {
-          if (!externalLinks.includes(href)) {
-            externalLinks.push(href);
+          if (!externalLinks.some((link) => link.url === href)) {
+            externalLinks.push(linkData);
           }
         }
       } catch (e) {
         console.error(`Error parsing URL: ${href}`, e);
       }
     });
+
+    // Extract keywords (simple implementation - can be improved)
+    const stopWords = new Set([
+      "a",
+      "about",
+      "above",
+      "after",
+      "again",
+      "against",
+      "all",
+      "am",
+      "an",
+      "and",
+      "any",
+      "are",
+      "as",
+      "at",
+      "be",
+      "because",
+      "been",
+      "before",
+      "being",
+      "below",
+      "between",
+      "both",
+      "but",
+      "by",
+      "could",
+      "did",
+      "do",
+      "does",
+      "doing",
+      "down",
+      "during",
+      "each",
+      "few",
+      "for",
+      "from",
+      "further",
+      "had",
+      "has",
+      "have",
+      "having",
+      "he",
+      "her",
+      "here",
+      "hers",
+      "herself",
+      "him",
+      "himself",
+      "his",
+      "how",
+      "i",
+      "if",
+      "in",
+      "into",
+      "is",
+      "it",
+      "its",
+      "itself",
+      "me",
+      "more",
+      "most",
+      "my",
+      "myself",
+      "no",
+      "nor",
+      "not",
+      "of",
+      "off",
+      "on",
+      "once",
+      "only",
+      "or",
+      "other",
+      "ought",
+      "our",
+      "ours",
+      "ourselves",
+      "out",
+      "over",
+      "own",
+      "same",
+      "she",
+      "should",
+      "so",
+      "some",
+      "such",
+      "than",
+      "that",
+      "the",
+      "their",
+      "theirs",
+      "them",
+      "themselves",
+      "then",
+      "there",
+      "these",
+      "they",
+      "this",
+      "those",
+      "through",
+      "to",
+      "too",
+      "under",
+      "until",
+      "up",
+      "very",
+      "was",
+      "we",
+      "were",
+      "what",
+      "when",
+      "where",
+      "which",
+      "while",
+      "who",
+      "whom",
+      "why",
+      "with",
+      "would",
+      "you",
+      "your",
+      "yours",
+      "yourself",
+      "yourselves",
+    ]);
+
+    const words = content
+      .toLowerCase()
+      .split(/\W+/)
+      .filter(
+        (word) =>
+          word.length > 3 && !stopWords.has(word) && /^[a-z]+$/.test(word),
+      );
+
+    const wordFrequency: Record<string, number> = {};
+    for (const word of words) {
+      wordFrequency[word] = (wordFrequency[word] || 0) + 1;
+    }
+
+    const keywords = Object.entries(wordFrequency)
+      .map(([word, count]) => ({ word, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20); // Get top 20 keywords
 
     // Determine redirect URL
     const redirectUrl =
@@ -199,20 +411,24 @@ export async function scanWebsite(
         : null;
 
     return {
-      page_url: url,
-      meta_title: metaTitle,
+      url: url,
+      title: metaTitle,
       meta_description: metaDescription,
-      h1_tags: h1Tags,
-      h2_tags: h2Tags,
-      h3_tags: h3Tags,
+      h1s: h1Tags,
+      h2s: h2Tags,
+      h3s: h3Tags,
+      h4s: h4Tags,
+      h5s: h5Tags,
+      h6s: h6Tags,
       content_length: contentLength,
+      word_count: wordCount,
       open_graph: openGraph,
       twitter_card: twitterCard,
       canonical_url: canonicalUrl,
       http_status: response.status,
       is_indexable: isIndexable,
-      has_noindex: hasNoindex,
-      has_nofollow: hasNofollow,
+      has_robots_noindex: hasNoindex,
+      has_robots_nofollow: hasNofollow,
       depth: depth,
       redirect_url: redirectUrl,
       content_type: response.headers["content-type"] || "",
@@ -220,9 +436,11 @@ export async function scanWebsite(
       load_time_ms: loadTime,
       first_byte_time_ms: firstByteTime,
       structured_data: structuredData,
+      schema_types: schemaTypes,
       images: images,
       js_count: jsCount,
       css_count: cssCount,
+      keywords: keywords,
       internal_links: internalLinks,
       external_links: externalLinks,
     };
@@ -233,20 +451,24 @@ export async function scanWebsite(
       const contentType = error.response?.headers["content-type"] || "";
 
       return {
-        page_url: url,
-        meta_title: "",
+        url: url,
+        title: "",
         meta_description: "",
-        h1_tags: [],
-        h2_tags: [],
-        h3_tags: [],
+        h1s: [],
+        h2s: [],
+        h3s: [],
+        h4s: [],
+        h5s: [],
+        h6s: [],
         content_length: 0,
+        word_count: 0,
         open_graph: {},
         twitter_card: {},
-        canonical_url: "",
+        canonical_url: null,
         http_status: status,
         is_indexable: false,
-        has_noindex: false,
-        has_nofollow: false,
+        has_robots_noindex: false,
+        has_robots_nofollow: false,
         depth: depth,
         redirect_url: null,
         content_type: contentType,
@@ -254,9 +476,11 @@ export async function scanWebsite(
         load_time_ms: 0,
         first_byte_time_ms: 0,
         structured_data: [],
+        schema_types: [],
         images: [],
         js_count: 0,
         css_count: 0,
+        keywords: [],
         internal_links: [],
         external_links: [],
       };

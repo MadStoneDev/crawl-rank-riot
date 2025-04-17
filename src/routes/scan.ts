@@ -1,11 +1,11 @@
 ﻿import { Router, Request, Response } from "express";
-import { scanWebsite } from "../services/scan";
+import { crawlWebsite } from "../services/crawler";
 
 const router = Router();
 
 router.post("/scan", async (req: Request, res: Response) => {
   try {
-    const { url, email } = req.body;
+    const { url, email, options } = req.body;
 
     // Validate inputs
     if (!url) {
@@ -25,24 +25,27 @@ router.post("/scan", async (req: Request, res: Response) => {
     // Log the scan request
     console.log(`Scan request received for URL: ${url}, Email: ${email}`);
 
-    // Set a timeout to prevent scans from hanging indefinitely
-    const scanTimeout = 30000; // 30 seconds
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("Scan timeout exceeded")), scanTimeout);
-    });
+    // Parse crawler options with defaults
+    const crawlerOptions = {
+      maxDepth: options?.maxDepth || 3,
+      maxPages: options?.maxPages || 100,
+      concurrentRequests: options?.concurrentRequests || 5,
+      timeout: options?.timeout || 120000, // 2 minutes
+    };
 
-    // Call the scan service with a timeout
-    const scanPromise = scanWebsite(url);
-    const scanResult = await Promise.race([scanPromise, timeoutPromise]);
+    // Run the crawler
+    const scanResults = await crawlWebsite(url, crawlerOptions);
 
     // Return the scan results
     return res.json({
       status: "success",
-      message: "Website scan completed",
+      message: `Website crawl completed. Scanned ${scanResults.length} pages.`,
       data: {
         url,
         email,
-        scan_results: scanResult,
+        options: crawlerOptions,
+        pages_scanned: scanResults.length,
+        scan_results: scanResults,
       },
     });
   } catch (error) {
