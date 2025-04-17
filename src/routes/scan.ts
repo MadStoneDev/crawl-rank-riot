@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 
 import { crawlWebsite } from "../services/crawler";
+import { storeScanResults } from "../services/database";
 
 // Load environment variables
 dotenv.config();
@@ -65,12 +66,6 @@ router.post("/scan", async (req: Request, res: Response) => {
       `Scan request received for Project ID: ${project_id}, URL: ${url}, Email: ${email}`,
     );
 
-    // Update the project's last_scan_at timestamp
-    await supabase
-      .from("projects")
-      .update({ last_scan_at: new Date().toISOString() })
-      .eq("id", project_id);
-
     // Create a new scan record
     const { data: scanData, error: scanError } = await supabase
       .from("scans")
@@ -78,6 +73,10 @@ router.post("/scan", async (req: Request, res: Response) => {
         project_id: project_id,
         status: "in_progress",
         started_at: new Date().toISOString(),
+        pages_scanned: 0,
+        links_scanned: 0,
+        issues_found: 0,
+        last_progress_update: new Date().toISOString(),
       })
       .select()
       .single();
@@ -90,6 +89,14 @@ router.post("/scan", async (req: Request, res: Response) => {
       });
     }
 
+    const scanId = scanData.id;
+
+    // Update the project's last_scan_at timestamp
+    await supabase
+      .from("projects")
+      .update({ last_scan_at: new Date().toISOString() })
+      .eq("id", project_id);
+
     // Parse crawler options with defaults
     const crawlerOptions = {
       maxDepth: options?.maxDepth || 3,
@@ -98,57 +105,48 @@ router.post("/scan", async (req: Request, res: Response) => {
       timeout: options?.timeout || 120000, // 2 minutes
     };
 
-    // Run the crawler
-    const scanResults = await crawlWebsite(url, crawlerOptions);
-
-    // Update the scan record with completion information
-    await supabase
-      .from("scans")
-      .update({
-        status: "completed",
-        completed_at: new Date().toISOString(),
-        pages_scanned: scanResults.length,
-        links_scanned: scanResults.reduce(
-          (total, page) =>
-            total + page.internal_links.length + page.external_links.length,
-          0,
-        ),
-        summary_stats: {
-          http_status_counts: countHttpStatuses(scanResults),
-          indexable_pages: scanResults.filter((page) => page.is_indexable)
-            .length,
-          non_indexable_pages: scanResults.filter((page) => !page.is_indexable)
-            .length,
-          avg_page_load_time: calculateAverage(scanResults, "load_time_ms"),
-          avg_word_count: calculateAverage(scanResults, "word_count"),
-          total_internal_links: scanResults.reduce(
-            (total, page) => total + page.internal_links.length,
-            0,
-          ),
-          total_external_links: scanResults.reduce(
-            (total, page) => total + page.external_links.length,
-            0,
-          ),
-        },
-      })
-      .eq("id", scanData.id);
-
-    // Return the scan results
-    return res.json({
+    // Return early response to client to avoid timeout
+    res.json({
       status: "success",
-      message: `Website crawl completed. Scanned ${scanResults.length} pages.`,
+      message: "Scan started successfully",
       data: {
         project_id,
-        scan_id: scanData.id,
+        scan_id: scanId,
         url,
-        email,
-        options: crawlerOptions,
-        pages_scanned: scanResults.length,
-        scan_results: scanResults,
       },
     });
+
+    try {
+      // Run the crawler in the background
+      const scanResults = await crawlWebsite(
+        url,
+        crawlerOptions,
+        scanId,
+        project_id,
+      );
+
+      // Store all the scan results in the database
+      await storeScanResults(project_id, scanId, scanResults);
+
+      // Log completion
+      console.log(
+        `Scan completed for project ${project_id}, scan ${scanId}, processed ${scanResults.length} pages`,
+      );
+    } catch (error) {
+      // Mark scan as failed if any error occurs
+      console.error(`Error in scan process for scan ${scanId}:`, error);
+
+      await supabase
+        .from("scans")
+        .update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", scanId);
+    }
   } catch (error) {
     console.error("Error in scan endpoint:", error);
+
     return res.status(500).json({
       status: "error",
       message:
@@ -156,22 +154,5 @@ router.post("/scan", async (req: Request, res: Response) => {
     });
   }
 });
-
-// Helper function to count HTTP statuses
-function countHttpStatuses(pages: any[]) {
-  const counts: Record<string, number> = {};
-  pages.forEach((page) => {
-    const status = page.http_status.toString();
-    counts[status] = (counts[status] || 0) + 1;
-  });
-  return counts;
-}
-
-// Helper function to calculate average for a property
-function calculateAverage(pages: any[], property: string) {
-  if (pages.length === 0) return 0;
-  const sum = pages.reduce((total, page) => total + (page[property] || 0), 0);
-  return Math.round(sum / pages.length);
-}
 
 export default router;

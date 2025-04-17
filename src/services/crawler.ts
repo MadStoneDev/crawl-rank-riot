@@ -1,4 +1,5 @@
 ﻿import { scanWebsite } from "./scan";
+import { createClient } from "@supabase/supabase-js";
 
 // Import the normalizeUrl function from scanWebsite or define it here
 function normalizeUrl(url: string): string {
@@ -35,8 +36,10 @@ interface CrawlOptions {
 }
 
 export async function crawlWebsite(
-  seedUrl: string,
+  url: string,
   options: CrawlOptions = {},
+  scanId?: string, // Add scanId as optional parameter
+  projectId?: string, // Add projectId as optional parameter
 ): Promise<any[]> {
   const {
     maxDepth = 10,
@@ -54,8 +57,42 @@ export async function crawlWebsite(
     ],
   } = options;
 
+  // Set up Supabase client if scanId is provided
+  let supabase: any;
+  if (scanId && projectId) {
+    const supabaseUrl = process.env.SUPABASE_URL || "";
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+    if (supabaseUrl && supabaseKey) {
+      supabase = createClient(supabaseUrl, supabaseKey);
+    }
+  }
+
+  // Progress update function
+  const updateScanProgress = async (
+    pagesScanned: number,
+    linksScanned: number,
+    issuesFound: number = 0,
+  ) => {
+    if (supabase && scanId) {
+      try {
+        await supabase
+          .from("scans")
+          .update({
+            pages_scanned: pagesScanned,
+            links_scanned: linksScanned,
+            issues_found: issuesFound,
+            last_progress_update: new Date().toISOString(),
+          })
+          .eq("id", scanId);
+      } catch (error) {
+        console.error("Error updating scan progress:", error);
+      }
+    }
+  };
+
   // Normalize seed URL
-  let normalizedSeedUrl = seedUrl;
+  let normalizedSeedUrl = url;
   if (
     !normalizedSeedUrl.startsWith("http://") &&
     !normalizedSeedUrl.startsWith("https://")
@@ -75,6 +112,10 @@ export async function crawlWebsite(
   const urlsVisited = new Set<string>(); // Track visited URLs
   const queue: { url: string; depth: number }[] = []; // URL queue with depth
 
+  // Track link counts for progress updates
+  let totalInternalLinks = 0;
+  let totalExternalLinks = 0;
+
   // Add seed URL to queue
   queue.push({ url: normalizedSeedUrl, depth: 0 });
   urlsQueued.add(normalizedSeedUrl);
@@ -84,6 +125,10 @@ export async function crawlWebsite(
   const timeoutPromise = new Promise<any[]>((resolve) => {
     setTimeout(() => resolve(pagesScanned), timeout);
   });
+
+  // Track last update time to avoid flooding the database
+  let lastUpdateTime = 0;
+  const MIN_UPDATE_INTERVAL = 2000; // Minimum 2 seconds between updates
 
   // Create the crawling promise
   const crawlPromise = new Promise<any[]>(async (resolve) => {
@@ -100,6 +145,14 @@ export async function crawlWebsite(
 
         // If all crawlers are inactive, resolve the promise
         if (!activeCrawls.some(Boolean)) {
+          // Final progress update
+          if (supabase && scanId) {
+            await updateScanProgress(
+              pagesScanned.length,
+              totalInternalLinks + totalExternalLinks,
+            );
+          }
+
           resolve(pagesScanned);
         }
         return;
@@ -130,6 +183,24 @@ export async function crawlWebsite(
 
         // Add to results
         pagesScanned.push(result);
+
+        // Update link counts
+        totalInternalLinks += result.internal_links.length;
+        totalExternalLinks += result.external_links.length;
+
+        // Update progress if enough time has passed since last update
+        const currentTime = Date.now();
+        if (
+          supabase &&
+          scanId &&
+          currentTime - lastUpdateTime > MIN_UPDATE_INTERVAL
+        ) {
+          await updateScanProgress(
+            pagesScanned.length,
+            totalInternalLinks + totalExternalLinks,
+          );
+          lastUpdateTime = currentTime;
+        }
 
         // Process internal links
         if (depth < maxDepth) {
@@ -174,8 +245,3 @@ export async function crawlWebsite(
   // Return results, either when crawling completes or timeout is reached
   return Promise.race([crawlPromise, timeoutPromise]);
 }
-
-// Example usage:
-// crawlWebsite("example.com", { maxDepth: 3, maxPages: 100 })
-//   .then(results => console.log(`Crawled ${results.length} pages`))
-//   .catch(error => console.error("Crawl failed:", error));
