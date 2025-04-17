@@ -3,8 +3,13 @@ import { QueueItem } from "../types";
 
 // Use dynamic import for p-queue
 const importPQueue = async () => {
-  const module = await import("p-queue");
-  return module.default;
+  try {
+    const module = await import("p-queue");
+    return module.default;
+  } catch (error) {
+    logger.error(`Error importing p-queue: ${error}`);
+    throw error;
+  }
 };
 
 class CrawlQueue {
@@ -42,10 +47,14 @@ class CrawlQueue {
 
   // Make sure queue is initialized before using it
   private async ensureInitialized(): Promise<void> {
-    if (!this.initialized) {
+    if (!this.initialized && this.initPromise) {
       logger.debug("Waiting for queue initialization...");
       await this.initPromise;
       logger.debug("Queue initialization complete");
+    }
+
+    if (!this.queue) {
+      throw new Error("Queue failed to initialize properly");
     }
   }
 
@@ -119,12 +128,14 @@ class CrawlQueue {
 
   // Get queue size
   get size(): number {
-    return this.queue?.size || 0;
+    if (!this.queue) return 0;
+    return this.queue.size || 0;
   }
 
   // Get pending count
   get pending(): number {
-    return this.queue?.pending || 0;
+    if (!this.queue) return 0;
+    return this.queue.pending || 0;
   }
 
   // Check if a URL has been seen
@@ -134,29 +145,41 @@ class CrawlQueue {
 
   // Clear queue and tracking sets
   async clear(): Promise<void> {
-    await this.ensureInitialized();
+    try {
+      await this.ensureInitialized();
 
-    if (this.queue) {
+      logger.debug("Clearing queue and tracking sets");
       this.queue.clear();
+      this.urlsInQueue.clear();
+      this.urlsSeen.clear();
+      logger.debug("Queue and tracking sets cleared successfully");
+    } catch (error) {
+      logger.error(`Error clearing queue: ${error}`);
+      // Initialize empty sets if the queue isn't available
+      this.urlsInQueue = new Set();
+      this.urlsSeen = new Set();
     }
-
-    this.urlsInQueue.clear();
-    this.urlsSeen.clear();
   }
 
   // Pause queue
   async pause(): Promise<void> {
-    await this.ensureInitialized();
-    if (this.queue) {
+    try {
+      await this.ensureInitialized();
       this.queue.pause();
+      logger.debug("Queue paused");
+    } catch (error) {
+      logger.error(`Error pausing queue: ${error}`);
     }
   }
 
   // Resume queue
   async resume(): Promise<void> {
-    await this.ensureInitialized();
-    if (this.queue) {
+    try {
+      await this.ensureInitialized();
       this.queue.start();
+      logger.debug("Queue resumed");
+    } catch (error) {
+      logger.error(`Error resuming queue: ${error}`);
     }
   }
 }
