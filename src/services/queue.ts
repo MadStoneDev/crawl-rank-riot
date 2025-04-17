@@ -1,62 +1,22 @@
 import logger from "../utils/logger";
 import { QueueItem } from "../types";
 
-// Use dynamic import for p-queue with proper error handling
-const importPQueue = async () => {
-  try {
-    // Dynamic import (ESM compatible approach)
-    const module = await import("p-queue");
-    return module.default;
-  } catch (error) {
-    logger.error(`Error importing p-queue: ${error}`);
-    throw error;
-  }
-};
-
+/**
+ * A simple queue implementation that doesn't rely on external packages
+ * This avoids the ESM compatibility issues with p-queue
+ */
 class CrawlQueue {
-  private queue: any = null;
-  private initialized: boolean = false;
+  private _size: number = 0;
+  private _pending: number = 0;
+  private concurrency: number = 3;
+  private running: number = 0;
+  private queue: Array<{ item: QueueItem; executor: Function }> = [];
   private urlsInQueue: Set<string> = new Set();
   private urlsSeen: Set<string> = new Set();
-  private initPromise: Promise<void> | null = null;
 
   constructor(concurrency: number = 3) {
-    // Start initialization immediately but don't wait for it
-    this.initPromise = this.initializeQueue(concurrency);
-  }
-
-  private async initializeQueue(concurrency: number): Promise<void> {
-    try {
-      // Import PQueue dynamically to handle ESM module
-      const PQueueModule = await importPQueue();
-
-      // Create a new queue instance with the specified concurrency
-      this.queue = new PQueueModule({ concurrency });
-
-      // Set up event listeners
-      this.queue.on("idle", () => {
-        logger.debug("Queue is idle");
-      });
-
-      this.initialized = true;
-      logger.debug("Queue initialized successfully");
-    } catch (error) {
-      logger.error(`Failed to initialize queue: ${error}`);
-      throw error;
-    }
-  }
-
-  // Make sure queue is initialized before using it
-  private async ensureInitialized(): Promise<void> {
-    if (!this.initialized && this.initPromise) {
-      logger.debug("Waiting for queue initialization...");
-      await this.initPromise;
-      logger.debug("Queue initialization complete");
-    }
-
-    if (!this.queue) {
-      throw new Error("Queue failed to initialize properly");
-    }
+    this.concurrency = concurrency;
+    logger.debug(`Queue initialized with concurrency ${concurrency}`);
   }
 
   // Add a URL to the queue
@@ -65,8 +25,6 @@ class CrawlQueue {
     executor: (item: QueueItem) => Promise<void>,
   ): Promise<void> {
     try {
-      await this.ensureInitialized();
-
       const normalizedUrl = this.normalizeUrl(item.url);
 
       if (
@@ -79,14 +37,16 @@ class CrawlQueue {
       this.urlsInQueue.add(normalizedUrl);
       this.urlsSeen.add(normalizedUrl);
 
-      const priority = item.priority || 0;
-      await this.queue.add(() => this.executeTask(item, executor), {
-        priority: -priority,
-      });
+      // Add to internal queue
+      this.queue.push({ item, executor });
+      this._size++;
+
+      // Process queue immediately
+      this.processQueue();
     } catch (error) {
       logger.error(`Error adding item to queue: ${error}`);
-      // Directly execute the task if queue fails
       try {
+        // Directly execute if queue fails
         await executor(item);
       } catch (execError) {
         logger.error(`Error executing task directly: ${execError}`);
@@ -94,24 +54,40 @@ class CrawlQueue {
     }
   }
 
-  private async executeTask(
-    item: QueueItem,
-    executor: (item: QueueItem) => Promise<void>,
-  ): Promise<void> {
-    const normalizedUrl = this.normalizeUrl(item.url);
+  private async processQueue(): Promise<void> {
+    // Process as many items as we can according to concurrency limit
+    while (this.running < this.concurrency && this.queue.length > 0) {
+      const next = this.queue.shift();
+      if (!next) break;
 
-    try {
-      // Execute the task
-      await executor(item);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.error(`Error processing URL ${item.url}: ${error.message}`);
-      } else {
-        logger.error(`Unknown error processing URL ${item.url}`);
+      this.running++;
+      this._size--;
+      this._pending++;
+
+      const { item, executor } = next;
+      const normalizedUrl = this.normalizeUrl(item.url);
+
+      try {
+        // Execute the task
+        await executor(item);
+      } catch (error) {
+        if (error instanceof Error) {
+          logger.error(`Error processing URL ${item.url}: ${error.message}`);
+        } else {
+          logger.error(`Unknown error processing URL ${item.url}`);
+        }
+      } finally {
+        // Remove from tracking and process next
+        this.urlsInQueue.delete(normalizedUrl);
+        this.running--;
+        this._pending--;
+        this.processQueue();
       }
-    } finally {
-      // Remove from in-progress tracking
-      this.urlsInQueue.delete(normalizedUrl);
+    }
+
+    // If all items are processed, emit an "idle" event
+    if (this.running === 0 && this.queue.length === 0) {
+      logger.debug("Queue is idle");
     }
   }
 
@@ -139,14 +115,12 @@ class CrawlQueue {
 
   // Get queue size
   get size(): number {
-    if (!this.queue) return 0;
-    return this.queue.size || 0;
+    return this._size;
   }
 
   // Get pending count
   get pending(): number {
-    if (!this.queue) return 0;
-    return this.queue.pending || 0;
+    return this._pending;
   }
 
   // Check if a URL has been seen
@@ -157,63 +131,34 @@ class CrawlQueue {
   // Clear queue and tracking sets
   async clear(): Promise<void> {
     try {
-      if (!this.initialized) {
-        // If not initialized, just create new sets
-        this.urlsInQueue = new Set();
-        this.urlsSeen = new Set();
-        return;
-      }
-
-      await this.ensureInitialized();
-
       logger.debug("Clearing queue and tracking sets");
-      if (this.queue && typeof this.queue.clear === "function") {
-        this.queue.clear();
-      } else {
-        logger.warn("Queue clear method not available, creating new queue");
-        const concurrency = 3; // Default concurrency
-        this.initPromise = this.initializeQueue(concurrency);
-      }
-
+      this.queue = [];
+      this._size = 0;
       this.urlsInQueue.clear();
       this.urlsSeen.clear();
       logger.debug("Queue and tracking sets cleared successfully");
     } catch (error) {
       logger.error(`Error clearing queue: ${error}`);
-      // Initialize empty sets if the queue isn't available
+      // Initialize empty arrays/sets if clearing fails
+      this.queue = [];
+      this._size = 0;
       this.urlsInQueue = new Set();
       this.urlsSeen = new Set();
     }
   }
 
-  // Pause queue
+  // Pause queue (implementation is a no-op for simplicity)
   async pause(): Promise<void> {
-    try {
-      if (!this.initialized || !this.queue) return;
-
-      await this.ensureInitialized();
-      if (typeof this.queue.pause === "function") {
-        this.queue.pause();
-        logger.debug("Queue paused");
-      }
-    } catch (error) {
-      logger.error(`Error pausing queue: ${error}`);
-    }
+    logger.debug("Queue pause requested (not implemented in simplified queue)");
   }
 
-  // Resume queue
+  // Resume queue (implementation is a no-op for simplicity)
   async resume(): Promise<void> {
-    try {
-      if (!this.initialized || !this.queue) return;
-
-      await this.ensureInitialized();
-      if (typeof this.queue.start === "function") {
-        this.queue.start();
-        logger.debug("Queue resumed");
-      }
-    } catch (error) {
-      logger.error(`Error resuming queue: ${error}`);
-    }
+    logger.debug(
+      "Queue resume requested (not implemented in simplified queue)",
+    );
+    // Just process the queue again
+    this.processQueue();
   }
 }
 

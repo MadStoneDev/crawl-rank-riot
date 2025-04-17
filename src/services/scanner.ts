@@ -53,7 +53,10 @@ async function updateQueuePositions(): Promise<void> {
 /**
  * Queue a new scan for a project
  */
-export async function queueScan(projectId: string): Promise<Scan> {
+export async function queueScan(
+  projectId: string,
+  notificationEmail?: string,
+): Promise<Scan> {
   try {
     // Get the project
     const { data: project, error: projectError } = await supabase
@@ -100,6 +103,7 @@ export async function queueScan(projectId: string): Promise<Scan> {
       pages_scanned: 0,
       links_scanned: 0,
       issues_found: 0,
+      notification_email: notificationEmail || project.notification_email,
     };
 
     const { data: scan, error: insertError } = await supabase
