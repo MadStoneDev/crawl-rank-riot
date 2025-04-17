@@ -22,8 +22,18 @@ router.post("/scan", async (req: Request, res: Response) => {
       });
     }
 
-    // Call the scan service
-    const scanResult = await scanWebsite(url);
+    // Log the scan request
+    console.log(`Scan request received for URL: ${url}, Email: ${email}`);
+
+    // Set a timeout to prevent scans from hanging indefinitely
+    const scanTimeout = 30000; // 30 seconds
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Scan timeout exceeded")), scanTimeout);
+    });
+
+    // Call the scan service with a timeout
+    const scanPromise = scanWebsite(url);
+    const scanResult = await Promise.race([scanPromise, timeoutPromise]);
 
     // Return the scan results
     return res.json({
@@ -32,12 +42,7 @@ router.post("/scan", async (req: Request, res: Response) => {
       data: {
         url,
         email,
-        wordCount: scanResult.words.length,
-        words: scanResult.words,
-        imageCount: scanResult.images.length,
-        images: scanResult.images,
-        linkCount: scanResult.links.length,
-        links: scanResult.links,
+        scan_results: scanResult,
       },
     });
   } catch (error) {
