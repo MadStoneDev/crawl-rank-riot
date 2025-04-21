@@ -146,7 +146,6 @@ async function processScanInBackground(
 ): Promise<void> {
   try {
     console.log(`Starting crawl for ${url} with options:`, options);
-
     // Run the crawler
     const scanResults = await crawlWebsite(
       url,

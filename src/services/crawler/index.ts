@@ -34,6 +34,7 @@ export async function crawlWebsite(
   // Initialize a crawler with the given options
   const crawler = new Crawler({ scanId, projectId });
 
+  console.log("00. Pre crawler");
   // Execute the crawl
   return crawler.crawlWebsite(url, options);
 }
