@@ -1,6 +1,5 @@
 import { getSupabaseClient } from "./client";
 import { ScanResult } from "../../types/common";
-import { AppError, ErrorCode } from "../../utils/error";
 
 /**
  * Main function to store scan results in the database
@@ -191,7 +190,7 @@ async function createScanSnapshot(
   try {
     const supabase = getSupabaseClient();
 
-    const { error } = await supabase.from("scan_snapshots").insert({
+    const { error } = await (supabase.from("scan_snapshots") as any).insert({
       scan_id: scanId,
       snapshot_data: scanResults, // Store the entire scan results array
     });
