@@ -27,7 +27,7 @@ export async function storeScanResults(
 
     // 1. Store all pages first
     for (const page of scanResults) {
-      const pageId = await storePageData(projectId, page);
+      const pageId = await storePageData(projectId, page, scanResults);
       if (pageId) {
         urlToPageId[page.url] = pageId;
       }
@@ -103,14 +103,30 @@ export async function storeScanResults(
  * Store page data in the pages table
  * @param projectId Project ID
  * @param page Page data to store
+ * @param scanResults
  * @returns Page ID if successful, null otherwise
  */
 async function storePageData(
   projectId: string,
   page: ScanResult,
+  scanResults: ScanResult[],
 ): Promise<string | null> {
   try {
     const supabase = getSupabaseClient();
+
+    // If this is the first page in the scan, flush existing pages
+    if (page.url === scanResults[0].url) {
+      const { error: deleteError } = await supabase
+        .from("pages")
+        .delete()
+        .eq("project_id", projectId);
+      if (deleteError) {
+        console.error(
+          `[DEBUG] Error deleting existing pages for project ${projectId}:`,
+          deleteError,
+        );
+      }
+    }
 
     // First, upsert the data
     const { error } = await supabase.from("pages").upsert(
