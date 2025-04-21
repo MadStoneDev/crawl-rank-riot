@@ -71,9 +71,11 @@ export class Crawler {
     url: string,
     options: CrawlOptions = {},
   ): Promise<ScanResult[]> {
+    console.log(`[CRAWLER] Crawl Initiated - URL: ${url}`);
+    console.log(`[CRAWLER] Full Options: ${JSON.stringify(options, null, 2)}`);
+
     try {
       console.log("01. Start of crawlWebsite - BEFORE ANY PROCESSING");
-      console.log("02. About to destructure options");
 
       // Normalize options with defaults
       const {
@@ -101,9 +103,8 @@ export class Crawler {
         respectRobotsTxt = true,
       } = options;
 
-      console.log("03. Options destructured successfully");
+      console.log("02. Options destructured successfully");
 
-      console.log(`04. Normalizing seed URL: ${url}`);
       let normalizedSeedUrl = url;
       if (
         !normalizedSeedUrl.startsWith("http://") &&
@@ -112,7 +113,7 @@ export class Crawler {
         normalizedSeedUrl = "https://" + normalizedSeedUrl;
       }
 
-      console.log(`05. Normalized seed URL: ${normalizedSeedUrl}`);
+      console.log(`03. Normalized seed URL: ${normalizedSeedUrl}`);
 
       const urlProcessor = new UrlProcessor(normalizedSeedUrl);
       normalizedSeedUrl = urlProcessor.normalize(normalizedSeedUrl);
@@ -146,8 +147,6 @@ export class Crawler {
       // CHECK SITEMAP
       // CHECK SITEMAP
       const timestamp = new Date().toISOString();
-
-      console.log("06. Before sitemap check block");
 
       try {
         console.log(
@@ -243,6 +242,8 @@ export class Crawler {
       // Start the crawl process
       const startTime = Date.now();
 
+      console.log("04. Before creating promises");
+
       // Create timeout promise
       const timeoutPromise = new Promise<ScanResult[]>((resolve) => {
         setTimeout(() => resolve(stateManager.getPagesScanned()), timeout);
@@ -270,8 +271,13 @@ export class Crawler {
         },
       );
 
-      console.log("08. Before returning final result");
-      return Promise.race([crawlPromise, timeoutPromise]);
+      console.log("07. Promises created, about to race");
+
+      const result = await Promise.race([crawlPromise, timeoutPromise]);
+
+      console.log(`08. Crawl completed, results count: ${result.length}`);
+
+      return result;
     } catch (error: any) {
       console.error("CRITICAL ERROR in crawlWebsite:", {
         message: error.message,
