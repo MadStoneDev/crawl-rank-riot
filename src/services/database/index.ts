@@ -242,42 +242,70 @@ async function storePageLinks(
 ): Promise<void> {
   const supabase = getSupabaseClient();
 
+  // Filter out duplicate links within the batch
+  const uniqueLinks = Array.from(
+    new Map(links.map((link) => [link.url, link])).values(),
+  );
+
   // Process in batches to avoid hitting rate limits
   const batchSize = 50;
 
-  for (let i = 0; i < links.length; i += batchSize) {
-    const batch = links.slice(i, i + batchSize);
+  for (let i = 0; i < uniqueLinks.length; i += batchSize) {
+    const batch = uniqueLinks.slice(i, i + batchSize);
 
-    const linksToInsert = batch.map((link) => {
-      // For internal links, we might have a destination page ID
-      const destinationPageId =
-        linkType === "internal" ? urlToPageId[link.url] : null;
+    const linksToInsert = batch
+      .map((link) => {
+        // Sanitize URL
+        const sanitizedUrl = link.url.trim();
 
-      return {
-        project_id: projectId,
-        source_page_id: sourcePageId,
-        destination_url: link.url,
-        destination_page_id: destinationPageId,
-        anchor_text: link.anchor_text,
-        link_type: linkType,
-        is_followed: !link.rel_attributes.includes("nofollow"),
-        rel_attributes: link.rel_attributes,
-      };
-    });
+        // For internal links, we might have a destination page ID
+        const destinationPageId =
+          linkType === "internal" ? urlToPageId[sanitizedUrl] : null;
+
+        return {
+          project_id: projectId,
+          source_page_id: sourcePageId,
+          destination_url: sanitizedUrl,
+          destination_page_id: destinationPageId,
+          anchor_text: link.anchor_text?.trim() || "",
+          link_type: linkType,
+          is_followed: !link.rel_attributes?.includes("nofollow"),
+          rel_attributes: link.rel_attributes || [],
+        };
+      })
+      .filter((link) => link.destination_url); // Remove any links with empty URLs
 
     if (linksToInsert.length > 0) {
       try {
-        const { error } = await supabase
-          .from("page_links")
-          .upsert(linksToInsert, {
-            onConflict: "source_page_id, destination_url",
-          });
+        const { error, data } = await (
+          supabase.from("page_links") as any
+        ).upsert(linksToInsert, {
+          onConflict: "source_page_id, destination_url",
+          returning: "minimal", // Reduce payload size
+        });
 
         if (error) {
-          console.error(`Error storing ${linkType} links batch:`, error);
+          console.error(`Error storing ${linkType} links batch:`, {
+            error,
+            batchSize: linksToInsert.length,
+            sourcePageId,
+            projectId,
+          });
+        } else {
+          console.log(
+            `Successfully stored ${linksToInsert.length} ${linkType} links`,
+          );
         }
       } catch (error) {
-        console.error(`Error in storePageLinks for ${linkType} batch:`, error);
+        console.error(
+          `Unexpected error in storePageLinks for ${linkType} batch:`,
+          {
+            error,
+            batchSize: linksToInsert.length,
+            sourcePageId,
+            projectId,
+          },
+        );
       }
     }
   }
