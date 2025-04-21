@@ -1,6 +1,8 @@
 import { BaseScanner, ScannerOptions } from "./base";
 import { ScanResult } from "../../../types/common";
 import { UrlProcessor } from "../utils/url";
+import CrawlerRequestUtils from "../utils/request";
+
 import {
   extractVisibleText,
   extractKeywords,
@@ -16,7 +18,10 @@ export class HttpScanner extends BaseScanner {
    * @param options Scanner options
    */
   constructor(options: ScannerOptions = {}) {
-    super(options);
+    super({
+      ...options,
+      userAgent: options.userAgent || CrawlerRequestUtils.getRotatedUserAgent(),
+    });
   }
 
   /**
@@ -28,43 +33,29 @@ export class HttpScanner extends BaseScanner {
   async scan(url: string, depth: number): Promise<ScanResult> {
     const startTime = Date.now();
     const result = this.createBaseScanResult(url, depth);
-    result.scan_method = "standard";
+    result.scan_method = "enhanced-http";
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
       let firstByteTime = 0;
       let responseReceived = false;
 
       // Perform the fetch request
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent": this.userAgent,
+      const response = await CrawlerRequestUtils.enhancedFetch(url, {
+        userAgent: this.userAgent,
+        additionalHeaders: {
+          "X-Scan-Depth": depth.toString(),
+          "X-Project-Url": url || "",
         },
-        redirect: "follow",
-        signal: controller.signal,
       });
-
-      clearTimeout(timeoutId);
-
-      // Calculate first byte time when response is received
-      if (!responseReceived) {
-        firstByteTime = Date.now() - startTime;
-        responseReceived = true;
-      }
 
       // Record basic info
       result.status = response.status;
       result.content_type = response.headers.get("content-type") || "";
-      result.first_byte_time_ms = firstByteTime;
-
-      // Check for redirects
-      if (response.redirected) {
-        result.redirected_from = url;
-        result.url = new UrlProcessor(url).normalize(response.url);
-        result.is_redirect = true;
-      }
+      result.redirected_from = response.url !== url ? url : undefined;
+      result.url = response.url;
+      result.is_redirect = response.url !== url;
 
       // Only process HTML content
       if (!result.content_type?.includes("text/html")) {

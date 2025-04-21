@@ -127,7 +127,7 @@ export interface ScanResult {
   }>;
 
   // Crawler metadata
-  scan_method?: "standard" | "headless";
+  scan_method?: "standard" | "headless" | "enhanced-http";
   scanned_at: string;
   errors?: string[];
   warnings?: string[];

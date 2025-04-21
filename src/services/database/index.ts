@@ -467,6 +467,13 @@ async function updateScanRecord(
   try {
     const supabase = getSupabaseClient();
 
+    console.log(`[DEBUG] Updating scan record: 
+      ScanID: ${scanId}
+      Total Pages: ${scanResults.length}
+      Issues Count: ${issuesCount}
+      Timestamp: ${new Date().toISOString()}
+    `);
+
     // Calculate total links
     const totalInternalLinks = scanResults.reduce(
       (sum, page) => sum + page.internal_links.length,
@@ -490,7 +497,7 @@ async function updateScanRecord(
     };
 
     // Update the scan record
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("scans")
       .update({
         status: "completed",
@@ -500,10 +507,13 @@ async function updateScanRecord(
         issues_found: issuesCount,
         summary_stats: summaryStats,
       })
-      .eq("id", scanId);
+      .eq("id", scanId)
+      .select();
 
     if (error) {
       console.error(`Error updating scan record ${scanId}:`, error);
+    } else {
+      console.log(`[DEBUG] Scan record updated successfully:`, data);
     }
   } catch (error) {
     console.error(`Error in updateScanRecord for ${scanId}:`, error);
