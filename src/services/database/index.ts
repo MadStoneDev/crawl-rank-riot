@@ -1,47 +1,26 @@
-﻿import dotenv from "dotenv";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
-
-// Load environment variables
-dotenv.config();
-
-// Initialize Supabase client
-const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error(
-    "Error: Missing required environment variables for Supabase connection",
-  );
-}
-
-let supabase: SupabaseClient<any, "public", any> | null = null;
-
-try {
-  if (supabaseUrl && supabaseKey) {
-    supabase = createClient(supabaseUrl, supabaseKey);
-    console.log("Supabase client initialized successfully");
-  }
-} catch (error) {
-  console.error("Error initializing Supabase client:", error);
-}
+import { getSupabaseClient } from "./client";
+import { ScanResult } from "../../types/common";
+import { AppError, ErrorCode } from "../../utils/error";
 
 /**
  * Main function to store scan results in the database
+ * @param projectId Project ID
+ * @param scanId Scan ID
+ * @param scanResults Scan results to store
+ * @returns Operation success status
  */
 export async function storeScanResults(
   projectId: string,
   scanId: string,
-  scanResults: any[],
-) {
+  scanResults: ScanResult[],
+): Promise<{ success: boolean }> {
   try {
     console.log(
       `Storing scan results for project ${projectId}, scan ${scanId}`,
     );
     console.log(`Processing ${scanResults.length} pages...`);
 
-    if (!supabase) {
-      throw new Error("Supabase client not initialized");
-    }
+    const supabase = getSupabaseClient();
 
     // Map to track URL to page ID
     const urlToPageId: Record<string, string> = {};
@@ -103,19 +82,27 @@ export async function storeScanResults(
     return { success: true };
   } catch (error) {
     console.error("Error storing scan results:", error);
-    throw error;
+    throw new AppError(
+      `Failed to store scan results: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      ErrorCode.DATABASE_QUERY_ERROR,
+    );
   }
 }
 
 /**
  * Store page data in the pages table
+ * @param projectId Project ID
+ * @param page Page data to store
+ * @returns Page ID if successful, null otherwise
  */
 async function storePageData(
   projectId: string,
-  page: any,
+  page: ScanResult,
 ): Promise<string | null> {
   try {
-    if (!supabase) return null;
+    const supabase = getSupabaseClient();
 
     // First, upsert the data
     const { error } = await supabase.from("pages").upsert(
@@ -135,7 +122,7 @@ async function storePageData(
         open_graph: page.open_graph,
         twitter_card: page.twitter_card,
         canonical_url: page.canonical_url,
-        http_status: page.http_status,
+        http_status: page.status,
         is_indexable: page.is_indexable,
         has_robots_noindex: page.has_robots_noindex,
         has_robots_nofollow: page.has_robots_nofollow,
@@ -185,10 +172,15 @@ async function storePageData(
 
 /**
  * Create a snapshot of the entire scan in scan_snapshots
+ * @param scanId Scan ID
+ * @param scanResults Scan results to snapshot
  */
-async function createScanSnapshot(scanId: string, scanResults: any[]) {
+async function createScanSnapshot(
+  scanId: string,
+  scanResults: ScanResult[],
+): Promise<void> {
   try {
-    if (!supabase) return;
+    const supabase = getSupabaseClient();
 
     const { error } = await supabase.from("scan_snapshots").insert({
       scan_id: scanId,
@@ -207,15 +199,24 @@ async function createScanSnapshot(scanId: string, scanResults: any[]) {
 
 /**
  * Store page links in the page_links table
+ * @param projectId Project ID
+ * @param sourcePageId Source page ID
+ * @param links Links to store
+ * @param urlToPageId Map of URLs to page IDs
+ * @param linkType Link type (internal or external)
  */
 async function storePageLinks(
   projectId: string,
   sourcePageId: string,
-  links: Array<{ url: string; anchor_text: string; rel_attributes: string[] }>,
+  links: Array<{
+    url: string;
+    anchor_text: string;
+    rel_attributes: string[];
+  }>,
   urlToPageId: Record<string, string>,
   linkType: "internal" | "external",
-) {
-  if (!supabase) return;
+): Promise<void> {
+  const supabase = getSupabaseClient();
 
   // Process in batches to avoid hitting rate limits
   const batchSize = 50;
@@ -260,15 +261,19 @@ async function storePageLinks(
 
 /**
  * Detect and store issues found on the page
+ * @param projectId Project ID
+ * @param scanId Scan ID
+ * @param pageId Page ID
+ * @param page Page data
+ * @returns Number of issues found
  */
 async function detectAndStoreIssues(
   projectId: string,
   scanId: string,
   pageId: string,
-  page: any,
-) {
-  if (!supabase) return 0;
-
+  page: ScanResult,
+): Promise<number> {
+  const supabase = getSupabaseClient();
   const issues = [];
 
   // Check for missing title
@@ -397,8 +402,8 @@ async function detectAndStoreIssues(
   }
 
   // Check for missing images alt text
-  const imagesWithoutAlt = page.images?.filter(
-    (img: { alt: string }) => !img.alt || img.alt.trim() === "",
+  const imagesWithoutAlt = page.images.filter(
+    (img) => !img.alt || img.alt.trim() === "",
   );
   if (imagesWithoutAlt && imagesWithoutAlt.length > 0) {
     issues.push({
@@ -442,14 +447,17 @@ async function detectAndStoreIssues(
 
 /**
  * Update the scan record with completion details
+ * @param scanId Scan ID
+ * @param scanResults Scan results
+ * @param issuesCount Number of issues found
  */
 async function updateScanRecord(
   scanId: string,
-  scanResults: any[],
+  scanResults: ScanResult[],
   issuesCount: number = 0,
-) {
+): Promise<void> {
   try {
-    if (!supabase) return;
+    const supabase = getSupabaseClient();
 
     // Calculate total links
     const totalInternalLinks = scanResults.reduce(
@@ -494,19 +502,41 @@ async function updateScanRecord(
   }
 }
 
-// Helper function to count HTTP statuses
-function countHttpStatuses(pages: any[]) {
+/**
+ * Count HTTP statuses from scan results
+ * @param pages Scan results
+ * @returns Map of status codes to counts
+ */
+function countHttpStatuses(pages: ScanResult[]): Record<string, number> {
   const counts: Record<string, number> = {};
+
   pages.forEach((page) => {
-    const status = page.http_status.toString();
+    const status = page.status.toString();
     counts[status] = (counts[status] || 0) + 1;
   });
+
   return counts;
 }
 
-// Helper function to calculate average for a property
-function calculateAverage(pages: any[], property: string) {
+/**
+ * Calculate average for a property across scan results
+ * @param pages Scan results
+ * @param property Property to average
+ * @returns Average value
+ */
+function calculateAverage(
+  pages: ScanResult[],
+  property: keyof ScanResult,
+): number {
   if (pages.length === 0) return 0;
-  const sum = pages.reduce((total, page) => total + (page[property] || 0), 0);
-  return Math.round(sum / pages.length);
+
+  const validPages = pages.filter((page) => typeof page[property] === "number");
+  if (validPages.length === 0) return 0;
+
+  const sum = validPages.reduce((total, page) => {
+    const value = page[property];
+    return total + (typeof value === "number" ? value : 0);
+  }, 0);
+
+  return Math.round(sum / validPages.length);
 }
