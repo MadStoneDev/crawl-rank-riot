@@ -109,7 +109,7 @@ router.post(
         maxPages: options?.maxPages || 1000,
         concurrentRequests: options?.concurrentRequests || 5,
         timeout: options?.timeout || 120000, // 2 minutes
-        useHeadlessBrowser: options?.useHeadlessBrowser || true,
+        useHeadlessBrowser: options?.useHeadlessBrowser || false,
         checkSitemaps: options?.checkSitemaps !== false,
       };
 
@@ -121,7 +121,7 @@ router.post(
             scan_id: scanId,
             url,
           },
-          "Scan started successfully",
+          `Scan started successfully`,
         ),
       );
 
@@ -147,11 +147,6 @@ async function processScanInBackground(
   projectId: string,
 ): Promise<void> {
   try {
-    console.error(`[BACKGROUND] Starting crawl for ${url}`);
-    console.error(
-      `[BACKGROUND] Detailed Options: ${JSON.stringify(options, null, 2)}`,
-    );
-
     // Run the crawler
     const scanResults = await crawlWebsite(
       url,
