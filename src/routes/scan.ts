@@ -145,7 +145,11 @@ async function processScanInBackground(
   projectId: string,
 ): Promise<void> {
   try {
-    console.log(`Starting crawl for ${url} with options:`, options);
+    console.error(`[BACKGROUND] Starting crawl for ${url}`);
+    console.error(
+      `[BACKGROUND] Detailed Options: ${JSON.stringify(options, null, 2)}`,
+    );
+
     // Run the crawler
     const scanResults = await crawlWebsite(
       url,

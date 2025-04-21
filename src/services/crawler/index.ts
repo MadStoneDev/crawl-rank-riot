@@ -31,12 +31,27 @@ export async function crawlWebsite(
   scanId?: string,
   projectId?: string,
 ): Promise<ScanResult[]> {
-  // Initialize a crawler with the given options
+  // Use error logging to ensure visibility
+  console.error(
+    `[CRAWLER] Crawl Initiated - URL: ${url}, ScanID: ${scanId}, ProjectID: ${projectId}`,
+  );
+
+  // More detailed logging
+  console.error(`[CRAWLER] Options: ${JSON.stringify(options, null, 2)}`);
+
   const crawler = new Crawler({ scanId, projectId });
 
-  console.log("00. Pre crawler");
-  // Execute the crawl
-  return crawler.crawlWebsite(url, options);
+  try {
+    console.error("00. Pre crawler - EXPLICIT LOG");
+    const results = await crawler.crawlWebsite(url, options);
+    console.error(
+      `[CRAWLER] Crawl Completed - Results Count: ${results.length}`,
+    );
+    return results;
+  } catch (error) {
+    console.error(`[CRAWLER] Crawl Failed`, error);
+    throw error;
+  }
 }
 
 // Export the crawler components

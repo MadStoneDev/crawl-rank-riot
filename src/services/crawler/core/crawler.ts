@@ -72,7 +72,7 @@ export class Crawler {
     options: CrawlOptions = {},
   ): Promise<ScanResult[]> {
     // Normalize options with defaults
-console.log("01. Start of crawlWebsite");
+    console.log("01. Start of crawlWebsite");
     const {
       maxDepth = config.crawler.maxDepth,
       maxPages = config.crawler.maxPages,
@@ -140,7 +140,7 @@ console.log("01. Start of crawlWebsite");
     // CHECK SITEMAP
     const timestamp = new Date().toISOString();
 
-console.log(`02. Just before try block at ${timestamp}`);
+    console.log(`02. Just before try block at ${timestamp}`);
 
     try {
       console.log(
@@ -202,7 +202,7 @@ console.log(`02. Just before try block at ${timestamp}`);
     // CHECK SITEMAP
     // CHECK SITEMAP
 
-console.log("03. After Try block");
+    console.log("03. After Try block");
 
     // Add seed URL to queue
     await queueManager.addToQueue({
