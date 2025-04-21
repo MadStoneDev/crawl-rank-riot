@@ -71,198 +71,216 @@ export class Crawler {
     url: string,
     options: CrawlOptions = {},
   ): Promise<ScanResult[]> {
-    // Normalize options with defaults
-    console.log("01. Start of crawlWebsite");
-    const {
-      maxDepth = config.crawler.maxDepth,
-      maxPages = config.crawler.maxPages,
-      concurrentRequests = config.crawler.concurrentRequests,
-      timeout = config.crawler.defaultTimeout,
-      excludePatterns = [
-        // Common patterns to exclude
-        /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
-        /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
-        /#.*/i, // URLs with hash
-        /\?s=/i, // Search results
-        /\?p=\d+/i, // WordPress pagination
-        /\?(utm_|fbclid|gclid)/i, // Tracking parameters
-      ],
-      useHeadlessBrowser = false,
-      headlessBrowserPaths = [],
-      checkSitemaps = true,
-      useRedisQueue = !!this.redis,
-      perDomainDelay = config.crawler.perDomainDelay,
-      defaultDelay = config.crawler.defaultDelay,
-      userAgent = config.crawler.userAgent,
-      followRedirects = true,
-      respectRobotsTxt = true,
-    } = options;
-
-    // Normalize seed URL
-    let normalizedSeedUrl = url;
-    if (
-      !normalizedSeedUrl.startsWith("http://") &&
-      !normalizedSeedUrl.startsWith("https://")
-    ) {
-      normalizedSeedUrl = "https://" + normalizedSeedUrl;
-    }
-
-    const urlProcessor = new UrlProcessor(normalizedSeedUrl);
-    normalizedSeedUrl = urlProcessor.normalize(normalizedSeedUrl);
-
-    // Extract the domain from seed URL
-    const seedUrlObj = new URL(normalizedSeedUrl);
-    const domain = seedUrlObj.hostname;
-
-    // Setup scanners
-    const httpScanner = new HttpScanner({ userAgent, timeout });
-    const browserScanner = useHeadlessBrowser
-      ? new HeadlessBrowser({ userAgent, timeout })
-      : null;
-
-    // Initialize state manager
-    const stateManager = new CrawlStateManager({
-      scanId: this.scanId,
-      redisClient: useRedisQueue ? this.redis : null,
-      supabase: this.supabase,
-    });
-
-    // Initialize queue manager
-    const queueManager = new QueueManager(normalizedSeedUrl, {
-      scanId: this.scanId,
-      redisClient: useRedisQueue ? this.redis : null,
-      perDomainDelay,
-      defaultDelay,
-    });
-
-    // CHECK SITEMAP
-    // CHECK SITEMAP
-    // CHECK SITEMAP
-    const timestamp = new Date().toISOString();
-
-    console.log(`02. Just before try block at ${timestamp}`);
-
     try {
-      console.log(
-        `[${timestamp}] Directly checking for sitemap at https://${domain}/sitemap.xml`,
-      );
+      console.log("01. Start of crawlWebsite - BEFORE ANY PROCESSING");
+      console.log("02. About to destructure options");
 
-      const response = await fetch(`https://${domain}/sitemap.xml`, {
-        headers: { "User-Agent": userAgent },
+      // Normalize options with defaults
+      const {
+        maxDepth = config.crawler.maxDepth,
+        maxPages = config.crawler.maxPages,
+        concurrentRequests = config.crawler.concurrentRequests,
+        timeout = config.crawler.defaultTimeout,
+        excludePatterns = [
+          // Common patterns to exclude
+          /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
+          /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
+          /#.*/i, // URLs with hash
+          /\?s=/i, // Search results
+          /\?p=\d+/i, // WordPress pagination
+          /\?(utm_|fbclid|gclid)/i, // Tracking parameters
+        ],
+        useHeadlessBrowser = false,
+        headlessBrowserPaths = [],
+        checkSitemaps = true,
+        useRedisQueue = !!this.redis,
+        perDomainDelay = config.crawler.perDomainDelay,
+        defaultDelay = config.crawler.defaultDelay,
+        userAgent = config.crawler.userAgent,
+        followRedirects = true,
+        respectRobotsTxt = true,
+      } = options;
+
+      console.log("03. Options destructured successfully");
+
+      console.log(`04. Normalizing seed URL: ${url}`);
+      let normalizedSeedUrl = url;
+      if (
+        !normalizedSeedUrl.startsWith("http://") &&
+        !normalizedSeedUrl.startsWith("https://")
+      ) {
+        normalizedSeedUrl = "https://" + normalizedSeedUrl;
+      }
+
+      console.log(`05. Normalized seed URL: ${normalizedSeedUrl}`);
+
+      const urlProcessor = new UrlProcessor(normalizedSeedUrl);
+      normalizedSeedUrl = urlProcessor.normalize(normalizedSeedUrl);
+
+      // Extract the domain from seed URL
+      const seedUrlObj = new URL(normalizedSeedUrl);
+      const domain = seedUrlObj.hostname;
+
+      // Setup scanners
+      const httpScanner = new HttpScanner({ userAgent, timeout });
+      const browserScanner = useHeadlessBrowser
+        ? new HeadlessBrowser({ userAgent, timeout })
+        : null;
+
+      // Initialize state manager
+      const stateManager = new CrawlStateManager({
+        scanId: this.scanId,
+        redisClient: useRedisQueue ? this.redis : null,
+        supabase: this.supabase,
       });
 
-      if (response.ok) {
-        const content = await response.text();
-        console.log(
-          `[${timestamp}] Found sitemap with length: ${content.length} bytes`,
-        );
-        console.log(
-          `[${timestamp}] Sitemap content sample: ${content.substring(
-            0,
-            500,
-          )}...`,
-        ); // Print first 500 chars
+      // Initialize queue manager
+      const queueManager = new QueueManager(normalizedSeedUrl, {
+        scanId: this.scanId,
+        redisClient: useRedisQueue ? this.redis : null,
+        perDomainDelay,
+        defaultDelay,
+      });
 
-        // Simple regex to extract URLs from sitemap
-        const urlRegex = /<loc>(.*?)<\/loc>/g;
-        const urls = [];
-        let match;
+      // CHECK SITEMAP
+      // CHECK SITEMAP
+      // CHECK SITEMAP
+      const timestamp = new Date().toISOString();
 
-        while ((match = urlRegex.exec(content)) !== null) {
-          if (match[1]) {
-            urls.push(match[1]);
-          }
-        }
+      console.log("06. Before sitemap check block");
 
+      try {
         console.log(
-          `[${timestamp}] Extracted ${urls.length} URLs from sitemap:`,
-          urls,
+          `[${timestamp}] Directly checking for sitemap at https://${domain}/sitemap.xml`,
         );
 
-        // Add these URLs to queue
-        for (const url of urls) {
+        const response = await fetch(`https://${domain}/sitemap.xml`, {
+          headers: { "User-Agent": userAgent },
+        });
+
+        if (response.ok) {
+          const content = await response.text();
           console.log(
-            `[${timestamp}] DIRECT ADD: URL from sitemap to queue: ${url}`,
+            `[${timestamp}] Found sitemap with length: ${content.length} bytes`,
           );
-          await queueManager.addToQueue({
-            url: urlProcessor.normalize(url),
-            depth: 0,
-            priority: 9,
-          });
+          console.log(
+            `[${timestamp}] Sitemap content sample: ${content.substring(
+              0,
+              500,
+            )}...`,
+          ); // Print first 500 chars
+
+          // Simple regex to extract URLs from sitemap
+          const urlRegex = /<loc>(.*?)<\/loc>/g;
+          const urls = [];
+          let match;
+
+          while ((match = urlRegex.exec(content)) !== null) {
+            if (match[1]) {
+              urls.push(match[1]);
+            }
+          }
+
+          console.log(
+            `[${timestamp}] Extracted ${urls.length} URLs from sitemap:`,
+            urls,
+          );
+
+          // Add these URLs to queue
+          for (const url of urls) {
+            console.log(
+              `[${timestamp}] DIRECT ADD: URL from sitemap to queue: ${url}`,
+            );
+            await queueManager.addToQueue({
+              url: urlProcessor.normalize(url),
+              depth: 0,
+              priority: 9,
+            });
+          }
+        } else {
+          console.log(
+            `[${timestamp}] No sitemap found at standard location, status: ${response.status}`,
+          );
         }
-      } else {
-        console.log(
-          `[${timestamp}] No sitemap found at standard location, status: ${response.status}`,
-        );
+      } catch (error) {
+        console.error(`[${timestamp}] Error checking sitemap directly:`, error);
       }
-    } catch (error) {
-      console.error(`[${timestamp}] Error checking sitemap directly:`, error);
-    }
-    // CHECK SITEMAP
-    // CHECK SITEMAP
-    // CHECK SITEMAP
+      // CHECK SITEMAP
+      // CHECK SITEMAP
+      // CHECK SITEMAP
 
-    console.log("03. After Try block");
+      console.log("07. After sitemap check block");
 
-    // Add seed URL to queue
-    await queueManager.addToQueue({
-      url: normalizedSeedUrl,
-      depth: 0,
-      priority: 10, // High priority for seed URL
-    });
+      // Add seed URL to queue
+      await queueManager.addToQueue({
+        url: normalizedSeedUrl,
+        depth: 0,
+        priority: 10, // High priority for seed URL
+      });
 
-    // Process robots.txt if enabled
-    let robotsData: RobotsData = {
-      sitemaps: [],
-      allowedPaths: [],
-      disallowedPaths: [],
-    };
+      // Process robots.txt if enabled
+      let robotsData: RobotsData = {
+        sitemaps: [],
+        allowedPaths: [],
+        disallowedPaths: [],
+      };
 
-    if (respectRobotsTxt) {
-      const robotsParser = new RobotsParser({ userAgent });
-      robotsData = await robotsParser.parse(domain);
+      if (respectRobotsTxt) {
+        const robotsParser = new RobotsParser({ userAgent });
+        robotsData = await robotsParser.parse(domain);
 
-      // Set crawl delays found in robots.txt
-      if (robotsData.crawlDelay) {
-        queueManager.setCrawlDelay(domain, robotsData.crawlDelay);
+        // Set crawl delays found in robots.txt
+        if (robotsData.crawlDelay) {
+          queueManager.setCrawlDelay(domain, robotsData.crawlDelay);
+        }
       }
+
+      // Process sitemaps if enabled
+      if (checkSitemaps) {
+        await this.processSitemaps(domain, queueManager, robotsData.sitemaps);
+      }
+
+      // Start the crawl process
+      const startTime = Date.now();
+
+      // Create timeout promise
+      const timeoutPromise = new Promise<ScanResult[]>((resolve) => {
+        setTimeout(() => resolve(stateManager.getPagesScanned()), timeout);
+      });
+
+      // Create the crawling promise
+      const crawlPromise = this.executeParallelCrawl(
+        queueManager,
+        stateManager,
+        httpScanner,
+        browserScanner,
+        {
+          maxDepth,
+          maxPages,
+          concurrentRequests,
+          excludePatterns,
+          headlessBrowserPaths,
+          domain,
+          timeout,
+          startTime,
+          robotsData,
+          robotsParser: respectRobotsTxt
+            ? new RobotsParser({ userAgent })
+            : null,
+        },
+      );
+
+      console.log("08. Before returning final result");
+      return Promise.race([crawlPromise, timeoutPromise]);
+    } catch (error: any) {
+      console.error("CRITICAL ERROR in crawlWebsite:", {
+        message: error.message,
+        stack: error.stack,
+        url,
+        options,
+      });
+      throw error;
     }
-
-    // Process sitemaps if enabled
-    if (checkSitemaps) {
-      await this.processSitemaps(domain, queueManager, robotsData.sitemaps);
-    }
-
-    // Start the crawl process
-    const startTime = Date.now();
-
-    // Create timeout promise
-    const timeoutPromise = new Promise<ScanResult[]>((resolve) => {
-      setTimeout(() => resolve(stateManager.getPagesScanned()), timeout);
-    });
-
-    // Create the crawling promise
-    const crawlPromise = this.executeParallelCrawl(
-      queueManager,
-      stateManager,
-      httpScanner,
-      browserScanner,
-      {
-        maxDepth,
-        maxPages,
-        concurrentRequests,
-        excludePatterns,
-        headlessBrowserPaths,
-        domain,
-        timeout,
-        startTime,
-        robotsData,
-        robotsParser: respectRobotsTxt ? new RobotsParser({ userAgent }) : null,
-      },
-    );
-
-    // Return results, either when crawling completes or timeout is reached
-    return Promise.race([crawlPromise, timeoutPromise]);
   }
 
   /**

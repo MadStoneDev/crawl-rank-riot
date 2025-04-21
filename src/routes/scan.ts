@@ -1,13 +1,15 @@
 ﻿import { Router, Request, Response, NextFunction } from "express";
 import {
   createSuccessResponse,
-  createErrorResponse,
   errorHandlerMiddleware,
 } from "../services/api/responses";
+
 import { getSupabaseClient } from "../services/database/client";
-import { AppError, createValidationError, handleError } from "../utils/error";
+
 import { crawlWebsite } from "../services/crawler";
 import { storeScanResults } from "../services/database";
+
+import { AppError, createValidationError, handleError } from "../utils/error";
 
 const router = Router();
 

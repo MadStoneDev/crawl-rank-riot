@@ -31,12 +31,9 @@ export async function crawlWebsite(
   scanId?: string,
   projectId?: string,
 ): Promise<ScanResult[]> {
-  // Use error logging to ensure visibility
   console.error(
     `[CRAWLER] Crawl Initiated - URL: ${url}, ScanID: ${scanId}, ProjectID: ${projectId}`,
   );
-
-  // More detailed logging
   console.error(`[CRAWLER] Options: ${JSON.stringify(options, null, 2)}`);
 
   const crawler = new Crawler({ scanId, projectId });
