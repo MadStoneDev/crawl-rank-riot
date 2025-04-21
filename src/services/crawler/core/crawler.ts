@@ -206,39 +206,90 @@ export class Crawler {
     queueManager: QueueManager,
     robotsSitemaps: string[],
   ): Promise<void> {
+    const timestamp = new Date().toISOString();
+    console.log(
+      `[${timestamp}] Starting sitemap processing for domain: ${domain}`,
+    );
+
     try {
       const sitemapProcessor = new SitemapProcessor();
       const processedSitemaps = new Set<string>();
+      let totalUrlsAdded = 0;
 
       // First process sitemaps from robots.txt
       if (robotsSitemaps.length > 0) {
+        console.log(
+          `[${timestamp}] Found ${robotsSitemaps.length} sitemaps in robots.txt:`,
+          robotsSitemaps,
+        );
+
         for (const sitemapUrl of robotsSitemaps) {
+          console.log(
+            `[${timestamp}] Processing sitemap from robots.txt: ${sitemapUrl}`,
+          );
           processedSitemaps.add(sitemapUrl);
           const urls = await sitemapProcessor.process(sitemapUrl);
 
+          console.log(
+            `[${timestamp}] Found ${urls.length} URLs in sitemap ${sitemapUrl}:`,
+            urls,
+          );
+
           for (const foundUrl of urls) {
+            const normalizedUrl = new UrlProcessor(foundUrl).normalize(
+              foundUrl,
+            );
+            console.log(
+              `[${timestamp}] Adding URL from sitemap to queue: ${normalizedUrl}`,
+            );
+
             await queueManager.addToQueue({
-              url: new UrlProcessor(foundUrl).normalize(foundUrl),
+              url: normalizedUrl,
               depth: 0,
               priority: 8, // Medium-high priority for sitemap URLs
             });
+            totalUrlsAdded++;
           }
         }
+      } else {
+        console.log(`[${timestamp}] No sitemaps found in robots.txt`);
       }
 
       // Then check common sitemap locations
+      console.log(
+        `[${timestamp}] Checking common sitemap locations for ${domain}`,
+      );
       const commonSitemapUrls =
         await sitemapProcessor.processCommonLocations(domain);
 
-      for (const foundUrl of commonSitemapUrls) {
-        await queueManager.addToQueue({
-          url: new UrlProcessor(foundUrl).normalize(foundUrl),
-          depth: 0,
-          priority: 8,
-        });
+      if (commonSitemapUrls.length > 0) {
+        console.log(
+          `[${timestamp}] Found ${commonSitemapUrls.length} URLs from common sitemap locations:`,
+          commonSitemapUrls,
+        );
+
+        for (const foundUrl of commonSitemapUrls) {
+          const normalizedUrl = new UrlProcessor(foundUrl).normalize(foundUrl);
+          console.log(
+            `[${timestamp}] Adding URL from common sitemap location to queue: ${normalizedUrl}`,
+          );
+
+          await queueManager.addToQueue({
+            url: normalizedUrl,
+            depth: 0,
+            priority: 8,
+          });
+          totalUrlsAdded++;
+        }
+      } else {
+        console.log(`[${timestamp}] No URLs found in common sitemap locations`);
       }
+
+      console.log(
+        `[${timestamp}] Sitemap processing complete. Added ${totalUrlsAdded} URLs to the queue`,
+      );
     } catch (error) {
-      console.warn("Error processing sitemaps:", error);
+      console.warn(`[${timestamp}] Error processing sitemaps:`, error);
     }
   }
 

@@ -14,12 +14,13 @@ export async function storeScanResults(
   scanId: string,
   scanResults: ScanResult[],
 ): Promise<{ success: boolean }> {
-  try {
-    console.log(
-      `Storing scan results for project ${projectId}, scan ${scanId}`,
-    );
-    console.log(`Processing ${scanResults.length} pages...`);
+  const timestamp = new Date().toISOString();
+  console.log(
+    `[${timestamp}] Storing scan results for project ${projectId}, scan ${scanId}`,
+  );
+  console.log(`[${timestamp}] Processing ${scanResults.length} pages...`);
 
+  try {
     const supabase = getSupabaseClient();
 
     // Map to track URL to page ID
@@ -34,9 +35,15 @@ export async function storeScanResults(
     }
 
     // 2. Process links (need to have all pages stored first to create proper relationships)
+    console.log(
+      `[${timestamp}] Processing links for ${scanResults.length} pages`,
+    );
     for (const page of scanResults) {
       const sourcePageId = urlToPageId[page.url];
-      if (!sourcePageId) continue;
+      if (!sourcePageId) {
+        console.warn(`[${timestamp}] No page ID found for URL: ${page.url}`);
+        continue;
+      }
 
       // Store internal links
       await storePageLinks(
@@ -58,6 +65,9 @@ export async function storeScanResults(
     }
 
     // 3. Identify potential issues and create records
+    console.log(
+      `[${timestamp}] Detecting issues for ${scanResults.length} pages`,
+    );
     let issuesCount = 0;
     for (const page of scanResults) {
       const pageId = urlToPageId[page.url];
@@ -73,21 +83,20 @@ export async function storeScanResults(
     }
 
     // 4. Store a snapshot of the entire scan results
+    console.log(`[${timestamp}] Creating scan snapshot for scan ${scanId}`);
     await createScanSnapshot(scanId, scanResults);
 
     // 5. Update scan record with completion details
+    console.log(`[${timestamp}] Updating scan record with completion details`);
     await updateScanRecord(scanId, scanResults, issuesCount);
 
-    console.log(`Successfully stored scan results for project ${projectId}`);
+    console.log(
+      `[${timestamp}] Successfully stored scan results for project ${projectId}`,
+    );
     return { success: true };
   } catch (error) {
-    console.error("Error storing scan results:", error);
-    throw new AppError(
-      `Failed to store scan results: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      ErrorCode.DATABASE_QUERY_ERROR,
-    );
+    console.error(`[${timestamp}] Error storing scan results:`, error);
+    throw error;
   }
 }
 

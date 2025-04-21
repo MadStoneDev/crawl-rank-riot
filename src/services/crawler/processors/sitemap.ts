@@ -37,10 +37,16 @@ export class SitemapProcessor {
    * @returns Array of URLs found in the sitemap
    */
   async process(sitemapUrl: string): Promise<string[]> {
+    const timestamp = new Date().toISOString();
+    console.log(
+      `[${timestamp}] Attempting to process sitemap at: ${sitemapUrl}`,
+    );
+
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
+      console.log(`[${timestamp}] Fetching sitemap from: ${sitemapUrl}`);
       const response = await fetch(sitemapUrl, {
         headers: {
           "User-Agent": this.userAgent,
@@ -52,41 +58,49 @@ export class SitemapProcessor {
 
       if (!response.ok) {
         console.warn(
-          `Failed to fetch sitemap at ${sitemapUrl}: ${response.status}`,
+          `[${timestamp}] Failed to fetch sitemap at ${sitemapUrl}: HTTP ${response.status}`,
         );
         return [];
       }
 
       const contentType = response.headers.get("content-type") || "";
+      console.log(`[${timestamp}] Sitemap content type: ${contentType}`);
+
       let content: string;
 
       // Handle gzipped sitemaps
       if (contentType.includes("gzip") || sitemapUrl.endsWith(".gz")) {
-        // We can't easily handle gzip in the browser, so log and return empty
-        console.warn(`Skipping gzipped sitemap at ${sitemapUrl}`);
+        console.warn(
+          `[${timestamp}] Skipping gzipped sitemap at ${sitemapUrl}`,
+        );
         return [];
       } else {
         content = await response.text();
+        console.log(
+          `[${timestamp}] Received sitemap content (length: ${content.length} bytes)`,
+        );
       }
 
       // Check if this is a sitemap index or a regular sitemap
       if (content.includes("<sitemapindex")) {
+        console.log(`[${timestamp}] Detected sitemap index at ${sitemapUrl}`);
         return this.processSitemapIndex(content, sitemapUrl);
       } else {
-        return this.processSitemap(content);
+        console.log(
+          `[${timestamp}] Processing regular sitemap at ${sitemapUrl}`,
+        );
+        const urls = this.processSitemap(content);
+        console.log(
+          `[${timestamp}] Found ${urls.length} URLs in sitemap ${sitemapUrl}`,
+        );
+        return urls;
       }
     } catch (error) {
-      if (this.ignoreSitemapErrors) {
-        console.warn(`Error processing sitemap at ${sitemapUrl}:`, error);
-        return [];
-      } else {
-        throw new CrawlerError(
-          `Failed to process sitemap at ${sitemapUrl}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          ErrorCode.PARSE_ERROR,
-        );
-      }
+      console.error(
+        `[${timestamp}] Error processing sitemap at ${sitemapUrl}:`,
+        error,
+      );
+      return [];
     }
   }
 
@@ -96,6 +110,11 @@ export class SitemapProcessor {
    * @returns Array of URLs found across all sitemaps
    */
   async processCommonLocations(domain: string): Promise<string[]> {
+    const timestamp = new Date().toISOString();
+    console.log(
+      `[${timestamp}] Checking common sitemap locations for domain: ${domain}`,
+    );
+
     const allUrls: string[] = [];
     const processedSitemaps = new Set<string>();
 
@@ -114,16 +133,28 @@ export class SitemapProcessor {
       "/page-sitemap.xml", // WordPress
       "/product-sitemap.xml", // WooCommerce
       "/category-sitemap.xml", // WordPress categories
+
       "/xmlsitemap.php?type=pages", // Drupal
       "/xmlsitemap.php?type=nodes", // Drupal
+
+      "/xmlsitemap.php?type=products&page=1", // BigCommerce
+      "/xmlsitemap.php?type=pages&page=1", // BigCommerce
     ];
+
+    console.log(
+      `[${timestamp}] Checking ${possibleSitemapPaths.length} possible sitemap locations`,
+    );
 
     for (const path of possibleSitemapPaths) {
       try {
         const sitemapUrl = `https://${domain}${path}`;
+        console.log(`[${timestamp}] Checking sitemap at: ${sitemapUrl}`);
 
         // Skip already processed sitemaps
         if (processedSitemaps.has(sitemapUrl)) {
+          console.log(
+            `[${timestamp}] Skipping already processed sitemap: ${sitemapUrl}`,
+          );
           continue;
         }
 
@@ -131,19 +162,32 @@ export class SitemapProcessor {
         const urls = await this.process(sitemapUrl);
 
         if (urls.length > 0) {
-          console.log(`Found ${urls.length} URLs in sitemap at ${sitemapUrl}`);
-          allUrls.push(...urls);
+          console.log(
+            `[${timestamp}] Found ${urls.length} URLs in sitemap at ${sitemapUrl}`,
+          );
+          for (const url of urls) {
+            if (!allUrls.includes(url)) {
+              allUrls.push(url);
+            }
+          }
+        } else {
+          console.log(
+            `[${timestamp}] No URLs found in sitemap at ${sitemapUrl}`,
+          );
         }
       } catch (error) {
-        if (!this.ignoreSitemapErrors) {
-          throw error;
-        }
-        console.warn(`Error checking sitemap at ${path}:`, error);
+        console.warn(
+          `[${timestamp}] Error checking sitemap at ${path}:`,
+          error,
+        );
       }
     }
 
-    // Remove duplicates before returning
-    return [...new Set(allUrls)];
+    console.log(
+      `[${timestamp}] Found a total of ${allUrls.length} unique URLs across all sitemap locations`,
+    );
+
+    return allUrls;
   }
 
   /**

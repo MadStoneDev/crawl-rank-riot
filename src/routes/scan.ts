@@ -103,8 +103,8 @@ router.post(
 
       // Parse crawler options with defaults
       const crawlerOptions = {
-        maxDepth: options?.maxDepth || 3,
-        maxPages: options?.maxPages || 100,
+        maxDepth: options?.maxDepth || 10,
+        maxPages: options?.maxPages || 1000,
         concurrentRequests: options?.concurrentRequests || 5,
         timeout: options?.timeout || 120000, // 2 minutes
         useHeadlessBrowser: options?.useHeadlessBrowser || true,
