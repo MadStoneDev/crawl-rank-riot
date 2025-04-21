@@ -466,6 +466,7 @@ export type Database = {
           id: string;
           last_scan_at: string | null;
           name: string;
+          notification_email: string | null;
           scan_frequency: string | null;
           settings: Json | null;
           updated_at: string | null;
@@ -478,6 +479,7 @@ export type Database = {
           id?: string;
           last_scan_at?: string | null;
           name: string;
+          notification_email?: string | null;
           scan_frequency?: string | null;
           settings?: Json | null;
           updated_at?: string | null;
@@ -490,6 +492,7 @@ export type Database = {
           id?: string;
           last_scan_at?: string | null;
           name?: string;
+          notification_email?: string | null;
           scan_frequency?: string | null;
           settings?: Json | null;
           updated_at?: string | null;
@@ -506,77 +509,28 @@ export type Database = {
           },
         ];
       };
-      scan_page_snapshots: {
+      scan_snapshots: {
         Row: {
-          content_length: number | null;
           created_at: string | null;
-          h1s: Json | null;
-          h2s: Json | null;
-          h3s: Json | null;
-          h4s: Json | null;
-          h5s: Json | null;
-          h6s: Json | null;
-          http_status: number | null;
           id: string;
-          is_indexable: boolean | null;
-          issues: Json | null;
-          meta_description: string | null;
-          page_id: string;
           scan_id: string;
-          snapshot_data: Json | null;
-          title: string | null;
-          url: string;
+          snapshot_data: Json;
         };
         Insert: {
-          content_length?: number | null;
           created_at?: string | null;
-          h1s?: Json | null;
-          h2s?: Json | null;
-          h3s?: Json | null;
-          h4s?: Json | null;
-          h5s?: Json | null;
-          h6s?: Json | null;
-          http_status?: number | null;
           id?: string;
-          is_indexable?: boolean | null;
-          issues?: Json | null;
-          meta_description?: string | null;
-          page_id: string;
           scan_id: string;
-          snapshot_data?: Json | null;
-          title?: string | null;
-          url: string;
+          snapshot_data: Json;
         };
         Update: {
-          content_length?: number | null;
           created_at?: string | null;
-          h1s?: Json | null;
-          h2s?: Json | null;
-          h3s?: Json | null;
-          h4s?: Json | null;
-          h5s?: Json | null;
-          h6s?: Json | null;
-          http_status?: number | null;
           id?: string;
-          is_indexable?: boolean | null;
-          issues?: Json | null;
-          meta_description?: string | null;
-          page_id?: string;
           scan_id?: string;
-          snapshot_data?: Json | null;
-          title?: string | null;
-          url?: string;
+          snapshot_data?: Json;
         };
         Relationships: [
           {
-            foreignKeyName: "scan_page_snapshots_page_id_fkey";
-            columns: ["page_id"];
-            isOneToOne: false;
-            referencedRelation: "pages";
-            referencedColumns: ["id"];
-          },
-          {
-            foreignKeyName: "scan_page_snapshots_scan_id_fkey";
+            foreignKeyName: "scan_snapshots_scan_id_fkey";
             columns: ["scan_id"];
             isOneToOne: false;
             referencedRelation: "scans";
@@ -590,6 +544,7 @@ export type Database = {
           created_at: string | null;
           id: string;
           issues_found: number | null;
+          last_progress_update: string | null;
           links_scanned: number | null;
           pages_scanned: number | null;
           project_id: string;
@@ -603,6 +558,7 @@ export type Database = {
           created_at?: string | null;
           id?: string;
           issues_found?: number | null;
+          last_progress_update?: string | null;
           links_scanned?: number | null;
           pages_scanned?: number | null;
           project_id: string;
@@ -616,6 +572,7 @@ export type Database = {
           created_at?: string | null;
           id?: string;
           issues_found?: number | null;
+          last_progress_update?: string | null;
           links_scanned?: number | null;
           pages_scanned?: number | null;
           project_id?: string;
