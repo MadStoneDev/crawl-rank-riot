@@ -195,14 +195,22 @@ export class HttpScanner extends BaseScanner {
     const links = doc.querySelectorAll("a[href]");
 
     for (const link of Array.from(links)) {
-      const href = link.getAttribute("href");
-
+      const href = link.getAttribute("href")?.trim();
       if (!href || href === "#" || href.startsWith("javascript:")) {
         continue;
       }
 
+      // Sanitize URLs that contain HTML-like content
+      let processedHref = href;
+      if (href.includes(">") || href.includes("<")) {
+        console.warn(`Potentially malformed URL found: ${href}`);
+        processedHref = href.split(/[<>]/)[0];
+        if (!processedHref) continue;
+      }
+
       try {
-        const resolvedUrl = urlProcessor.resolve(baseUrl, href);
+        // Use the sanitized URL for resolution
+        const resolvedUrl = urlProcessor.resolve(baseUrl, processedHref);
         if (!resolvedUrl) continue;
 
         const anchorText = link.textContent?.trim() || "";
@@ -401,7 +409,7 @@ export class HttpScanner extends BaseScanner {
     }
 
     // Extract links
-    const linkRegex = /<a\s+[^>]*href=["'](.*?)["'][^>]*>(.*?)<\/a>/gi;
+    const linkRegex = /<a\s+[^>]*href=["']([^"'<>]+)["'][^>]*>(.*?)<\/a>/gi;
     let linkMatch;
 
     while ((linkMatch = linkRegex.exec(html)) !== null) {
