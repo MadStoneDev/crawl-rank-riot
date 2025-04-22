@@ -356,74 +356,187 @@ export function calculateReadingTime(
 }
 
 /**
- * Extract metadata from HTML
- * @param html HTML content or Document
+ * Enhanced metadata extraction function that prioritizes OpenGraph and proper title elements
+ * @param doc HTML document or string
  * @returns Extracted metadata
  */
-export function extractMetadata(html: string | Document): {
+export function extractMetadata(doc: Document | string): {
   title: string;
   metaDescription: string;
+  canonicalUrl: string;
   openGraph: Record<string, string>;
   twitterCard: Record<string, string>;
-  canonicalUrl: string | null;
 } {
-  let doc: Document;
+  // Initialize result object
+  const result = {
+    title: "",
+    metaDescription: "",
+    canonicalUrl: "",
+    openGraph: {} as Record<string, string>,
+    twitterCard: {} as Record<string, string>,
+  };
 
-  if (typeof html === "string") {
-    if (typeof DOMParser !== "undefined") {
-      const parser = new DOMParser();
-      doc = parser.parseFromString(html, "text/html");
-    } else {
-      // Return empty metadata if DOMParser is not available
-      return {
-        title: "",
-        metaDescription: "",
-        openGraph: {},
-        twitterCard: {},
-        canonicalUrl: null,
-      };
+  // If input is string and we're in a browser-like environment, try to parse it
+  let documentObj: Document | null = null;
+
+  if (typeof doc === "string") {
+    try {
+      if (typeof DOMParser !== "undefined") {
+        const parser = new DOMParser();
+        documentObj = parser.parseFromString(doc as string, "text/html");
+      } else {
+        // Extract using regex if no DOM parser available
+        // Title extraction
+        const titleMatch = (doc as string).match(/<title[^>]*>(.*?)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+          result.title = titleMatch[1].trim();
+        }
+
+        // Meta description extraction
+        const metaMatch =
+          (doc as string).match(
+            /<meta\s+name=["']description["']\s+content=["'](.*?)["']/i,
+          ) ||
+          (doc as string).match(
+            /<meta\s+content=["'](.*?)["']\s+name=["']description["']/i,
+          );
+        if (metaMatch && metaMatch[1]) {
+          result.metaDescription = metaMatch[1].trim();
+        }
+
+        // Canonical URL extraction
+        const canonicalMatch = (doc as string).match(
+          /<link\s+rel=["']canonical["']\s+href=["'](.*?)["']/i,
+        );
+        if (canonicalMatch && canonicalMatch[1]) {
+          result.canonicalUrl = canonicalMatch[1].trim();
+        }
+
+        // Return early since we can't do more complex extraction without a DOM
+        return result;
+      }
+    } catch (error) {
+      console.error("Error parsing HTML:", error);
+      return result;
     }
   } else {
-    doc = html;
+    documentObj = doc as Document;
   }
 
-  // Extract title
-  const title = doc.querySelector("title")?.textContent || "";
+  if (!documentObj) {
+    return result;
+  }
+
+  // TITLE EXTRACTION PRIORITY:
+  // 1. OpenGraph title (most reliable for social sharing)
+  // 2. Regular title tag
+  // 3. Fallback to h1 if neither exists
+
+  // First check OpenGraph title since it's most specific
+  const ogTitle = documentObj.querySelector('meta[property="og:title"]');
+  if (ogTitle && ogTitle.getAttribute("content")) {
+    result.title = ogTitle.getAttribute("content")!.trim();
+  }
+  // Then check regular title tag
+  else {
+    const titleElement = documentObj.querySelector("title");
+    if (titleElement && titleElement.textContent) {
+      result.title = titleElement.textContent.trim();
+    }
+    // Last resort: use first h1
+    else {
+      const h1 = documentObj.querySelector("h1");
+      if (h1 && h1.textContent) {
+        result.title = h1.textContent.trim();
+      }
+    }
+  }
+
+  // Clean up common title issues
+  if (result.title) {
+    // Remove excessive whitespace
+    result.title = result.title.replace(/\s+/g, " ").trim();
+
+    // Remove common SEO suffixes like "- Company Name" if title is very long
+    if (result.title.length > 60 && result.title.includes(" - ")) {
+      result.title = result.title.split(" - ")[0].trim();
+    }
+
+    // Ensure we don't capture payment gateway names as titles
+    // Filter out titles that are just payment provider names
+    const paymentProviders = [
+      "American Express",
+      "Visa",
+      "MasterCard",
+      "PayPal",
+      "Apple Pay",
+      "Google Pay",
+      "Stripe",
+      "Shop Pay",
+      "Checkout",
+    ];
+
+    if (paymentProviders.includes(result.title)) {
+      // In this case, look for another title element or use URL path
+      const titleElement = documentObj.querySelector("title");
+      if (
+        titleElement &&
+        titleElement.textContent &&
+        !paymentProviders.includes(titleElement.textContent.trim())
+      ) {
+        result.title = titleElement.textContent.trim();
+      } else {
+        // If we're still getting a payment provider, try to get the URL path
+        const canonical = documentObj.querySelector('link[rel="canonical"]');
+        if (canonical && canonical.getAttribute("href")) {
+          try {
+            const url = new URL(canonical.getAttribute("href")!);
+            const pathSegments = url.pathname.split("/").filter(Boolean);
+            if (pathSegments.length > 0) {
+              // Use last path segment, replace hyphens with spaces and capitalize
+              result.title = pathSegments[pathSegments.length - 1]
+                .replace(/-/g, " ")
+                .replace(/\b\w/g, (l) => l.toUpperCase());
+            }
+          } catch (e) {
+            // URL parsing failed, keep what we have
+          }
+        }
+      }
+    }
+  }
 
   // Extract meta description
-  const metaDescription =
-    doc.querySelector('meta[name="description"]')?.getAttribute("content") ||
-    "";
-
-  // Extract Open Graph data
-  const openGraph: Record<string, string> = {};
-  doc.querySelectorAll('meta[property^="og:"]').forEach((el) => {
-    const property = el.getAttribute("property")?.replace("og:", "") || "";
-    const content = el.getAttribute("content") || "";
-    if (property && content) {
-      openGraph[property] = content;
-    }
-  });
-
-  // Extract Twitter Card data
-  const twitterCard: Record<string, string> = {};
-  doc.querySelectorAll('meta[name^="twitter:"]').forEach((el) => {
-    const name = el.getAttribute("name")?.replace("twitter:", "") || "";
-    const content = el.getAttribute("content") || "";
-    if (name && content) {
-      twitterCard[name] = content;
-    }
-  });
+  const metaDescription = documentObj.querySelector('meta[name="description"]');
+  if (metaDescription && metaDescription.getAttribute("content")) {
+    result.metaDescription = metaDescription.getAttribute("content")!.trim();
+  }
 
   // Extract canonical URL
-  const canonicalUrl =
-    doc.querySelector('link[rel="canonical"]')?.getAttribute("href") || null;
+  const canonical = documentObj.querySelector('link[rel="canonical"]');
+  if (canonical && canonical.getAttribute("href")) {
+    result.canonicalUrl = canonical.getAttribute("href")!.trim();
+  }
 
-  return {
-    title,
-    metaDescription,
-    openGraph,
-    twitterCard,
-    canonicalUrl,
-  };
+  // Extract Open Graph metadata
+  const ogTags = documentObj.querySelectorAll('meta[property^="og:"]');
+  ogTags.forEach((tag) => {
+    const property = tag.getAttribute("property");
+    const content = tag.getAttribute("content");
+    if (property && content) {
+      result.openGraph[property.replace("og:", "")] = content.trim();
+    }
+  });
+
+  // Extract Twitter Card metadata
+  const twitterTags = documentObj.querySelectorAll('meta[name^="twitter:"]');
+  twitterTags.forEach((tag) => {
+    const name = tag.getAttribute("name");
+    const content = tag.getAttribute("content");
+    if (name && content) {
+      result.twitterCard[name.replace("twitter:", "")] = content.trim();
+    }
+  });
+
+  return result;
 }
