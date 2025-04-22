@@ -217,6 +217,23 @@ export class HttpScanner extends BaseScanner {
         // Extract anchor text with improved handling for complex content
         let anchorText = this.extractAnchorText(link);
 
+        // If no anchor text was found, use relative URL or path
+        if (!anchorText) {
+          // For relative URLs, show the path part
+          const urlParts = new URL(resolvedUrl);
+          anchorText =
+            processedHref.startsWith("/") ||
+            processedHref.startsWith("./") ||
+            processedHref.startsWith("../")
+              ? processedHref
+              : urlParts.pathname || resolvedUrl;
+
+          // Trim to reasonable length if needed
+          if (anchorText.length > 50) {
+            anchorText = anchorText.substring(0, 47) + "...";
+          }
+        }
+
         // Get rel attributes
         const relAttr = link.getAttribute("rel") || "";
         const relAttributes = relAttr.split(/\s+/).filter(Boolean);
@@ -255,63 +272,92 @@ export class HttpScanner extends BaseScanner {
    * @returns Extracted anchor text
    */
   private extractAnchorText(linkElement: Element): string {
-    // First, try to get direct text content if available
-    let text = linkElement.textContent?.trim() || "";
+    // Try to get direct text content if available and not just whitespace
+    const directText = linkElement.textContent?.trim() || "";
 
-    // If text is empty, check for specific child elements that might contain text
-    if (!text) {
-      // Check for SVG textPath elements (common in fancy UI elements)
-      const textPaths = linkElement.querySelectorAll("textPath");
-      if (textPaths.length > 0) {
-        const textPathContent = Array.from(textPaths)
-          .map((textPath) => textPath.textContent?.trim())
-          .filter(Boolean)
-          .join(" ");
+    // Check if there's actual text content (not just whitespace from nested elements)
+    if (directText && directText.length > 1) {
+      return directText;
+    }
 
-        if (textPathContent) {
-          text = textPathContent;
-        }
-      }
+    // First priority: Look specifically for textPath elements within SVGs
+    // These are common in fancy UI buttons and circular text elements
+    const textPaths = linkElement.querySelectorAll("textPath");
+    if (textPaths.length > 0) {
+      const textPathContent = Array.from(textPaths)
+        .map((textPath) => textPath.textContent?.trim())
+        .filter(Boolean)
+        .join(" ");
 
-      // Check for image alt text if no other text was found
-      if (!text) {
-        const images = linkElement.querySelectorAll("img[alt]");
-        if (images.length > 0) {
-          const altTexts = Array.from(images)
-            .map((img) => img.getAttribute("alt")?.trim())
-            .filter(Boolean)
-            .join(" ");
-
-          if (altTexts) {
-            text = `[Image: ${altTexts}]`;
-          }
-        }
-      }
-
-      // Check for aria-label on the link element itself
-      if (!text) {
-        const ariaLabel = linkElement.getAttribute("aria-label")?.trim();
-        if (ariaLabel) {
-          text = ariaLabel;
-        }
-      }
-
-      // If still no text, check for title attribute
-      if (!text) {
-        const title = linkElement.getAttribute("title")?.trim();
-        if (title) {
-          text = title;
-        }
-      }
-
-      // If still no text, use a placeholder based on the link's destination
-      if (!text) {
-        const href = linkElement.getAttribute("href")?.trim() || "";
-        text = `[Link to: ${href}]`;
+      if (textPathContent) {
+        return textPathContent;
       }
     }
 
-    return text;
+    // Second priority: Look for any text nodes directly in the element or its children
+    // This does a more thorough traversal than just textContent
+    const textNodes = this.getAllTextNodes(linkElement);
+    if (textNodes.length > 0) {
+      const textNodeContent = textNodes
+        .map((node) => node.textContent?.trim())
+        .filter((text) => text && text.length > 0)
+        .join(" ");
+
+      if (textNodeContent) {
+        return textNodeContent;
+      }
+    }
+
+    // Third priority: Check for image alt text
+    const images = linkElement.querySelectorAll("img[alt]");
+    if (images.length > 0) {
+      const altTexts = Array.from(images)
+        .map((img) => img.getAttribute("alt")?.trim())
+        .filter(Boolean)
+        .join(" ");
+
+      if (altTexts) {
+        return `[Image: ${altTexts}]`;
+      }
+    }
+
+    // Fourth priority: Check for accessibility attributes
+    const ariaLabel = linkElement.getAttribute("aria-label")?.trim();
+    if (ariaLabel) {
+      return ariaLabel;
+    }
+
+    // Fifth priority: Check for title attribute
+    const title = linkElement.getAttribute("title")?.trim();
+    if (title) {
+      return title;
+    }
+
+    // Last resort: Return null instead of placeholder
+    return ""; // Return empty string to indicate no text was found
+  }
+
+  /**
+   * Recursively gets all text nodes within an element
+   * @param element Element to search within
+   * @returns Array of text nodes
+   */
+  private getAllTextNodes(element: Element): Text[] {
+    const textNodes: Text[] = [];
+    const walker = document.createTreeWalker(
+      element,
+      NodeFilter.SHOW_TEXT,
+      null,
+    );
+
+    let node: Text | null;
+    while ((node = walker.nextNode() as Text | null)) {
+      if (node && node.textContent && node.textContent.trim()) {
+        textNodes.push(node);
+      }
+    }
+
+    return textNodes;
   }
 
   /**
@@ -566,17 +612,33 @@ export class HttpScanner extends BaseScanner {
       }
     }
 
+    // Try to find textPath content for SVG-based links
+    const textPathContents = new Map<string, string>();
+
+    // Extract textPath content
+    const textPathRegex = /<textPath[^>]*>(.*?)<\/textPath>/gi;
+    let textPathMatch;
+    while ((textPathMatch = textPathRegex.exec(html)) !== null) {
+      if (textPathMatch[1]) {
+        // Try to associate with the closest parent <a> tag
+        // This is a simplification, but can help in many cases
+        const textContent = textPathMatch[1].replace(/<[^>]+>/g, "").trim();
+
+        // Find position of this textPath in the document
+        const position = textPathMatch.index;
+
+        // Store for later use when processing links
+        textPathContents.set(position.toString(), textContent);
+      }
+    }
+
     // Extract links with improved regex to capture more complex cases
-    const linkRegex =
-      /<a\s+[^>]*href=["']([^"'<>]+)["'][^>]*(?:>\s*(.*?)\s*<\/a>|\/?>)/gi;
+    const linkRegex = /<a\s+[^>]*href=["']([^"'<>]+)["'][^>]*>/gi;
     let linkMatch;
 
     while ((linkMatch = linkRegex.exec(html)) !== null) {
       const href = linkMatch[1];
-      // Content might be empty for self-closing tags or complex nested content
-      let text = linkMatch[2]
-        ? linkMatch[2].replace(/<[^>]+>/g, "").trim()
-        : "";
+      const linkStartPosition = linkMatch.index;
 
       // Skip javascript and empty links
       if (!href || href === "#" || href.startsWith("javascript:")) {
@@ -587,9 +649,85 @@ export class HttpScanner extends BaseScanner {
         const resolvedUrl = urlProcessor.resolve(baseUrl, href);
         if (!resolvedUrl) continue;
 
-        // If no text was found, use the URL as the text
+        // Try to extract text content
+        let text = "";
+
+        // Look for closing </a> tag
+        const linkContent = html.substring(linkStartPosition);
+        const closeTagMatch = /<\/a>/i.exec(linkContent);
+
+        if (closeTagMatch) {
+          // Extract content between opening and closing tags
+          const contentEndIndex = closeTagMatch.index;
+          const linkContentHtml = linkContent.substring(0, contentEndIndex);
+
+          // Remove HTML tags to get plain text
+          text = linkContentHtml
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          // If no text content, check if there's a textPath near this link
+          if (!text) {
+            // Find the closest textPath content
+            let closestDistance = Infinity;
+            let closestTextPathContent = "";
+
+            for (const [
+              positionStr,
+              textPathContent,
+            ] of textPathContents.entries()) {
+              const textPathPosition = parseInt(positionStr);
+              const distance = Math.abs(textPathPosition - linkStartPosition);
+
+              // If this textPath is inside the link's content area
+              if (
+                distance < closestDistance &&
+                textPathPosition > linkStartPosition &&
+                textPathPosition < linkStartPosition + contentEndIndex
+              ) {
+                closestDistance = distance;
+                closestTextPathContent = textPathContent;
+              }
+            }
+
+            if (closestTextPathContent) {
+              text = closestTextPathContent;
+            }
+          }
+
+          // If still no text, check for aria-label or title
+          if (!text) {
+            const ariaLabelMatch = linkMatch[0].match(
+              /aria-label=["'](.*?)["']/i,
+            );
+            if (ariaLabelMatch && ariaLabelMatch[1]) {
+              text = ariaLabelMatch[1];
+            } else {
+              const titleMatch = linkMatch[0].match(/title=["'](.*?)["']/i);
+              if (titleMatch && titleMatch[1]) {
+                text = titleMatch[1];
+              }
+            }
+          }
+        }
+
+        // If still no text was found, use the path part of the URL
         if (!text) {
-          text = `[Link to: ${href}]`;
+          if (
+            href.startsWith("/") ||
+            href.startsWith("./") ||
+            href.startsWith("../")
+          ) {
+            text = href;
+          } else {
+            try {
+              const urlParts = new URL(resolvedUrl);
+              text = urlParts.pathname || resolvedUrl;
+            } catch (e) {
+              text = href;
+            }
+          }
         }
 
         if (urlProcessor.isInternal(resolvedUrl)) {
