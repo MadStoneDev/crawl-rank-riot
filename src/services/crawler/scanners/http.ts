@@ -192,6 +192,7 @@ export class HttpScanner extends BaseScanner {
     const urlProcessor = new UrlProcessor(baseUrl);
     const domain = urlProcessor.getDomain();
 
+    // Get all link elements
     const links = doc.querySelectorAll("a[href]");
 
     for (const link of Array.from(links)) {
@@ -213,9 +214,17 @@ export class HttpScanner extends BaseScanner {
         const resolvedUrl = urlProcessor.resolve(baseUrl, processedHref);
         if (!resolvedUrl) continue;
 
-        const anchorText = link.textContent?.trim() || "";
+        // Extract anchor text with improved handling for complex content
+        let anchorText = this.extractAnchorText(link);
+
+        // Get rel attributes
         const relAttr = link.getAttribute("rel") || "";
         const relAttributes = relAttr.split(/\s+/).filter(Boolean);
+
+        // Add debug info
+        console.log(
+          `Found link: ${resolvedUrl} with text: ${anchorText || "(empty)"}`,
+        );
 
         if (urlProcessor.isInternal(resolvedUrl)) {
           result.internal_links.push({
@@ -232,6 +241,155 @@ export class HttpScanner extends BaseScanner {
         }
       } catch (error) {
         // Skip invalid URLs
+        console.warn(`Error processing URL ${href}:`, error);
+      }
+    }
+
+    // Also capture links from onclick handlers and other attributes
+    this.extractNonStandardLinks(result, doc, baseUrl);
+  }
+
+  /**
+   * Extracts anchor text from a link element with improved handling for complex content
+   * @param linkElement Link element
+   * @returns Extracted anchor text
+   */
+  private extractAnchorText(linkElement: Element): string {
+    // First, try to get direct text content if available
+    let text = linkElement.textContent?.trim() || "";
+
+    // If text is empty, check for specific child elements that might contain text
+    if (!text) {
+      // Check for SVG textPath elements (common in fancy UI elements)
+      const textPaths = linkElement.querySelectorAll("textPath");
+      if (textPaths.length > 0) {
+        const textPathContent = Array.from(textPaths)
+          .map((textPath) => textPath.textContent?.trim())
+          .filter(Boolean)
+          .join(" ");
+
+        if (textPathContent) {
+          text = textPathContent;
+        }
+      }
+
+      // Check for image alt text if no other text was found
+      if (!text) {
+        const images = linkElement.querySelectorAll("img[alt]");
+        if (images.length > 0) {
+          const altTexts = Array.from(images)
+            .map((img) => img.getAttribute("alt")?.trim())
+            .filter(Boolean)
+            .join(" ");
+
+          if (altTexts) {
+            text = `[Image: ${altTexts}]`;
+          }
+        }
+      }
+
+      // Check for aria-label on the link element itself
+      if (!text) {
+        const ariaLabel = linkElement.getAttribute("aria-label")?.trim();
+        if (ariaLabel) {
+          text = ariaLabel;
+        }
+      }
+
+      // If still no text, check for title attribute
+      if (!text) {
+        const title = linkElement.getAttribute("title")?.trim();
+        if (title) {
+          text = title;
+        }
+      }
+
+      // If still no text, use a placeholder based on the link's destination
+      if (!text) {
+        const href = linkElement.getAttribute("href")?.trim() || "";
+        text = `[Link to: ${href}]`;
+      }
+    }
+
+    return text;
+  }
+
+  /**
+   * Extracts links from non-standard sources like onclick handlers
+   * @param result Scan result to update
+   * @param doc HTML document
+   * @param baseUrl Base URL for resolving relative URLs
+   */
+  private extractNonStandardLinks(
+    result: ScanResult,
+    doc: Document,
+    baseUrl: string,
+  ): void {
+    const urlProcessor = new UrlProcessor(baseUrl);
+
+    // Elements that might contain links in JavaScript handlers
+    const elementsWithHandlers = doc.querySelectorAll("[onclick], [data-href]");
+
+    for (const element of Array.from(elementsWithHandlers)) {
+      // Check onclick attribute
+      const onclickAttr = element.getAttribute("onclick");
+      if (onclickAttr) {
+        // Extract URLs or paths from the onclick handler
+        const urlMatches = onclickAttr.match(
+          /window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/,
+        );
+        if (urlMatches && urlMatches[1]) {
+          try {
+            const extractedUrl = urlMatches[1];
+            const resolvedUrl = urlProcessor.resolve(baseUrl, extractedUrl);
+
+            if (resolvedUrl) {
+              const isInternal = urlProcessor.isInternal(resolvedUrl);
+              const linkInfo = {
+                url: resolvedUrl,
+                anchor_text: `[JS Link: ${
+                  element.textContent?.trim() || extractedUrl
+                }]`,
+                rel_attributes: [],
+              };
+
+              if (isInternal) {
+                result.internal_links.push(linkInfo);
+              } else {
+                result.external_links.push(linkInfo);
+              }
+            }
+          } catch (error) {
+            // Skip invalid URLs
+          }
+        }
+      }
+
+      // Check data-href attribute (common in custom frameworks)
+      const dataHref = element.getAttribute("data-href");
+      if (dataHref) {
+        try {
+          const resolvedUrl = urlProcessor.resolve(baseUrl, dataHref);
+
+          if (resolvedUrl) {
+            const isInternal = urlProcessor.isInternal(resolvedUrl);
+            const linkInfo = {
+              url: resolvedUrl,
+              anchor_text: `[Data Link: ${
+                element.textContent?.trim() || dataHref
+              }]`,
+              rel_attributes: [],
+            };
+
+            if (isInternal) {
+              result.internal_links.push(linkInfo);
+            } else {
+              result.external_links.push(linkInfo);
+            }
+          }
+        } catch (error) {
+          // Skip invalid URLs
+        }
       }
     }
   }
@@ -408,14 +566,19 @@ export class HttpScanner extends BaseScanner {
       }
     }
 
-    // Extract links
-    const linkRegex = /<a\s+[^>]*href=["']([^"'<>]+)["'][^>]*>(.*?)<\/a>/gi;
+    // Extract links with improved regex to capture more complex cases
+    const linkRegex =
+      /<a\s+[^>]*href=["']([^"'<>]+)["'][^>]*(?:>\s*(.*?)\s*<\/a>|\/?>)/gi;
     let linkMatch;
 
     while ((linkMatch = linkRegex.exec(html)) !== null) {
       const href = linkMatch[1];
-      const text = linkMatch[2].replace(/<[^>]+>/g, "").trim();
+      // Content might be empty for self-closing tags or complex nested content
+      let text = linkMatch[2]
+        ? linkMatch[2].replace(/<[^>]+>/g, "").trim()
+        : "";
 
+      // Skip javascript and empty links
       if (!href || href === "#" || href.startsWith("javascript:")) {
         continue;
       }
@@ -423,6 +586,11 @@ export class HttpScanner extends BaseScanner {
       try {
         const resolvedUrl = urlProcessor.resolve(baseUrl, href);
         if (!resolvedUrl) continue;
+
+        // If no text was found, use the URL as the text
+        if (!text) {
+          text = `[Link to: ${href}]`;
+        }
 
         if (urlProcessor.isInternal(resolvedUrl)) {
           result.internal_links.push({
