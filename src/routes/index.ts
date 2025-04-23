@@ -3,6 +3,8 @@ import scanRouter from "./scan";
 import { authMiddleware } from "../middleware/auth";
 
 const router = Router();
-router.use("/", authMiddleware, scanRouter);
+
+router.use("/", scanRouter);
+// router.use('/', authMiddleware, scanRouter);
 
 export default router;

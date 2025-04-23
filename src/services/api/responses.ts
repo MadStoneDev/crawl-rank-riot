@@ -1,12 +1,6 @@
 import { ApiResponse } from "../../types/common";
 import { AppError, ErrorCode } from "../../utils/error";
 
-/**
- * Creates a successful API response
- * @param data Response data
- * @param message Success message
- * @returns Standardized success response object
- */
 export function createSuccessResponse<T>(
   data: T,
   message = "Operation successful",
@@ -18,13 +12,6 @@ export function createSuccessResponse<T>(
   };
 }
 
-/**
- * Creates an error API response
- * @param message Error message
- * @param code Error code
- * @param details Error details
- * @returns Standardized error response object
- */
 export function createErrorResponse(
   message: string,
   code: ErrorCode = ErrorCode.UNKNOWN_ERROR,
@@ -40,11 +27,6 @@ export function createErrorResponse(
   };
 }
 
-/**
- * Converts an AppError to an API error response
- * @param error Application error
- * @returns Standardized error response object
- */
 export function errorToResponse(error: AppError): ApiResponse<never> {
   // Ensure error.code is of type ErrorCode
   const errorCode =
@@ -57,13 +39,6 @@ export function errorToResponse(error: AppError): ApiResponse<never> {
   return createErrorResponse(error.message, errorCode, error.details);
 }
 
-/**
- * Error handler middleware for Express
- * @param err Error object
- * @param req Express request
- * @param res Express response
- * @param next Express next function
- */
 export function errorHandlerMiddleware(
   err: any,
   req: any,
