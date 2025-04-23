@@ -2,9 +2,6 @@ import { Request, Response, NextFunction } from "express";
 import { AppError, ErrorCode } from "../utils/error";
 import { getSupabaseClient } from "../services/database/client";
 
-/**
- * Request with authenticated user
- */
 export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
@@ -12,12 +9,6 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-/**
- * Middleware to authenticate users via JWT token
- * @param req Express request
- * @param res Express response
- * @param next Express next function
- */
 export async function authMiddleware(
   req: AuthenticatedRequest,
   res: Response,
@@ -56,7 +47,6 @@ export async function authMiddleware(
       );
     }
 
-    // Attach user data to request
     req.user = {
       id: user.id,
       email: user.email || "",
@@ -68,12 +58,6 @@ export async function authMiddleware(
   }
 }
 
-/**
- * Middleware to check if user has access to a project
- * @param req Express request
- * @param res Express response
- * @param next Express next function
- */
 export async function projectAccessMiddleware(
   req: AuthenticatedRequest,
   res: Response,
@@ -128,13 +112,6 @@ export async function projectAccessMiddleware(
   }
 }
 
-/**
- * Simple API key authentication for service-to-service calls
- * Note: This is a basic implementation. For production, consider using a more robust approach.
- * @param req Express request
- * @param res Express response
- * @param next Express next function
- */
 export function apiKeyServiceAuth(apiKey: string) {
   return (req: Request, res: Response, next: NextFunction) => {
     try {
