@@ -385,7 +385,6 @@ export class Crawler {
 
         // Get next URL from queue
         const queueItem = await queueManager.getNextItem();
-
         if (!queueItem) {
           // No items in queue, try again later
           setTimeout(() => processNext(crawlerId), 100);
@@ -440,18 +439,29 @@ export class Crawler {
 
           // Choose scanning method (headless or regular)
           let result: ScanResult;
+          let needsHeadless = false;
 
-          const shouldUseHeadless =
-            browserScanner !== null &&
-            (headlessBrowserPaths.some((path) => url.includes(path)) ||
-              // Use headless for homepage
-              new URL(url).pathname === "/" ||
-              new URL(url).pathname === "");
+          const forcedHeadless =
+            (browserScanner !== null &&
+              headlessBrowserPaths.some((path) => url.includes(path))) ||
+            new URL(url).pathname === "/" ||
+            new URL(url).pathname === "";
 
-          if (shouldUseHeadless && browserScanner) {
+          if (forcedHeadless && browserScanner) {
+            console.log(`[CRAWLER] Using headless browser for ${url} (forced)`);
             result = await browserScanner.scan(url, depth);
           } else {
             result = await httpScanner.scan(url, depth);
+            needsHeadless =
+              browserScanner !== null &&
+              httpScanner.needsHeadlessVerification(result);
+
+            if (needsHeadless && browserScanner) {
+              console.log(
+                `[CRAWLER] Using headless browser for ${url} (suspicious)`,
+              );
+              result = await browserScanner.scan(url, depth);
+            }
           }
 
           // Add to results
@@ -487,8 +497,6 @@ export class Crawler {
 
         // Mark crawler as inactive
         activeCrawls[crawlerId] = false;
-
-        // Process next URL
         setImmediate(() => processNext(crawlerId));
       };
 

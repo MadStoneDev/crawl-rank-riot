@@ -801,4 +801,65 @@ export class HttpScanner extends BaseScanner {
     result.js_count = jsCount;
     result.css_count = cssCount;
   }
+
+  // Add this to your HttpScanner class
+
+  /**
+   * Determines if the scan result looks suspicious and needs headless verification
+   * @param result The scan result to evaluate
+   * @returns Boolean indicating if result needs verification
+   */
+  public needsHeadlessVerification(result: ScanResult): boolean {
+    // List of suspicious conditions
+    const suspiciousConditions = [
+      // Payment provider as title
+      this.isPaymentProviderTitle(result.title || ""),
+
+      // Missing or very short title (likely not fully loaded)
+      !result.title || result.title.length < 3,
+
+      // Missing expected content on an HTML page
+      result.content_type?.includes("text/html") &&
+        result.content_length < 1000,
+
+      // No headings on what should be a content page
+      result.content_type?.includes("text/html") &&
+        result.h1s.length === 0 &&
+        result.h2s.length === 0 &&
+        new URL(result.url).pathname !== "/",
+
+      // No internal links on what should be a navigation page
+      result.content_type?.includes("text/html") &&
+        result.internal_links.length === 0 &&
+        new URL(result.url).pathname !== "/404" &&
+        !result.url.includes("login") &&
+        !result.url.includes("signin"),
+    ];
+
+    // Return true if any condition is met
+    return suspiciousConditions.some((condition) => condition);
+  }
+
+  /**
+   * Checks if title appears to be a payment provider name
+   * @param title The page title
+   * @returns Boolean indicating if title is a payment provider
+   */
+  public isPaymentProviderTitle(title: string): boolean {
+    if (!title) return false;
+
+    const paymentProviders = [
+      "American Express",
+      "Visa",
+      "MasterCard",
+      "PayPal",
+      "Apple Pay",
+      "Google Pay",
+      "Stripe",
+      "Shop Pay",
+      "Checkout",
+    ];
+
+    return paymentProviders.includes(title.trim());
+  }
 }
