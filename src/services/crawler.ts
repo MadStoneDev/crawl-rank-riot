@@ -1,6 +1,7 @@
 import { Scanner } from "./scanner";
 import { UrlProcessor } from "../utils/url";
 import { CrawlOptions, ScanResult } from "../types";
+import { getSupabaseServiceClient } from "./database/client";
 
 export class WebCrawler {
   private scanner: Scanner;
@@ -102,7 +103,6 @@ export class WebCrawler {
     }
 
     try {
-      const { getSupabaseServiceClient } = await import("./database/client");
       const supabase = getSupabaseServiceClient();
 
       // Calculate total links scanned
