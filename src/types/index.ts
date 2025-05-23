@@ -16,6 +16,7 @@ export interface CrawlOptions {
   excludePatterns?: RegExp[];
   checkSitemaps?: boolean;
   useHeadlessBrowser?: boolean;
+  forceHeadless?: boolean; // NEW: Force headless for all pages
 }
 
 export interface ScanResult {

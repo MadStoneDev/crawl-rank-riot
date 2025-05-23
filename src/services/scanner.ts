@@ -6,20 +6,382 @@ export class Scanner {
   private userAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
-  async scan(url: string, depth: number): Promise<ScanResult> {
+  async scan(
+    url: string,
+    depth: number,
+    forceHeadless: boolean = false,
+  ): Promise<ScanResult> {
     const startTime = Date.now();
+
+    // For Shopify and other JS-heavy sites, skip HTTP and go straight to headless
+    if (this.isJavaScriptHeavySite(url) || forceHeadless) {
+      console.log(`🎭 Using headless browser for JS-heavy site: ${url}`);
+      const result = await this.headlessScan(url, depth);
+      result.load_time_ms = Date.now() - startTime;
+      return result;
+    }
 
     // Try HTTP first
     let result = await this.httpScan(url, depth);
 
     // Use headless if suspicious (like payment provider titles)
     if (this.needsHeadlessVerification(result)) {
-      console.log(`Using headless browser for suspicious result: ${url}`);
+      console.log(`🔍 Using headless browser for suspicious result: ${url}`);
       result = await this.headlessScan(url, depth);
     }
 
     result.load_time_ms = Date.now() - startTime;
     return result;
+  }
+
+  private isJavaScriptHeavySite(url: string): boolean {
+    const jsHeavyPlatforms = [
+      // E-commerce platforms
+      "shopify.com",
+      "shopifypreview.com",
+      "myshopify.com",
+      "squarespace.com",
+      "wix.com",
+      "webflow.io",
+
+      // SPA frameworks (common patterns)
+      // We can detect these by checking if URL contains these patterns
+    ];
+
+    // Check if URL contains any JS-heavy platform indicators
+    const lowerUrl = url.toLowerCase();
+    return jsHeavyPlatforms.some((platform) => lowerUrl.includes(platform));
+  }
+
+  private async headlessScan(url: string, depth: number): Promise<ScanResult> {
+    const urlProcessor = new UrlProcessor(url);
+    const result = this.createBaseScanResult(url, depth);
+
+    let browser: Browser | undefined;
+    try {
+      browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-web-security", // Help with CORS issues
+          "--disable-features=VizDisplayCompositor", // Performance
+        ],
+      });
+
+      const page: Page = await browser.newPage();
+
+      // Set realistic viewport and user agent
+      await page.setUserAgent(this.userAgent);
+      await page.setViewport({ width: 1280, height: 800 });
+
+      // Enable request interception to block unnecessary resources
+      await page.setRequestInterception(true);
+      page.on("request", (req) => {
+        const resourceType = req.resourceType();
+        // Block images, fonts, and media to speed up loading
+        if (["image", "font", "media"].includes(resourceType)) {
+          req.abort();
+        } else {
+          req.continue();
+        }
+      });
+
+      // Navigate and wait for network to be mostly idle
+      const response = await page.goto(url, {
+        waitUntil: "networkidle0", // Wait until no requests for 500ms
+        timeout: 45000, // Longer timeout for JS-heavy sites
+      });
+
+      result.status = response?.status() || 0;
+      result.url = urlProcessor.normalize(page.url());
+
+      if (page.url() !== url) {
+        result.is_redirect = true;
+        result.redirected_from = url;
+      }
+
+      // CRITICAL: Wait longer for Shopify content to load
+      console.log("⏳ Waiting for dynamic content to load...");
+      await page
+        .waitForFunction(
+          () => {
+            // Wait for page to be loaded and interactive
+            return (
+              document.readyState === "complete" &&
+              document.body &&
+              !document.body.classList.contains("loading")
+            );
+          },
+          { timeout: 10000 },
+        )
+        .catch(() => {
+          // Fallback if condition never met
+          console.log("⚠️ Page load condition not met, continuing...");
+        });
+
+      // Wait for common Shopify elements to appear
+      try {
+        await page.waitForSelector("body", { timeout: 10000 });
+
+        // Try to wait for product grids or navigation to load
+        await Promise.race([
+          page.waitForSelector('[class*="product"]', { timeout: 5000 }),
+          page.waitForSelector('[class*="collection"]', { timeout: 5000 }),
+          page.waitForSelector("nav", { timeout: 5000 }),
+          await page
+            .waitForFunction(
+              () => {
+                // Wait for page to be loaded and interactive
+                return (
+                  document.readyState === "complete" &&
+                  document.body &&
+                  !document.body.classList.contains("loading")
+                );
+              },
+              { timeout: 10000 },
+            )
+            .catch(() => {
+              // Fallback if condition never met
+              console.log("⚠️ Page load condition not met, continuing...");
+            }),
+        ]);
+      } catch (e) {
+        console.log("⚠️ Dynamic content selectors not found, continuing...");
+      }
+
+      // Extract title with better Shopify handling
+      result.title = await this.extractTitleFromPage(page);
+
+      // Extract meta description
+      try {
+        const metaDescription = await page.$eval(
+          'meta[name="description"], meta[property="og:description"]',
+          (el: Element) => (el as HTMLMetaElement).getAttribute("content"),
+        );
+        result.meta_description = metaDescription || "";
+      } catch {
+        result.meta_description = "";
+      }
+
+      // Extract headings
+      result.h1s = await page.$$eval("h1", (els: Element[]) =>
+        els
+          .map((el) => el.textContent?.trim() || "")
+          .filter((text) => text.length > 0),
+      );
+      result.h2s = await page.$$eval("h2", (els: Element[]) =>
+        els
+          .map((el) => el.textContent?.trim() || "")
+          .filter((text) => text.length > 0),
+      );
+      result.h3s = await page.$$eval("h3", (els: Element[]) =>
+        els
+          .map((el) => el.textContent?.trim() || "")
+          .filter((text) => text.length > 0),
+      );
+
+      // Extract content (excluding scripts and styles)
+      const content = await page.evaluate(() => {
+        // Remove script and style elements
+        const scripts = document.querySelectorAll("script, style, noscript");
+        scripts.forEach((s) => s.remove());
+
+        // Get text content from body
+        return document.body.textContent || "";
+      });
+
+      result.content_length = content.length;
+      result.word_count = content
+        .split(/\s+/)
+        .filter((w) => w.length > 0).length;
+
+      // CRITICAL: Enhanced link extraction for Shopify
+      await this.extractLinksFromShopifyPage(page, result, urlProcessor);
+
+      // Extract images with sizes
+      await this.extractImagesFromPage(page, result, urlProcessor);
+
+      // Mark as headless scan
+      result.scan_method = "headless";
+
+      console.log(
+        `🎭 Headless scan completed: ${result.title} (${result.internal_links.length} internal links)`,
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      result.errors = [`Headless scan failed: ${errorMessage}`];
+      console.error(`❌ Headless scan error for ${url}:`, error);
+    } finally {
+      if (browser) {
+        await browser.close();
+      }
+    }
+
+    return result;
+  }
+
+  private async extractTitleFromPage(page: Page): Promise<string> {
+    try {
+      // Try multiple title sources in order of preference
+      const titleSources = [
+        'meta[property="og:title"]',
+        'meta[name="twitter:title"]',
+        "title",
+        "h1",
+        '[class*="title"]',
+        ".product-title",
+        ".page-title",
+      ];
+
+      for (const selector of titleSources) {
+        try {
+          const title = await page.$eval(selector, (el: Element) => {
+            if (el.tagName.toLowerCase() === "meta") {
+              return (el as HTMLMetaElement).getAttribute("content") || "";
+            }
+            return el.textContent?.trim() || "";
+          });
+
+          if (
+            title &&
+            title.length > 0 &&
+            !this.isPaymentProviderTitle(title)
+          ) {
+            return title;
+          }
+        } catch (e) {
+          // Try next selector
+          continue;
+        }
+      }
+
+      // Fallback: get page title and clean it
+      const rawTitle = await page.title();
+      return this.cleanShopifyTitle(rawTitle);
+    } catch (error) {
+      console.error("Error extracting title:", error);
+      return "";
+    }
+  }
+
+  private isPaymentProviderTitle(title: string): boolean {
+    const paymentProviders = [
+      "American Express",
+      "Visa",
+      "MasterCard",
+      "PayPal",
+      "Apple Pay",
+      "Google Pay",
+      "Stripe",
+      "Shop Pay",
+    ];
+    return paymentProviders.includes(title.trim());
+  }
+
+  private cleanShopifyTitle(title: string): string {
+    // Remove common Shopify suffixes and payment provider names
+    let cleaned = title
+      .replace(/\s*–\s*.*$/, "") // Remove everything after –
+      .replace(/\s*\|\s*.*$/, "") // Remove everything after |
+      .replace(
+        /American Express|Visa|MasterCard|PayPal|Apple Pay|Google Pay|Stripe|Shop Pay/gi,
+        "",
+      )
+      .trim();
+
+    return cleaned || title; // Return original if cleaning results in empty string
+  }
+
+  private async extractLinksFromShopifyPage(
+    page: Page,
+    result: ScanResult,
+    urlProcessor: UrlProcessor,
+  ): Promise<void> {
+    try {
+      // Get all links including dynamically loaded ones
+      const links = await page.evaluate(() => {
+        const linkElements = Array.from(document.querySelectorAll("a[href]"));
+
+        return linkElements
+          .map((a: Element) => {
+            const anchor = a as HTMLAnchorElement;
+            return {
+              href: anchor.href,
+              text: anchor.textContent?.trim() || "",
+              rel: anchor.getAttribute("rel") || "",
+              className: anchor.className || "",
+              // Get parent context to identify navigation vs product links
+              parentClass: anchor.parentElement?.className || "",
+            };
+          })
+          .filter(
+            (link) =>
+              link.href &&
+              !link.href.startsWith("javascript:") &&
+              !link.href.startsWith("mailto:") &&
+              !link.href.startsWith("tel:") &&
+              link.href !== "#",
+          );
+      });
+
+      console.log(`🔗 Found ${links.length} total links on page`);
+
+      for (const link of links) {
+        try {
+          const normalizedUrl = urlProcessor.normalize(link.href);
+
+          if (urlProcessor.isInternal(normalizedUrl)) {
+            result.internal_links.push({
+              url: normalizedUrl,
+              anchor_text: link.text,
+              rel_attributes: link.rel ? link.rel.split(" ") : [],
+            });
+          } else {
+            result.external_links.push({
+              url: normalizedUrl,
+              anchor_text: link.text,
+              rel_attributes: link.rel ? link.rel.split(" ") : [],
+            });
+          }
+        } catch (error) {
+          // Skip invalid URLs
+          console.log(`⚠️ Skipping invalid URL: ${link.href}`);
+        }
+      }
+
+      console.log(
+        `✅ Processed ${result.internal_links.length} internal links, ${result.external_links.length} external links`,
+      );
+    } catch (error) {
+      console.error("Error extracting links:", error);
+    }
+  }
+
+  // Update needsHeadlessVerification to be more aggressive for e-commerce
+  private needsHeadlessVerification(result: ScanResult): boolean {
+    const paymentProviders = [
+      "American Express",
+      "Visa",
+      "MasterCard",
+      "PayPal",
+      "Apple Pay",
+      "Google Pay",
+      "Stripe",
+      "Shop Pay",
+    ];
+
+    return (
+      paymentProviders.includes(result.title || "") ||
+      !result.title ||
+      result.title.length < 3 ||
+      (result.content_type?.includes("text/html") &&
+        result.content_length < 1000) ||
+      (result.h1s.length === 0 && result.h2s.length === 0) ||
+      result.internal_links.length < 3 // Very few links suggests missing JS content
+    );
   }
 
   private async httpScan(url: string, depth: number): Promise<ScanResult> {
@@ -60,99 +422,6 @@ export class Scanner {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       result.errors = [`HTTP scan failed: ${errorMessage}`];
-    }
-
-    return result;
-  }
-
-  private async headlessScan(url: string, depth: number): Promise<ScanResult> {
-    const urlProcessor = new UrlProcessor(url);
-    const result = this.createBaseScanResult(url, depth);
-
-    let browser: Browser | undefined;
-    try {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-        ],
-      });
-
-      const page: Page = await browser.newPage();
-      await page.setUserAgent(this.userAgent);
-      await page.setViewport({ width: 1280, height: 800 });
-
-      const response = await page.goto(url, {
-        waitUntil: "networkidle2",
-        timeout: 30000,
-      });
-
-      result.status = response?.status() || 0;
-      result.url = urlProcessor.normalize(page.url());
-
-      if (page.url() !== url) {
-        result.is_redirect = true;
-        result.redirected_from = url;
-      }
-
-      // Wait for potential dynamic content (FIXED)
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      // Extract data
-      result.title = await page.title();
-
-      // Extract meta description (FIXED)
-      try {
-        const metaDescription = await page.$eval(
-          'meta[name="description"]',
-          (el: Element) => (el as HTMLMetaElement).getAttribute("content"),
-        );
-        result.meta_description = metaDescription || "";
-      } catch {
-        result.meta_description = "";
-      }
-
-      // Extract headings
-      result.h1s = await page.$$eval("h1", (els: Element[]) =>
-        els.map((el) => el.textContent?.trim() || ""),
-      );
-      result.h2s = await page.$$eval("h2", (els: Element[]) =>
-        els.map((el) => el.textContent?.trim() || ""),
-      );
-      result.h3s = await page.$$eval("h3", (els: Element[]) =>
-        els.map((el) => el.textContent?.trim() || ""),
-      );
-
-      // Extract content
-      const content = await page.evaluate(() => {
-        const scripts = document.querySelectorAll("script, style");
-        scripts.forEach((s) => s.remove());
-        return document.body.textContent || "";
-      });
-
-      result.content_length = content.length;
-      result.word_count = content
-        .split(/\s+/)
-        .filter((w) => w.length > 0).length;
-
-      // Extract links
-      await this.extractLinksFromPage(page, result, urlProcessor);
-
-      // Extract images with sizes
-      await this.extractImagesFromPage(page, result, urlProcessor);
-
-      // Mark as headless scan
-      result.scan_method = "headless";
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      result.errors = [`Headless scan failed: ${errorMessage}`];
-    } finally {
-      if (browser) {
-        await browser.close();
-      }
     }
 
     return result;
@@ -376,28 +645,6 @@ export class Scanner {
         // Skip invalid URLs
       }
     }
-  }
-
-  private needsHeadlessVerification(result: ScanResult): boolean {
-    const paymentProviders = [
-      "American Express",
-      "Visa",
-      "MasterCard",
-      "PayPal",
-      "Apple Pay",
-      "Google Pay",
-      "Stripe",
-      "Shop Pay",
-    ];
-
-    return (
-      paymentProviders.includes(result.title || "") ||
-      !result.title ||
-      result.title.length < 3 ||
-      (result.content_type?.includes("text/html") &&
-        result.content_length < 1000) ||
-      (result.h1s.length === 0 && result.h2s.length === 0)
-    );
   }
 
   private createBaseScanResult(url: string, depth: number): ScanResult {
