@@ -1,8 +1,11 @@
 import { ScanResult } from "../types";
+import { Tables } from "../database.types";
 import { getSupabaseClient, getSupabaseServiceClient } from "./database/client";
 
+type Page = Tables<`pages`>;
+
 /**
- * Store scan results in the database with deduplication and UPSERT
+ * Store scan results in the database with deduplication, UPSERT, and cleanup
  */
 export async function storeScanResults(
   projectId: string,
@@ -16,7 +19,21 @@ export async function storeScanResults(
       `Processing ${results.length} scan results for project ${projectId}`,
     );
 
-    // STEP 1: Deduplicate results by URL (keep the first occurrence)
+    // STEP 1: Get existing pages for this project to track what needs cleanup
+    const { data: existingPages, error: existingError } = await supabase
+      .from("pages")
+      .select("id, url")
+      .eq("project_id", projectId);
+
+    if (existingError) {
+      console.error("Error fetching existing pages:", existingError);
+      throw existingError;
+    }
+
+    const existingUrlSet = new Set(existingPages?.map((p) => p.url) || []);
+    console.log(`📊 Found ${existingUrlSet.size} existing pages in database`);
+
+    // STEP 2: Deduplicate results by URL (keep the first occurrence)
     const urlMap = new Map<string, ScanResult>();
 
     for (const result of results) {
@@ -29,14 +46,36 @@ export async function storeScanResults(
     }
 
     const deduplicatedResults = Array.from(urlMap.values());
-    console.log(`Deduplicated to ${deduplicatedResults.length} unique URLs`);
+    console.log(`✅ Deduplicated to ${deduplicatedResults.length} unique URLs`);
 
-    // STEP 2: Prepare pages for upsert
+    // STEP 3: Track which URLs are found in current scan
+    const currentScanUrls = new Set(deduplicatedResults.map((r) => r.url));
+
+    // STEP 4: Identify pages to remove (exist in DB but not in current scan)
+    const urlsToRemove = Array.from(existingUrlSet).filter(
+      (url) => !currentScanUrls.has(url),
+    );
+
+    if (urlsToRemove.length > 0) {
+      console.log(
+        `🧹 Found ${urlsToRemove.length} pages to remove that are no longer accessible:`,
+      );
+      urlsToRemove.forEach((url) => console.log(`  - ${url}`));
+
+      // Remove old pages and their associated data
+      await cleanupRemovedPages(supabase, projectId, urlsToRemove);
+    } else {
+      console.log(`✅ No pages need to be removed`);
+    }
+
+    // STEP 5: Prepare pages for upsert
     const pages = deduplicatedResults.map((result) => ({
       project_id: projectId,
       url: result.url,
       title: result.title,
       meta_description: result.meta_description,
+      meta_description_length: result.meta_description?.length || 0,
+      title_length: result.title?.length || 0,
       h1s: result.h1s,
       h2s: result.h2s,
       h3s: result.h3s,
@@ -68,8 +107,8 @@ export async function storeScanResults(
       updated_at: new Date().toISOString(),
     }));
 
-    // STEP 3: Upsert pages in batches
-    const batchSize = 50; // Smaller batches to avoid issues
+    // STEP 6: Upsert pages in batches
+    const batchSize = 50;
     let totalUpserted = 0;
 
     for (let i = 0; i < pages.length; i += batchSize) {
@@ -110,9 +149,9 @@ export async function storeScanResults(
       );
     }
 
-    console.log(`Total pages upserted: ${totalUpserted}`);
+    console.log(`📝 Total pages upserted: ${totalUpserted}`);
 
-    // STEP 4: Get all pages for this project to create links mapping
+    // STEP 7: Get all current pages for this project to create links mapping
     const { data: allPages, error: fetchError } = await supabase
       .from("pages")
       .select("id, url")
@@ -126,8 +165,8 @@ export async function storeScanResults(
     // Create URL to ID mapping
     const urlToPageId = new Map(allPages?.map((p) => [p.url, p.id]) || []);
 
-    // STEP 5: Clear existing links for this project to avoid duplicates
-    console.log("Clearing existing links for project...");
+    // STEP 8: Clear existing links for this project to avoid duplicates
+    console.log("🧹 Clearing existing links for project...");
     const { error: deleteLinksError } = await supabase
       .from("page_links")
       .delete()
@@ -138,7 +177,7 @@ export async function storeScanResults(
       // Continue without clearing - links might just duplicate
     }
 
-    // STEP 6: Store links
+    // STEP 9: Store links
     const allLinks: any[] = [];
 
     for (const result of deduplicatedResults) {
@@ -160,6 +199,8 @@ export async function storeScanResults(
           link_type: "internal",
           rel_attributes: link.rel_attributes,
           is_followed: !link.rel_attributes?.includes("nofollow"),
+          http_status: destinationPageId ? 200 : null, // Assume 200 if we have the page
+          is_broken: !destinationPageId, // Mark as broken if destination page not found
         });
       }
 
@@ -178,9 +219,9 @@ export async function storeScanResults(
       }
     }
 
-    // STEP 7: Insert links in batches
+    // STEP 10: Insert links in batches
     if (allLinks.length > 0) {
-      console.log(`Inserting ${allLinks.length} links...`);
+      console.log(`🔗 Inserting ${allLinks.length} links...`);
 
       for (let i = 0; i < allLinks.length; i += batchSize) {
         const batch = allLinks.slice(i, i + batchSize);
@@ -195,11 +236,112 @@ export async function storeScanResults(
       }
     }
 
+    // STEP 11: Update scan summary with cleanup info
+    const { error: scanUpdateError } = await supabase
+      .from("scans")
+      .update({
+        summary_stats: {
+          pages_found: totalUpserted,
+          pages_removed: urlsToRemove.length,
+          links_created: allLinks.length,
+          cleanup_performed: urlsToRemove.length > 0,
+        },
+      })
+      .eq("id", scanId);
+
+    if (scanUpdateError) {
+      console.error("Error updating scan summary:", scanUpdateError);
+    }
+
     console.log(
-      `✅ Successfully stored ${totalUpserted} pages and ${allLinks.length} links for project ${projectId}`,
+      `✅ Successfully processed project ${projectId}: ${totalUpserted} pages upserted, ${urlsToRemove.length} pages removed, ${allLinks.length} links created`,
     );
   } catch (error) {
     console.error("❌ Error storing scan results:", error);
+    throw error;
+  }
+}
+
+/**
+ * Clean up pages that are no longer accessible and their associated data
+ */
+async function cleanupRemovedPages(
+  supabase: any,
+  projectId: string,
+  urlsToRemove: string[],
+): Promise<void> {
+  try {
+    // Get page IDs for the URLs to remove
+    const { data: pagesToRemove, error: fetchError } = await supabase
+      .from("pages")
+      .select("id, url")
+      .eq("project_id", projectId)
+      .in("url", urlsToRemove);
+
+    if (fetchError) {
+      console.error("Error fetching pages to remove:", fetchError);
+      return;
+    }
+
+    if (!pagesToRemove || pagesToRemove.length === 0) {
+      console.log("No pages found to remove");
+      return;
+    }
+
+    const pageIdsToRemove = pagesToRemove.map((p: Page) => p.id);
+
+    // Remove associated data in correct order (foreign key constraints)
+
+    // 1. Remove page links (both source and destination)
+    const { error: linksError } = await supabase
+      .from("page_links")
+      .delete()
+      .or(
+        `source_page_id.in.(${pageIdsToRemove.join(
+          ",",
+        )}),destination_page_id.in.(${pageIdsToRemove.join(",")})`,
+      );
+
+    if (linksError) {
+      console.error("Error removing page links:", linksError);
+    }
+
+    // 2. Remove issues associated with these pages
+    const { error: issuesError } = await supabase
+      .from("issues")
+      .delete()
+      .in("page_id", pageIdsToRemove);
+
+    if (issuesError) {
+      console.error("Error removing page issues:", issuesError);
+    }
+
+    // 3. Remove backlinks to these pages
+    const { error: backlinksError } = await supabase
+      .from("backlinks")
+      .delete()
+      .in("page_id", pageIdsToRemove);
+
+    if (backlinksError) {
+      console.error("Error removing backlinks:", backlinksError);
+    }
+
+    // 4. Finally, remove the pages themselves
+    const { error: pagesError } = await supabase
+      .from("pages")
+      .delete()
+      .in("id", pageIdsToRemove);
+
+    if (pagesError) {
+      console.error("Error removing pages:", pagesError);
+      throw pagesError;
+    }
+
+    console.log(
+      `🧹 Successfully cleaned up ${pagesToRemove.length} removed pages and their associated data`,
+    );
+  } catch (error) {
+    console.error("❌ Error during cleanup:", error);
     throw error;
   }
 }
@@ -218,7 +360,8 @@ export async function getScanResults(
     let pagesQuery = supabase
       .from("pages")
       .select("*")
-      .eq("project_id", projectId);
+      .eq("project_id", projectId)
+      .order("crawl_priority", { ascending: false });
 
     const { data: pages, error: pagesError } = await pagesQuery;
 

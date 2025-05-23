@@ -47,6 +47,28 @@ export class UrlProcessor {
 
       const urlObj = new URL(normalizedUrl);
 
+      // IMPORTANT: Normalize www vs non-www to match base domain preference
+      const baseDomainObj = new URL(this.baseUrl);
+      const baseHasWww = baseDomainObj.hostname.startsWith("www.");
+      const urlHasWww = urlObj.hostname.startsWith("www.");
+
+      // If base domain has www but URL doesn't, add www
+      if (
+        baseHasWww &&
+        !urlHasWww &&
+        this.isSameDomain(urlObj.hostname, baseDomainObj.hostname)
+      ) {
+        urlObj.hostname = `www.${urlObj.hostname}`;
+      }
+      // If base domain doesn't have www but URL does, remove www
+      else if (
+        !baseHasWww &&
+        urlHasWww &&
+        this.isSameDomain(urlObj.hostname, baseDomainObj.hostname)
+      ) {
+        urlObj.hostname = urlObj.hostname.replace(/^www\./, "");
+      }
+
       // Clean up the URL
       urlObj.hash = ""; // Remove fragments
 
@@ -88,6 +110,15 @@ export class UrlProcessor {
         }`,
       );
     }
+  }
+
+  /**
+   * Check if two domains are the same (ignoring www)
+   */
+  private isSameDomain(domain1: string, domain2: string): boolean {
+    const clean1 = domain1.replace(/^www\./, "").toLowerCase();
+    const clean2 = domain2.replace(/^www\./, "").toLowerCase();
+    return clean1 === clean2;
   }
 
   /**
