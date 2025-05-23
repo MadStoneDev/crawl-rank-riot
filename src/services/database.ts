@@ -45,8 +45,10 @@ export async function storeScanResults(
       keywords: result.keywords,
       open_graph: result.open_graph,
       twitter_card: result.twitter_card,
-      title_length: result.title?.length || 0,
-      meta_description_length: result.meta_description?.length || 0,
+      // REMOVED: title_length and meta_description_length (generated columns)
+      // These are automatically calculated by the database:
+      // - title_length = COALESCE(length(title), 0)
+      // - meta_description_length = COALESCE(length(meta_description), 0)
       crawl_priority: result.depth === 0 ? 10 : Math.max(1, 10 - result.depth),
     }));
 
