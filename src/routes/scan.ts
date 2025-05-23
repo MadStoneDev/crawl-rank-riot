@@ -299,7 +299,7 @@ router.get(
 );
 
 /**
- * Processes a scan in the background
+ * Processes a scan in the background with progress updates
  */
 async function processScanInBackground(
   url: string,
@@ -310,7 +310,8 @@ async function processScanInBackground(
   try {
     console.log(`Starting background crawl for ${url}`);
 
-    const crawler = new WebCrawler(url);
+    // Pass scanId and projectId to crawler for progress updates
+    const crawler = new WebCrawler(url, scanId, projectId);
     const scanResults = await crawler.crawl(url, options);
 
     console.log(
@@ -320,7 +321,7 @@ async function processScanInBackground(
     // Store all the scan results in the database
     await storeScanResults(projectId, scanId, scanResults);
 
-    // Mark scan as completed
+    // Final scan completion update (this might be redundant now but keeping for safety)
     const supabase = getSupabaseServiceClient();
     await supabase
       .from("scans")
@@ -333,6 +334,14 @@ async function processScanInBackground(
             total + page.internal_links.length + page.external_links.length,
           0,
         ),
+        summary_stats: {
+          current_progress: 100,
+          final_stats: {
+            total_pages: scanResults.length,
+            completion_time: new Date().toISOString(),
+            scan_duration_ms: Date.now() - new Date(scanId).getTime(), // Rough estimate
+          },
+        },
       })
       .eq("id", scanId);
 
@@ -342,13 +351,18 @@ async function processScanInBackground(
   } catch (error) {
     console.error(`Error in scan process for scan ${scanId}:`, error);
 
-    // Mark scan as failed
+    // Mark scan as failed with error details
     const supabase = getSupabaseServiceClient();
     await supabase
       .from("scans")
       .update({
         status: "failed",
         completed_at: new Date().toISOString(),
+        summary_stats: {
+          error_message:
+            error instanceof Error ? error.message : "Unknown error",
+          failed_at: new Date().toISOString(),
+        },
       })
       .eq("id", scanId);
   }

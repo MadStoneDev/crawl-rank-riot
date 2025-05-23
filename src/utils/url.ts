@@ -1,15 +1,232 @@
 export class UrlProcessor {
   private baseUrl: string;
   private baseDomain: string;
+  private preferredWwwFormat: "www" | "non-www" | "unknown" = "unknown";
 
   constructor(baseUrl: string) {
-    this.baseUrl = this.normalize(baseUrl);
+    this.baseUrl = this.normalizeBasic(baseUrl);
     try {
       const url = new URL(this.baseUrl);
       this.baseDomain = url.hostname.toLowerCase();
     } catch (error) {
       throw new Error(`Invalid base URL: ${baseUrl}`);
     }
+  }
+
+  /**
+   * Check if two domains are the same (ignoring www)
+   */
+  private isSameDomain(domain1: string, domain2: string): boolean {
+    const clean1 = domain1.replace(/^www\./, "").toLowerCase();
+    const clean2 = domain2.replace(/^www\./, "").toLowerCase();
+    return clean1 === clean2;
+  }
+
+  /**
+   * Basic normalization without www preference (used for constructor)
+   */
+  private normalizeBasic(url: string): string {
+    if (!url || typeof url !== "string") {
+      throw new Error("URL must be a non-empty string");
+    }
+
+    if (!url.includes("://")) {
+      url = `https://${url}`;
+    }
+
+    const urlObj = new URL(url);
+    urlObj.hash = "";
+
+    if (urlObj.pathname.endsWith("/") && urlObj.pathname.length > 1) {
+      urlObj.pathname = urlObj.pathname.slice(0, -1);
+    }
+
+    return urlObj.toString();
+  }
+
+  /**
+   * Detect the preferred www format by checking redirects and analyzing links
+   */
+  async detectPreferredWwwFormat(
+    scanResults?: Array<{ internal_links: Array<{ url: string }> }>,
+  ): Promise<void> {
+    console.log("🔍 Detecting preferred www format...");
+
+    // Method 1: Check redirect behavior
+    const wwwPreference = await this.checkRedirectPreference();
+
+    if (wwwPreference !== "unknown") {
+      this.preferredWwwFormat = wwwPreference;
+      console.log(
+        `✅ Detected preferred format via redirects: ${wwwPreference}`,
+      );
+      return;
+    }
+
+    // Method 2: Analyze internal links patterns (if scan results provided)
+    if (scanResults && scanResults.length > 0) {
+      const linkPreference = this.analyzeInternalLinkPatterns(scanResults);
+      if (linkPreference !== "unknown") {
+        this.preferredWwwFormat = linkPreference;
+        console.log(
+          `✅ Detected preferred format via link analysis: ${linkPreference}`,
+        );
+        return;
+      }
+    }
+
+    // Method 3: Default to current base URL format
+    const baseUrlObj = new URL(this.baseUrl);
+    this.preferredWwwFormat = baseUrlObj.hostname.startsWith("www.")
+      ? "www"
+      : "non-www";
+    console.log(
+      `⚠️ Using base URL format as fallback: ${this.preferredWwwFormat}`,
+    );
+  }
+
+  /**
+   * Check redirect behavior to determine www preference
+   */
+  private async checkRedirectPreference(): Promise<
+    "www" | "non-www" | "unknown"
+  > {
+    try {
+      const baseUrlObj = new URL(this.baseUrl);
+      const baseDomainWithoutWww = baseUrlObj.hostname.replace(/^www\./, "");
+
+      // Test both www and non-www versions
+      const wwwUrl = `${baseUrlObj.protocol}//www.${baseDomainWithoutWww}${baseUrlObj.pathname}`;
+      const nonWwwUrl = `${baseUrlObj.protocol}//${baseDomainWithoutWww}${baseUrlObj.pathname}`;
+
+      const results = await Promise.allSettled([
+        this.testUrlRedirect(wwwUrl),
+        this.testUrlRedirect(nonWwwUrl),
+      ]);
+
+      const wwwResult =
+        results[0].status === "fulfilled" ? results[0].value : null;
+      const nonWwwResult =
+        results[1].status === "fulfilled" ? results[1].value : null;
+
+      // Analyze redirect patterns
+      if (wwwResult && nonWwwResult) {
+        // If www redirects to non-www, prefer non-www
+        if (
+          wwwResult.finalUrl.includes(`//${baseDomainWithoutWww}`) &&
+          !wwwResult.finalUrl.includes("//www.")
+        ) {
+          return "non-www";
+        }
+
+        // If non-www redirects to www, prefer www
+        if (nonWwwResult.finalUrl.includes(`//www.${baseDomainWithoutWww}`)) {
+          return "www";
+        }
+
+        // If both work without redirects, check which has better response
+        if (
+          wwwResult.redirected === false &&
+          nonWwwResult.redirected === false
+        ) {
+          // Both work, check status codes
+          if (wwwResult.status === 200 && nonWwwResult.status !== 200) {
+            return "www";
+          } else if (nonWwwResult.status === 200 && wwwResult.status !== 200) {
+            return "non-www";
+          }
+        }
+      }
+
+      return "unknown";
+    } catch (error) {
+      console.log("⚠️ Could not detect www preference via redirects:", error);
+      return "unknown";
+    }
+  }
+
+  /**
+   * Test URL redirect behavior
+   */
+  private async testUrlRedirect(url: string): Promise<{
+    finalUrl: string;
+    status: number;
+    redirected: boolean;
+  }> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const response = await fetch(url, {
+        method: "HEAD", // Use HEAD to avoid downloading content
+        redirect: "follow",
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      return {
+        finalUrl: response.url,
+        status: response.status,
+        redirected: response.url !== url,
+      };
+    } catch (error) {
+      clearTimeout(timeoutId);
+      throw error;
+    }
+  }
+
+  /**
+   * Analyze internal link patterns to detect www preference
+   */
+  private analyzeInternalLinkPatterns(
+    scanResults: Array<{ internal_links: Array<{ url: string }> }>,
+  ): "www" | "non-www" | "unknown" {
+    let wwwCount = 0;
+    let nonWwwCount = 0;
+    const baseDomainWithoutWww = this.baseDomain.replace(/^www\./, "");
+
+    for (const result of scanResults) {
+      for (const link of result.internal_links) {
+        try {
+          const linkUrl = new URL(link.url);
+          const linkDomain = linkUrl.hostname.toLowerCase();
+
+          // Only count links to the same base domain
+          if (
+            linkDomain === `www.${baseDomainWithoutWww}` ||
+            linkDomain === baseDomainWithoutWww
+          ) {
+            if (linkDomain.startsWith("www.")) {
+              wwwCount++;
+            } else {
+              nonWwwCount++;
+            }
+          }
+        } catch (error) {
+          // Skip invalid URLs
+        }
+      }
+    }
+
+    console.log(
+      `📊 Link analysis: ${wwwCount} www links, ${nonWwwCount} non-www links`,
+    );
+
+    const totalLinks = wwwCount + nonWwwCount;
+    if (totalLinks < 5) {
+      return "unknown"; // Not enough data
+    }
+
+    // If 70% or more links use one format, that's the preference
+    const wwwPercentage = wwwCount / totalLinks;
+    if (wwwPercentage >= 0.7) {
+      return "www";
+    } else if (wwwPercentage <= 0.3) {
+      return "non-www";
+    }
+
+    return "unknown"; // Mixed usage
   }
 
   /**
@@ -47,26 +264,24 @@ export class UrlProcessor {
 
       const urlObj = new URL(normalizedUrl);
 
-      // IMPORTANT: Normalize www vs non-www to match base domain preference
-      const baseDomainObj = new URL(this.baseUrl);
-      const baseHasWww = baseDomainObj.hostname.startsWith("www.");
-      const urlHasWww = urlObj.hostname.startsWith("www.");
-
-      // If base domain has www but URL doesn't, add www
+      // Apply www preference if detected and this is the same domain
       if (
-        baseHasWww &&
-        !urlHasWww &&
-        this.isSameDomain(urlObj.hostname, baseDomainObj.hostname)
+        this.preferredWwwFormat !== "unknown" &&
+        this.isSameDomain(urlObj.hostname, this.baseDomain)
       ) {
-        urlObj.hostname = `www.${urlObj.hostname}`;
-      }
-      // If base domain doesn't have www but URL does, remove www
-      else if (
-        !baseHasWww &&
-        urlHasWww &&
-        this.isSameDomain(urlObj.hostname, baseDomainObj.hostname)
-      ) {
-        urlObj.hostname = urlObj.hostname.replace(/^www\./, "");
+        const domainWithoutWww = urlObj.hostname.replace(/^www\./, "");
+
+        if (
+          this.preferredWwwFormat === "www" &&
+          !urlObj.hostname.startsWith("www.")
+        ) {
+          urlObj.hostname = `www.${domainWithoutWww}`;
+        } else if (
+          this.preferredWwwFormat === "non-www" &&
+          urlObj.hostname.startsWith("www.")
+        ) {
+          urlObj.hostname = domainWithoutWww;
+        }
       }
 
       // Clean up the URL
@@ -110,15 +325,6 @@ export class UrlProcessor {
         }`,
       );
     }
-  }
-
-  /**
-   * Check if two domains are the same (ignoring www)
-   */
-  private isSameDomain(domain1: string, domain2: string): boolean {
-    const clean1 = domain1.replace(/^www\./, "").toLowerCase();
-    const clean2 = domain2.replace(/^www\./, "").toLowerCase();
-    return clean1 === clean2;
   }
 
   /**

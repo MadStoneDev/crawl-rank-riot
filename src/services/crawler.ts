@@ -11,110 +11,16 @@ export class WebCrawler {
   private processing = new Set<string>(); // Track URLs being processed
   private maxConcurrentRequests: number = 3;
 
-  constructor(baseUrl: string) {
+  private scanId: string | null = null;
+  private projectId: string | null = null;
+  private lastProgressUpdate: number = 0;
+  private progressUpdateInterval: number = 1000; // Update every 2 seconds
+
+  constructor(baseUrl: string, scanId?: string, projectId?: string) {
     this.scanner = new Scanner();
     this.urlProcessor = new UrlProcessor(baseUrl);
-  }
-
-  async crawl(
-    seedUrl: string,
-    options: CrawlOptions = {},
-  ): Promise<ScanResult[]> {
-    const {
-      maxDepth = 3,
-      maxPages = 100,
-      concurrentRequests = 3,
-      timeout = 60000,
-      excludePatterns = [],
-      checkSitemaps = true,
-      forceHeadless = false,
-    } = options;
-
-    console.log(`🚀 Starting crawl of ${seedUrl}`);
-    console.log(
-      `📊 Options: maxDepth=${maxDepth}, maxPages=${maxPages}, concurrent=${concurrentRequests}`,
-    );
-    console.log(`🌐 Base domain: ${this.urlProcessor.getBaseDomain()}`);
-
-    // Initialize
-    this.visited.clear();
-    this.queue = [];
-    this.results = [];
-    this.processing.clear();
-    this.maxConcurrentRequests = concurrentRequests;
-
-    // Validate and clean the seed URL
-    const cleanSeedUrl = this.urlProcessor.validateAndClean(seedUrl);
-    if (!cleanSeedUrl) {
-      throw new Error(`Invalid seed URL: ${seedUrl}`);
-    }
-
-    // Add seed URL with priority
-    this.queue.push({ url: cleanSeedUrl, depth: 0 });
-
-    // Check for sitemaps first if enabled
-    if (checkSitemaps) {
-      await this.processSitemaps(cleanSeedUrl, maxDepth);
-    }
-
-    const startTime = Date.now();
-
-    // Process queue with proper concurrency control
-    while (
-      this.queue.length > 0 &&
-      this.results.length < maxPages &&
-      Date.now() - startTime < timeout
-    ) {
-      // Get next batch of URLs to process
-      const batch = this.getNextBatch(
-        Math.min(this.maxConcurrentRequests, this.queue.length),
-      );
-
-      if (batch.length === 0) {
-        console.log("⏳ No more URLs to process, waiting for current batch...");
-        await this.delay(1000);
-        continue;
-      }
-
-      // Process batch concurrently
-      const promises = batch.map((item) =>
-        this.processUrl(
-          item,
-          maxDepth,
-          maxPages,
-          excludePatterns,
-          forceHeadless,
-        ),
-      );
-
-      await Promise.allSettled(promises);
-
-      console.log(
-        `📈 Progress: ${this.results.length}/${maxPages} pages, ${this.queue.length} in queue`,
-      );
-    }
-
-    console.log(`✅ Crawl completed: ${this.results.length} pages found`);
-    return this.results;
-  }
-
-  private getNextBatch(size: number): Array<{ url: string; depth: number }> {
-    const batch: Array<{ url: string; depth: number }> = [];
-
-    while (batch.length < size && this.queue.length > 0) {
-      const item = this.queue.shift();
-      if (!item) break;
-
-      // Skip if already visited or being processed
-      if (this.visited.has(item.url) || this.processing.has(item.url)) {
-        continue;
-      }
-
-      batch.push(item);
-      this.processing.add(item.url);
-    }
-
-    return batch;
+    this.scanId = scanId || null;
+    this.projectId = projectId || null;
   }
 
   private async processUrl(
@@ -157,6 +63,9 @@ export class WebCrawler {
         } internal links found)`,
       );
 
+      // Update progress in database periodically
+      await this.updateScanProgress();
+
       // Add internal links to queue if not at max depth
       if (item.depth < maxDepth) {
         const newLinks = this.processInternalLinks(
@@ -175,6 +84,229 @@ export class WebCrawler {
       // Remove from processing set
       this.processing.delete(item.url);
     }
+  }
+
+  /**
+   * Update scan progress in database
+   */
+  private async updateScanProgress(): Promise<void> {
+    if (!this.scanId || !this.projectId) {
+      return; // No scan to update
+    }
+
+    const now = Date.now();
+
+    // Only update if enough time has passed (avoid too frequent updates)
+    if (now - this.lastProgressUpdate < this.progressUpdateInterval) {
+      return;
+    }
+
+    try {
+      const { getSupabaseServiceClient } = await import("./database/client");
+      const supabase = getSupabaseServiceClient();
+
+      // Calculate total links scanned
+      const totalLinksScanned = this.results.reduce(
+        (total, page) =>
+          total + page.internal_links.length + page.external_links.length,
+        0,
+      );
+
+      // Calculate estimated completion percentage
+      const estimatedTotalPages = Math.max(
+        this.results.length * 1.5,
+        this.queue.length + this.results.length,
+      );
+      const progressPercentage = Math.min(
+        95,
+        Math.round((this.results.length / estimatedTotalPages) * 100),
+      );
+
+      await supabase
+        .from("scans")
+        .update({
+          pages_scanned: this.results.length,
+          links_scanned: totalLinksScanned,
+          last_progress_update: new Date().toISOString(),
+          summary_stats: {
+            current_progress: progressPercentage,
+            estimated_total: Math.round(estimatedTotalPages),
+            queue_size: this.queue.length,
+            processing_count: this.processing.size,
+            last_update: new Date().toISOString(),
+          },
+        })
+        .eq("id", this.scanId);
+
+      this.lastProgressUpdate = now;
+      console.log(
+        `📊 Progress updated: ${this.results.length} pages, ${progressPercentage}% complete`,
+      );
+    } catch (error) {
+      console.error("❌ Error updating scan progress:", error);
+      // Don't throw - progress updates are not critical
+    }
+  }
+
+  /**
+   * Force a final progress update
+   */
+  private async finalProgressUpdate(): Promise<void> {
+    if (!this.scanId || !this.projectId) {
+      return;
+    }
+
+    try {
+      const { getSupabaseServiceClient } = await import("./database/client");
+      const supabase = getSupabaseServiceClient();
+
+      const totalLinksScanned = this.results.reduce(
+        (total, page) =>
+          total + page.internal_links.length + page.external_links.length,
+        0,
+      );
+
+      await supabase
+        .from("scans")
+        .update({
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          pages_scanned: this.results.length,
+          links_scanned: totalLinksScanned,
+          last_progress_update: new Date().toISOString(),
+          summary_stats: {
+            current_progress: 100,
+            estimated_total: this.results.length,
+            queue_size: 0,
+            processing_count: 0,
+            final_stats: {
+              total_pages: this.results.length,
+              total_links: totalLinksScanned,
+              completion_time: new Date().toISOString(),
+            },
+          },
+        })
+        .eq("id", this.scanId);
+
+      console.log(
+        `✅ Final progress update: ${this.results.length} pages completed`,
+      );
+    } catch (error) {
+      console.error("❌ Error with final progress update:", error);
+    }
+  }
+
+  async crawl(
+    seedUrl: string,
+    options: CrawlOptions = {},
+  ): Promise<ScanResult[]> {
+    const {
+      maxDepth = 3,
+      maxPages = 100,
+      concurrentRequests = 3,
+      timeout = 60000,
+      excludePatterns = [],
+      checkSitemaps = true,
+      forceHeadless = false,
+    } = options;
+
+    console.log(`🚀 Starting crawl of ${seedUrl}`);
+    console.log(
+      `📊 Options: maxDepth=${maxDepth}, maxPages=${maxPages}, concurrent=${concurrentRequests}`,
+    );
+
+    // Initialize
+    this.visited.clear();
+    this.queue = [];
+    this.results = [];
+    this.processing.clear();
+    this.maxConcurrentRequests = concurrentRequests;
+
+    // Validate and clean the seed URL
+    const cleanSeedUrl = this.urlProcessor.validateAndClean(seedUrl);
+    if (!cleanSeedUrl) {
+      throw new Error(`Invalid seed URL: ${seedUrl}`);
+    }
+
+    // STEP 1: Detect preferred www format by checking redirects
+    await this.urlProcessor.detectPreferredWwwFormat();
+    console.log(`🌐 Base domain: ${this.urlProcessor.getBaseDomain()}`);
+
+    // Add seed URL (will be normalized with correct www preference)
+    const normalizedSeedUrl = this.urlProcessor.normalize(cleanSeedUrl);
+    this.queue.push({ url: normalizedSeedUrl, depth: 0 });
+
+    // Check for sitemaps first if enabled
+    if (checkSitemaps) {
+      await this.processSitemaps(normalizedSeedUrl, maxDepth);
+    }
+
+    const startTime = Date.now();
+
+    // Process queue with proper concurrency control
+    while (
+      this.queue.length > 0 &&
+      this.results.length < maxPages &&
+      Date.now() - startTime < timeout
+    ) {
+      // Get next batch of URLs to process
+      const batch = this.getNextBatch(
+        Math.min(this.maxConcurrentRequests, this.queue.length),
+      );
+
+      if (batch.length === 0) {
+        console.log("⏳ No more URLs to process, waiting for current batch...");
+        await this.delay(1000);
+        continue;
+      }
+
+      // Process batch concurrently
+      const promises = batch.map((item) =>
+        this.processUrl(
+          item,
+          maxDepth,
+          maxPages,
+          excludePatterns,
+          forceHeadless,
+        ),
+      );
+
+      await Promise.allSettled(promises);
+
+      console.log(
+        `📈 Progress: ${this.results.length}/${maxPages} pages, ${this.queue.length} in queue`,
+      );
+
+      // STEP 2: After first batch, refine www preference using link analysis
+      if (this.results.length >= 5 && this.results.length <= 10) {
+        console.log("🔄 Refining www preference with link analysis...");
+        await this.urlProcessor.detectPreferredWwwFormat(this.results);
+      }
+    }
+
+    await this.finalProgressUpdate();
+
+    console.log(`✅ Crawl completed: ${this.results.length} pages found`);
+    return this.results;
+  }
+
+  private getNextBatch(size: number): Array<{ url: string; depth: number }> {
+    const batch: Array<{ url: string; depth: number }> = [];
+
+    while (batch.length < size && this.queue.length > 0) {
+      const item = this.queue.shift();
+      if (!item) break;
+
+      // Skip if already visited or being processed
+      if (this.visited.has(item.url) || this.processing.has(item.url)) {
+        continue;
+      }
+
+      batch.push(item);
+      this.processing.add(item.url);
+    }
+
+    return batch;
   }
 
   private processInternalLinks(
