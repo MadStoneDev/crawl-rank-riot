@@ -2,7 +2,7 @@ import { ScanResult } from "../types";
 import { getSupabaseClient, getSupabaseServiceClient } from "./database/client";
 
 /**
- * Store scan results in the database
+ * Store scan results in the database with UPSERT to handle duplicates
  */
 export async function storeScanResults(
   projectId: string,
@@ -12,7 +12,11 @@ export async function storeScanResults(
   const supabase = getSupabaseServiceClient();
 
   try {
-    // Store pages
+    console.log(
+      `Storing ${results.length} scan results for project ${projectId}`,
+    );
+
+    // Store pages with UPSERT (insert or update if exists)
     const pages = results.map((result) => ({
       project_id: projectId,
       url: result.url,
@@ -45,42 +49,57 @@ export async function storeScanResults(
       keywords: result.keywords,
       open_graph: result.open_graph,
       twitter_card: result.twitter_card,
-      // REMOVED: title_length and meta_description_length (generated columns)
-      // These are automatically calculated by the database:
-      // - title_length = COALESCE(length(title), 0)
-      // - meta_description_length = COALESCE(length(meta_description), 0)
       crawl_priority: result.depth === 0 ? 10 : Math.max(1, 10 - result.depth),
+      updated_at: new Date().toISOString(),
     }));
 
-    // Insert pages in batches
+    // Insert pages in batches with UPSERT
     const batchSize = 100;
     for (let i = 0; i < pages.length; i += batchSize) {
       const batch = pages.slice(i, i + batchSize);
-      const { error: pagesError } = await supabase.from("pages").insert(batch);
+
+      const { error: pagesError } = await supabase.from("pages").upsert(batch, {
+        onConflict: "project_id,url",
+        ignoreDuplicates: false, // We want to update, not ignore
+      });
 
       if (pagesError) {
-        console.error("Error inserting pages batch:", pagesError);
+        console.error("Error upserting pages batch:", pagesError);
         throw pagesError;
       }
+
+      console.log(
+        `Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(
+          pages.length / batchSize,
+        )}`,
+      );
     }
 
-    // Get inserted pages to create links
+    // Get all pages for this project to create links mapping
     const { data: insertedPages, error: fetchError } = await supabase
       .from("pages")
       .select("id, url")
-      .eq("project_id", projectId)
-      .in(
-        "url",
-        results.map((r) => r.url),
-      );
+      .eq("project_id", projectId);
 
     if (fetchError) {
-      console.error("Error fetching inserted pages:", fetchError);
+      console.error("Error fetching pages:", fetchError);
       throw fetchError;
     }
 
     // Create URL to ID mapping
     const urlToPageId = new Map(insertedPages?.map((p) => [p.url, p.id]) || []);
+
+    // Clear existing links for this project to avoid duplicates
+    console.log("Clearing existing links for project...");
+    const { error: deleteLinksError } = await supabase
+      .from("page_links")
+      .delete()
+      .eq("project_id", projectId);
+
+    if (deleteLinksError) {
+      console.error("Error clearing existing links:", deleteLinksError);
+      // Don't throw - we can continue without clearing old links
+    }
 
     // Store links
     const allLinks: any[] = [];
@@ -100,7 +119,7 @@ export async function storeScanResults(
           anchor_text: link.anchor_text,
           link_type: "internal",
           rel_attributes: link.rel_attributes,
-          is_followed: !link.rel_attributes.includes("nofollow"),
+          is_followed: !link.rel_attributes?.includes("nofollow"),
         });
       }
 
@@ -114,13 +133,15 @@ export async function storeScanResults(
           anchor_text: link.anchor_text,
           link_type: "external",
           rel_attributes: link.rel_attributes,
-          is_followed: !link.rel_attributes.includes("nofollow"),
+          is_followed: !link.rel_attributes?.includes("nofollow"),
         });
       }
     }
 
     // Insert links in batches
     if (allLinks.length > 0) {
+      console.log(`Inserting ${allLinks.length} links...`);
+
       for (let i = 0; i < allLinks.length; i += batchSize) {
         const batch = allLinks.slice(i, i + batchSize);
         const { error: linksError } = await supabase
@@ -135,7 +156,7 @@ export async function storeScanResults(
     }
 
     console.log(
-      `Successfully stored ${results.length} pages and ${allLinks.length} links`,
+      `Successfully stored ${results.length} pages and ${allLinks.length} links for project ${projectId}`,
     );
   } catch (error) {
     console.error("Error storing scan results:", error);
