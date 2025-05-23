@@ -1,5 +1,5 @@
 import { ScanResult } from "../types";
-import { getSupabaseClient } from "./database/client";
+import { getSupabaseClient, getSupabaseServiceClient } from "./database/client";
 
 /**
  * Store scan results in the database
@@ -9,7 +9,7 @@ export async function storeScanResults(
   scanId: string,
   results: ScanResult[],
 ): Promise<void> {
-  const supabase = getSupabaseClient();
+  const supabase = getSupabaseServiceClient();
 
   try {
     // Store pages
