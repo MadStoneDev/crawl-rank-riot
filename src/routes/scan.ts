@@ -11,6 +11,126 @@ import {
 const router = Router();
 
 /**
+ * POST /api/test-crawl - Test crawling without saving to database
+ * Use this endpoint to test the crawler functionality
+ */
+router.post(
+  "/test-crawl",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { url, options = {} } = req.body;
+
+      // Validate URL
+      if (!url) {
+        return next(
+          new AppError("URL is required", "VALIDATION_ERROR", undefined, 400),
+        );
+      }
+
+      // Validate URL format
+      try {
+        new URL(url.startsWith("http") ? url : `https://${url}`);
+      } catch {
+        return next(
+          new AppError(
+            "Invalid URL format",
+            "VALIDATION_ERROR",
+            undefined,
+            400,
+          ),
+        );
+      }
+
+      console.log(`Test crawl request received for URL: ${url}`);
+
+      // Parse crawler options with defaults for testing
+      const crawlerOptions = {
+        maxDepth: options?.maxDepth || 2, // Smaller depth for testing
+        maxPages: options?.maxPages || 10, // Fewer pages for testing
+        concurrentRequests: options?.concurrentRequests || 2, // Lower concurrency for testing
+        timeout: options?.timeout || 60000, // 1 minute timeout
+        excludePatterns: [
+          /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
+          /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
+          /#.*/i,
+          /\?s=/i,
+          /\?p=\d+/i,
+          /\?(utm_|fbclid|gclid)/i,
+        ],
+      };
+
+      const startTime = Date.now();
+
+      // Run the crawler
+      const crawler = new WebCrawler(url);
+      const results = await crawler.crawl(url, crawlerOptions);
+
+      const endTime = Date.now();
+      const crawlDuration = endTime - startTime;
+
+      console.log(
+        `Test crawl completed for ${url}: ${results.length} pages in ${crawlDuration}ms`,
+      );
+
+      // Calculate summary statistics
+      const summary = {
+        totalPages: results.length,
+        totalInternalLinks: results.reduce(
+          (sum, page) => sum + page.internal_links.length,
+          0,
+        ),
+        totalExternalLinks: results.reduce(
+          (sum, page) => sum + page.external_links.length,
+          0,
+        ),
+        totalImages: results.reduce((sum, page) => sum + page.images.length, 0),
+        avgLoadTime:
+          results.length > 0
+            ? results.reduce((sum, page) => sum + (page.load_time_ms || 0), 0) /
+              results.length
+            : 0,
+        statusCodes: results.reduce(
+          (acc, page) => {
+            acc[page.status] = (acc[page.status] || 0) + 1;
+            return acc;
+          },
+          {} as Record<number, number>,
+        ),
+        scanMethods: results.reduce(
+          (acc, page) => {
+            const method = page.scan_method || "http";
+            acc[method] = (acc[method] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>,
+        ),
+        crawlDurationMs: crawlDuration,
+      };
+
+      // Return detailed response for testing
+      res.json(
+        createSuccessResponse(
+          {
+            summary,
+            pages: results,
+            crawlOptions: crawlerOptions,
+            metadata: {
+              crawledAt: new Date().toISOString(),
+              seedUrl: url,
+              userAgent: "RankRiot/1.0 SEO Crawler",
+            },
+          },
+          `Test crawl completed successfully. Found ${results.length} pages.`,
+        ),
+      );
+    } catch (error) {
+      console.error("Error in test crawl:", error);
+      next(error);
+    }
+  },
+);
+
+/**
  * POST /api/scan - Start a new website scan
  */
 router.post(

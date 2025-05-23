@@ -1,5 +1,5 @@
 ﻿import { Router } from "express";
-import scanRouter from "./scan";
+import scanRouter from "./scan"; // Make sure this path is correct
 // import { authMiddleware } from '../middleware/auth';
 
 const router = Router();
