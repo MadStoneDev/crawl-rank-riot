@@ -2,7 +2,7 @@ import { ScanResult } from "../types";
 import { getSupabaseClient, getSupabaseServiceClient } from "./database/client";
 
 /**
- * Store scan results in the database with UPSERT to handle duplicates
+ * Store scan results in the database with deduplication and UPSERT
  */
 export async function storeScanResults(
   projectId: string,
@@ -13,11 +13,26 @@ export async function storeScanResults(
 
   try {
     console.log(
-      `Storing ${results.length} scan results for project ${projectId}`,
+      `Processing ${results.length} scan results for project ${projectId}`,
     );
 
-    // Store pages with UPSERT (insert or update if exists)
-    const pages = results.map((result) => ({
+    // STEP 1: Deduplicate results by URL (keep the first occurrence)
+    const urlMap = new Map<string, ScanResult>();
+
+    for (const result of results) {
+      const normalizedUrl = result.url.toLowerCase().trim();
+      if (!urlMap.has(normalizedUrl)) {
+        urlMap.set(normalizedUrl, result);
+      } else {
+        console.log(`Duplicate URL found and skipped: ${result.url}`);
+      }
+    }
+
+    const deduplicatedResults = Array.from(urlMap.values());
+    console.log(`Deduplicated to ${deduplicatedResults.length} unique URLs`);
+
+    // STEP 2: Prepare pages for upsert
+    const pages = deduplicatedResults.map((result) => ({
       project_id: projectId,
       url: result.url,
       title: result.title,
@@ -53,30 +68,52 @@ export async function storeScanResults(
       updated_at: new Date().toISOString(),
     }));
 
-    // Insert pages in batches with UPSERT
-    const batchSize = 100;
+    // STEP 3: Upsert pages in batches
+    const batchSize = 50; // Smaller batches to avoid issues
+    let totalUpserted = 0;
+
     for (let i = 0; i < pages.length; i += batchSize) {
       const batch = pages.slice(i, i + batchSize);
 
-      const { error: pagesError } = await supabase.from("pages").upsert(batch, {
-        onConflict: "project_id,url",
-        ignoreDuplicates: false, // We want to update, not ignore
+      // Double-check for duplicates within this batch (extra safety)
+      const batchUrls = new Set();
+      const cleanBatch = batch.filter((page) => {
+        if (batchUrls.has(page.url)) {
+          console.log(`Skipping duplicate in batch: ${page.url}`);
+          return false;
+        }
+        batchUrls.add(page.url);
+        return true;
       });
+
+      const { error: pagesError } = await supabase
+        .from("pages")
+        .upsert(cleanBatch, {
+          onConflict: "project_id,url",
+          ignoreDuplicates: false,
+        });
 
       if (pagesError) {
         console.error("Error upserting pages batch:", pagesError);
+        console.error(
+          "Batch details:",
+          cleanBatch.map((p) => p.url),
+        );
         throw pagesError;
       }
 
+      totalUpserted += cleanBatch.length;
       console.log(
         `Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(
           pages.length / batchSize,
-        )}`,
+        )} (${cleanBatch.length} pages)`,
       );
     }
 
-    // Get all pages for this project to create links mapping
-    const { data: insertedPages, error: fetchError } = await supabase
+    console.log(`Total pages upserted: ${totalUpserted}`);
+
+    // STEP 4: Get all pages for this project to create links mapping
+    const { data: allPages, error: fetchError } = await supabase
       .from("pages")
       .select("id, url")
       .eq("project_id", projectId);
@@ -87,9 +124,9 @@ export async function storeScanResults(
     }
 
     // Create URL to ID mapping
-    const urlToPageId = new Map(insertedPages?.map((p) => [p.url, p.id]) || []);
+    const urlToPageId = new Map(allPages?.map((p) => [p.url, p.id]) || []);
 
-    // Clear existing links for this project to avoid duplicates
+    // STEP 5: Clear existing links for this project to avoid duplicates
     console.log("Clearing existing links for project...");
     const { error: deleteLinksError } = await supabase
       .from("page_links")
@@ -98,15 +135,18 @@ export async function storeScanResults(
 
     if (deleteLinksError) {
       console.error("Error clearing existing links:", deleteLinksError);
-      // Don't throw - we can continue without clearing old links
+      // Continue without clearing - links might just duplicate
     }
 
-    // Store links
+    // STEP 6: Store links
     const allLinks: any[] = [];
 
-    for (const result of results) {
+    for (const result of deduplicatedResults) {
       const sourcePageId = urlToPageId.get(result.url);
-      if (!sourcePageId) continue;
+      if (!sourcePageId) {
+        console.log(`No page ID found for URL: ${result.url}`);
+        continue;
+      }
 
       // Internal links
       for (const link of result.internal_links) {
@@ -138,7 +178,7 @@ export async function storeScanResults(
       }
     }
 
-    // Insert links in batches
+    // STEP 7: Insert links in batches
     if (allLinks.length > 0) {
       console.log(`Inserting ${allLinks.length} links...`);
 
@@ -150,16 +190,16 @@ export async function storeScanResults(
 
         if (linksError) {
           console.error("Error inserting links batch:", linksError);
-          // Don't throw here, as pages are already stored
+          // Don't throw - pages are more important than links
         }
       }
     }
 
     console.log(
-      `Successfully stored ${results.length} pages and ${allLinks.length} links for project ${projectId}`,
+      `✅ Successfully stored ${totalUpserted} pages and ${allLinks.length} links for project ${projectId}`,
     );
   } catch (error) {
-    console.error("Error storing scan results:", error);
+    console.error("❌ Error storing scan results:", error);
     throw error;
   }
 }
