@@ -1,5 +1,5 @@
 import cors from "cors";
-import routes from "./routes";
+import routes from "./routes/index"; // Updated path to point to routes/index.ts
 import { config, validateConfig } from "./config";
 import { crawlScheduler } from "./utils/scheduler";
 import { errorHandlerMiddleware } from "./services/api/responses";
@@ -41,6 +41,7 @@ app.get("/health", (req: Request, res: Response) => {
   });
 });
 
+// API routes
 app.use("/api", routes);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
