@@ -1,111 +1,69 @@
-/**
- * Error handling utilities
- */
-
-/**
- * Error codes used throughout the application
- */
 export enum ErrorCode {
-  // General errors
-  UNKNOWN_ERROR = "UNKNOWN_ERROR",
   VALIDATION_ERROR = "VALIDATION_ERROR",
-  NOT_FOUND = "NOT_FOUND",
-
-  // Crawler errors
-  CRAWLER_INITIALIZATION_ERROR = "CRAWLER_INITIALIZATION_ERROR",
-  FETCH_ERROR = "FETCH_ERROR",
-  TIMEOUT_ERROR = "TIMEOUT_ERROR",
-  PARSE_ERROR = "PARSE_ERROR",
-
-  // Database errors
-  DATABASE_CONNECTION_ERROR = "DATABASE_CONNECTION_ERROR",
-  DATABASE_QUERY_ERROR = "DATABASE_QUERY_ERROR",
-
-  // Authentication errors
   UNAUTHORIZED = "UNAUTHORIZED",
   FORBIDDEN = "FORBIDDEN",
+  NOT_FOUND = "NOT_FOUND",
+  PROJECT_NOT_FOUND = "PROJECT_NOT_FOUND",
+  SCAN_NOT_FOUND = "SCAN_NOT_FOUND",
+  DATABASE_ERROR = "DATABASE_ERROR",
+  CRAWLER_ERROR = "CRAWLER_ERROR",
+  UNKNOWN_ERROR = "UNKNOWN_ERROR",
 }
 
-/**
- * Custom application error class
- */
 export class AppError extends Error {
-  /**
-   * Creates a new application error
-   * @param message Error message
-   * @param code Error code
-   * @param details Additional error details
-   */
+  public readonly code: string;
+  public readonly statusCode: number;
+  public readonly details?: any;
+
   constructor(
     message: string,
-    public readonly code: ErrorCode | string,
-    public readonly details?: any,
-    public readonly statusCode: number = 500,
+    code: string = ErrorCode.UNKNOWN_ERROR,
+    details?: any,
+    statusCode: number = 500,
   ) {
     super(message);
     this.name = "AppError";
+    this.code = code;
+    this.statusCode = statusCode;
+    this.details = details;
 
     // Capture stack trace
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, AppError);
-    }
+    Error.captureStackTrace(this, this.constructor);
   }
 }
 
-/**
- * Crawler-specific error class
- */
 export class CrawlerError extends AppError {
   constructor(
     message: string,
-    code: ErrorCode | string,
+    code: string = ErrorCode.CRAWLER_ERROR,
     details?: any,
-    statusCode = 500,
   ) {
-    super(message, code, details, statusCode);
+    super(message, code, details, 500);
     this.name = "CrawlerError";
   }
 }
 
-/**
- * Handles unknown errors and converts them to AppError
- * @param error Any caught error
- * @param context Context where the error occurred
- * @returns Normalized AppError
- */
-export function handleError(error: unknown, context: string): AppError {
-  if (error instanceof AppError) {
-    return error;
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  return new AppError(`${context}: ${message}`, ErrorCode.UNKNOWN_ERROR);
-}
-
-/**
- * Creates a not found error
- * @param entity Entity type that wasn't found
- * @param id Identifier that was searched for
- * @returns Not found error
- */
-export function createNotFoundError(entity: string, id: string): AppError {
-  return new AppError(
-    `${entity} with ID ${id} not found`,
-    ErrorCode.NOT_FOUND,
-    { entity, id },
-    404,
-  );
-}
-
-/**
- * Creates a validation error
- * @param message Validation error message
- * @param details Validation error details
- * @returns Validation error
- */
 export function createValidationError(
   message: string,
   details?: any,
 ): AppError {
   return new AppError(message, ErrorCode.VALIDATION_ERROR, details, 400);
+}
+
+export function handleError(error: unknown, context?: string): AppError {
+  if (error instanceof AppError) {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    const message = context ? `${context}: ${error.message}` : error.message;
+    return new AppError(message, ErrorCode.UNKNOWN_ERROR, {
+      originalError: error.message,
+    });
+  }
+
+  const message = context ? `${context}: ${String(error)}` : String(error);
+  return new AppError(message, ErrorCode.UNKNOWN_ERROR, {
+    originalError: error,
+  });
 }

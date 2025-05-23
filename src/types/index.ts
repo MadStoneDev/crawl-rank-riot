@@ -1,10 +1,3 @@
-/**
- * Common type definitions shared across the application
- */
-
-/**
- * Standardized API response format
- */
 export interface ApiResponse<T> {
   status: "success" | "error";
   message: string;
@@ -15,50 +8,16 @@ export interface ApiResponse<T> {
   };
 }
 
-/**
- * Link representation in the system
- */
-export interface Link {
-  url: string;
-  text: string;
-  isFollowed: boolean;
-  relAttributes: string[];
+export interface CrawlOptions {
+  maxDepth?: number;
+  maxPages?: number;
+  concurrentRequests?: number;
+  timeout?: number;
+  excludePatterns?: RegExp[];
+  checkSitemaps?: boolean;
+  useHeadlessBrowser?: boolean;
 }
 
-/**
- * Image representation in the system
- */
-export interface Image {
-  url: string;
-  alt?: string;
-  dimensions?: {
-    width?: number;
-    height?: number;
-  };
-}
-
-/**
- * Common metadata for all database entities
- */
-export interface EntityMetadata {
-  id: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/**
- * Severity levels for issues
- */
-export type SeverityLevel = "info" | "low" | "medium" | "high" | "critical";
-
-/**
- * Scan status enum
- */
-export type ScanStatus = "pending" | "in_progress" | "completed" | "failed";
-
-/**
- * Unified ScanResult interface used throughout the application
- */
 export interface ScanResult {
   // Core information
   url: string;
@@ -97,10 +56,14 @@ export interface ScanResult {
     rel_attributes: string[];
   }>;
 
-  // Media
+  // Media with size information
   images: Array<{
     src: string;
     alt: string;
+    dimensions?: {
+      width: number;
+      height: number;
+    };
   }>;
 
   // Technical information
@@ -127,8 +90,20 @@ export interface ScanResult {
   }>;
 
   // Crawler metadata
-  scan_method?: "standard" | "headless" | "enhanced-http";
+  scan_method?: "http" | "headless";
   scanned_at: string;
   errors?: string[];
   warnings?: string[];
+}
+
+export type ScanStatus = "pending" | "in_progress" | "completed" | "failed";
+
+export interface Project {
+  id: string;
+  name: string;
+  url: string;
+  user_id: string;
+  created_at: string;
+  last_scan_at?: string;
+  scan_frequency?: "weekly" | "monthly";
 }

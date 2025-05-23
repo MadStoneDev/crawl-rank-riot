@@ -1,34 +1,14 @@
-﻿import { Router, Request, Response, NextFunction } from "express";
+import { AppError } from "../utils/error";
+import { WebCrawler } from "../services/crawler";
+import { storeScanResults } from "../services/database";
+import { getSupabaseClient } from "../services/database/client";
+import { Router, Request, Response, NextFunction } from "express";
 import {
   createSuccessResponse,
   errorHandlerMiddleware,
 } from "../services/api/responses";
 
-import { getSupabaseClient } from "../services/database/client";
-
-import { crawlWebsite } from "../services/crawler";
-import { storeScanResults } from "../services/database";
-
-import { AppError, createValidationError, handleError } from "../utils/error";
-
 const router = Router();
-
-/**
- * Validates request body for the scan endpoint
- * @param req Express request
- * @throws ValidationError if request is invalid
- */
-function validateScanRequest(req: Request): void {
-  const { project_id, email, options } = req.body;
-
-  if (!project_id) {
-    throw createValidationError("Project ID is required");
-  }
-
-  if (!email) {
-    throw createValidationError("Email is required");
-  }
-}
 
 /**
  * POST /api/scan - Start a new website scan
@@ -37,14 +17,28 @@ router.post(
   "/scan",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { project_id, email, options } = req.body;
+      const { project_id, email, options = {} } = req.body;
 
       // Validate inputs
-      validateScanRequest(req);
+      if (!project_id) {
+        return next(
+          new AppError(
+            "Project ID is required",
+            "VALIDATION_ERROR",
+            undefined,
+            400,
+          ),
+        );
+      }
+      if (!email) {
+        return next(
+          new AppError("Email is required", "VALIDATION_ERROR", undefined, 400),
+        );
+      }
 
       const supabase = getSupabaseClient();
 
-      // Fetch project information from the database
+      // Fetch project information
       const { data: project, error: projectError } = await supabase
         .from("projects")
         .select("id, url")
@@ -62,11 +56,8 @@ router.post(
         );
       }
 
-      const url = project.url;
-
-      // Log the scan request
       console.log(
-        `Scan request received for Project ID: ${project_id}, URL: ${url}, Email: ${email}`,
+        `Scan request received for Project ID: ${project_id}, URL: ${project.url}, Email: ${email}`,
       );
 
       // Create a new scan record
@@ -97,7 +88,7 @@ router.post(
 
       const scanId = scanData.id;
 
-      // Update the project's last_scan_at timestamp
+      // Update project's last_scan_at timestamp
       await supabase
         .from("projects")
         .update({ last_scan_at: new Date().toISOString() })
@@ -105,40 +96,90 @@ router.post(
 
       // Parse crawler options with defaults
       const crawlerOptions = {
-        maxDepth: options?.maxDepth || 10,
-        maxPages: options?.maxPages || 1000,
-        concurrentRequests: options?.concurrentRequests || 5,
+        maxDepth: options?.maxDepth || 3,
+        maxPages: options?.maxPages || 100,
+        concurrentRequests: options?.concurrentRequests || 3,
         timeout: options?.timeout || 120000, // 2 minutes
-        useHeadlessBrowser: options?.useHeadlessBrowser || false,
         checkSitemaps: options?.checkSitemaps !== false,
+        excludePatterns: [
+          /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
+          /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
+          /#.*/i,
+          /\?s=/i,
+          /\?p=\d+/i,
+          /\?(utm_|fbclid|gclid)/i,
+        ],
       };
 
-      // Return early response to client to avoid timeout
+      // Return early response to client
       res.json(
         createSuccessResponse(
           {
             project_id,
             scan_id: scanId,
-            url,
+            url: project.url,
           },
-          `Scan started successfully`,
+          "Scan started successfully",
         ),
       );
 
       // Run the crawler in the background
-      processScanInBackground(url, crawlerOptions, scanId, project_id);
+      processScanInBackground(project.url, crawlerOptions, scanId, project_id);
     } catch (error) {
-      next(handleError(error, "Error in scan endpoint"));
+      next(error);
+    }
+  },
+);
+
+/**
+ * GET /api/scan/:scanId - Get scan status and results
+ */
+router.get(
+  "/scan/:scanId",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { scanId } = req.params;
+      const supabase = getSupabaseClient();
+
+      const { data: scan, error } = await supabase
+        .from("scans")
+        .select("*")
+        .eq("id", scanId)
+        .single();
+
+      if (error || !scan) {
+        return next(
+          new AppError("Scan not found", "SCAN_NOT_FOUND", error, 404),
+        );
+      }
+
+      // If scan is completed, also fetch the pages
+      let pages: any[] = [];
+      if (scan.status === "completed") {
+        const { data: pagesData } = await supabase
+          .from("pages")
+          .select("*")
+          .eq("project_id", scan.project_id)
+          .order("created_at", { ascending: false })
+          .limit(scan.pages_scanned || 100);
+
+        pages = pagesData || [];
+      }
+
+      res.json(
+        createSuccessResponse({
+          scan,
+          pages: scan.status === "completed" ? pages : [],
+        }),
+      );
+    } catch (error) {
+      next(error);
     }
   },
 );
 
 /**
  * Processes a scan in the background
- * @param url URL to scan
- * @param options Crawler options
- * @param scanId Scan ID
- * @param projectId Project ID
  */
 async function processScanInBackground(
   url: string,
@@ -147,15 +188,10 @@ async function processScanInBackground(
   projectId: string,
 ): Promise<void> {
   try {
-    // Run the crawler
-    const scanResults = await crawlWebsite(
-      url,
-      {
-        ...options,
-      },
-      scanId,
-      projectId,
-    );
+    console.log(`Starting background crawl for ${url}`);
+
+    const crawler = new WebCrawler(url);
+    const scanResults = await crawler.crawl(url, options);
 
     console.log(
       `Crawl completed for ${url}, found ${scanResults.length} pages`,
@@ -164,30 +200,40 @@ async function processScanInBackground(
     // Store all the scan results in the database
     await storeScanResults(projectId, scanId, scanResults);
 
-    // Log completion
+    // Mark scan as completed
+    const supabase = getSupabaseClient();
+    await supabase
+      .from("scans")
+      .update({
+        status: "completed",
+        completed_at: new Date().toISOString(),
+        pages_scanned: scanResults.length,
+        links_scanned: scanResults.reduce(
+          (total, page) =>
+            total + page.internal_links.length + page.external_links.length,
+          0,
+        ),
+      })
+      .eq("id", scanId);
+
     console.log(
       `Scan completed for project ${projectId}, scan ${scanId}, processed ${scanResults.length} pages`,
     );
   } catch (error) {
-    // Log error
     console.error(`Error in scan process for scan ${scanId}:`, error);
 
     // Mark scan as failed
     const supabase = getSupabaseClient();
-
-    if (supabase) {
-      await supabase
-        .from("scans")
-        .update({
-          status: "failed",
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", scanId);
-    }
+    await supabase
+      .from("scans")
+      .update({
+        status: "failed",
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", scanId);
   }
 }
 
-// Apply error handler middleware
 router.use(errorHandlerMiddleware);
 
 export default router;

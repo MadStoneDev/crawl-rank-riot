@@ -1,10 +1,9 @@
 import cors from "cors";
-import express, { Request, Response, NextFunction } from "express";
-
 import routes from "./routes";
 import { config, validateConfig } from "./config";
-
+import { crawlScheduler } from "./utils/scheduler";
 import { errorHandlerMiddleware } from "./services/api/responses";
+import express, { Request, Response, NextFunction } from "express";
 
 try {
   validateConfig();
@@ -35,7 +34,11 @@ app.use(
 );
 
 app.get("/health", (req: Request, res: Response) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    scheduler: crawlScheduler ? "running" : "stopped",
+  });
 });
 
 app.use("/api", routes);
@@ -51,10 +54,28 @@ app.use(errorHandlerMiddleware);
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+
+  // Start the crawl scheduler
+  crawlScheduler.start();
+  console.log("Automatic crawl scheduler started");
+});
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received, shutting down gracefully");
+  crawlScheduler.stop();
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  console.log("SIGINT received, shutting down gracefully");
+  crawlScheduler.stop();
+  process.exit(0);
 });
 
 process.on("uncaughtException", (error) => {
   console.error("Uncaught Exception:", error);
+  crawlScheduler.stop();
   process.exit(1);
 });
 
