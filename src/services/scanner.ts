@@ -13,20 +13,20 @@ export class Scanner {
   ): Promise<ScanResult> {
     const startTime = Date.now();
 
-    // For Shopify and other JS-heavy sites, skip HTTP and go straight to headless
+    // For e-commerce and JS-heavy sites, use headless browser
     if (this.isJavaScriptHeavySite(url) || forceHeadless) {
-      console.log(`🎭 Using headless browser for JS-heavy site: ${url}`);
+      console.log(`🎭 Using headless browser for: ${url}`);
       const result = await this.headlessScan(url, depth);
       result.load_time_ms = Date.now() - startTime;
       return result;
     }
 
-    // Try HTTP first
+    // Try HTTP first for simple sites
     let result = await this.httpScan(url, depth);
 
-    // Use headless if suspicious (like payment provider titles)
+    // Use headless if the result looks suspicious
     if (this.needsHeadlessVerification(result)) {
-      console.log(`🔍 Using headless browser for suspicious result: ${url}`);
+      console.log(`🔍 Retrying with headless browser: ${url}`);
       result = await this.headlessScan(url, depth);
     }
 
@@ -36,19 +36,16 @@ export class Scanner {
 
   private isJavaScriptHeavySite(url: string): boolean {
     const jsHeavyPlatforms = [
-      // E-commerce platforms
       "shopify.com",
       "shopifypreview.com",
       "myshopify.com",
       "squarespace.com",
       "wix.com",
       "webflow.io",
-
-      // SPA frameworks (common patterns)
-      // We can detect these by checking if URL contains these patterns
+      "bigcommerce.com",
+      "magento.com",
     ];
 
-    // Check if URL contains any JS-heavy platform indicators
     const lowerUrl = url.toLowerCase();
     return jsHeavyPlatforms.some((platform) => lowerUrl.includes(platform));
   }
@@ -65,8 +62,11 @@ export class Scanner {
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
-          "--disable-web-security", // Help with CORS issues
-          "--disable-features=VizDisplayCompositor", // Performance
+          "--disable-web-security",
+          "--disable-features=VizDisplayCompositor",
+          "--disable-background-timer-throttling",
+          "--disable-backgrounding-occluded-windows",
+          "--disable-renderer-backgrounding",
         ],
       });
 
@@ -76,11 +76,11 @@ export class Scanner {
       await page.setUserAgent(this.userAgent);
       await page.setViewport({ width: 1280, height: 800 });
 
-      // Enable request interception to block unnecessary resources
+      // Block unnecessary resources to speed up loading
       await page.setRequestInterception(true);
       page.on("request", (req) => {
         const resourceType = req.resourceType();
-        // Block images, fonts, and media to speed up loading
+        // Block images, fonts, and media but allow scripts and stylesheets
         if (["image", "font", "media"].includes(resourceType)) {
           req.abort();
         } else {
@@ -88,10 +88,10 @@ export class Scanner {
         }
       });
 
-      // Navigate and wait for network to be mostly idle
+      // Navigate with extended timeout for e-commerce sites
       const response = await page.goto(url, {
-        waitUntil: "networkidle0", // Wait until no requests for 500ms
-        timeout: 45000, // Longer timeout for JS-heavy sites
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
       });
 
       result.status = response?.status() || 0;
@@ -102,112 +102,15 @@ export class Scanner {
         result.redirected_from = url;
       }
 
-      // CRITICAL: Wait longer for Shopify content to load
-      console.log("⏳ Waiting for dynamic content to load...");
-      await page
-        .waitForFunction(
-          () => {
-            // Wait for page to be loaded and interactive
-            return (
-              document.readyState === "complete" &&
-              document.body &&
-              !document.body.classList.contains("loading")
-            );
-          },
-          { timeout: 10000 },
-        )
-        .catch(() => {
-          // Fallback if condition never met
-          console.log("⚠️ Page load condition not met, continuing...");
-        });
+      // Wait for dynamic content to load
+      console.log("⏳ Waiting for dynamic content...");
+      await this.waitForDynamicContent(page);
 
-      // Wait for common Shopify elements to appear
-      try {
-        await page.waitForSelector("body", { timeout: 10000 });
-
-        // Try to wait for product grids or navigation to load
-        await Promise.race([
-          page.waitForSelector('[class*="product"]', { timeout: 5000 }),
-          page.waitForSelector('[class*="collection"]', { timeout: 5000 }),
-          page.waitForSelector("nav", { timeout: 5000 }),
-          await page
-            .waitForFunction(
-              () => {
-                // Wait for page to be loaded and interactive
-                return (
-                  document.readyState === "complete" &&
-                  document.body &&
-                  !document.body.classList.contains("loading")
-                );
-              },
-              { timeout: 10000 },
-            )
-            .catch(() => {
-              // Fallback if condition never met
-              console.log("⚠️ Page load condition not met, continuing...");
-            }),
-        ]);
-      } catch (e) {
-        console.log("⚠️ Dynamic content selectors not found, continuing...");
-      }
-
-      // Extract title with better Shopify handling
-      result.title = await this.extractTitleFromPage(page);
-
-      // Extract meta description
-      try {
-        const metaDescription = await page.$eval(
-          'meta[name="description"], meta[property="og:description"]',
-          (el: Element) => (el as HTMLMetaElement).getAttribute("content"),
-        );
-        result.meta_description = metaDescription || "";
-      } catch {
-        result.meta_description = "";
-      }
-
-      // Extract headings
-      result.h1s = await page.$$eval("h1", (els: Element[]) =>
-        els
-          .map((el) => el.textContent?.trim() || "")
-          .filter((text) => text.length > 0),
-      );
-      result.h2s = await page.$$eval("h2", (els: Element[]) =>
-        els
-          .map((el) => el.textContent?.trim() || "")
-          .filter((text) => text.length > 0),
-      );
-      result.h3s = await page.$$eval("h3", (els: Element[]) =>
-        els
-          .map((el) => el.textContent?.trim() || "")
-          .filter((text) => text.length > 0),
-      );
-
-      // Extract content (excluding scripts and styles)
-      const content = await page.evaluate(() => {
-        // Remove script and style elements
-        const scripts = document.querySelectorAll("script, style, noscript");
-        scripts.forEach((s) => s.remove());
-
-        // Get text content from body
-        return document.body.textContent || "";
-      });
-
-      result.content_length = content.length;
-      result.word_count = content
-        .split(/\s+/)
-        .filter((w) => w.length > 0).length;
-
-      // CRITICAL: Enhanced link extraction for Shopify
-      await this.extractLinksFromShopifyPage(page, result, urlProcessor);
-
-      // Extract images with sizes
-      await this.extractImagesFromPage(page, result, urlProcessor);
-
-      // Mark as headless scan
-      result.scan_method = "headless";
+      // Extract all data from the page
+      await this.extractPageData(page, result, urlProcessor);
 
       console.log(
-        `🎭 Headless scan completed: ${result.title} (${result.internal_links.length} internal links)`,
+        `🎭 Headless scan completed: ${result.title} (${result.internal_links.length} internal, ${result.external_links.length} external links)`,
       );
     } catch (error) {
       const errorMessage =
@@ -223,51 +126,168 @@ export class Scanner {
     return result;
   }
 
-  private async extractTitleFromPage(page: Page): Promise<string> {
+  private async waitForDynamicContent(page: Page): Promise<void> {
     try {
-      // Try multiple title sources in order of preference
-      const titleSources = [
-        'meta[property="og:title"]',
-        'meta[name="twitter:title"]',
-        "title",
-        "h1",
-        '[class*="title"]',
-        ".product-title",
-        ".page-title",
+      // Wait for document to be ready
+      await page.waitForFunction(() => document.readyState === "complete", {
+        timeout: 15000,
+      });
+
+      // Wait for common e-commerce elements
+      await Promise.race([
+        // Wait for products to load
+        page.waitForSelector(
+          '[class*="product"], [data-product], .product-item, .product-card',
+          { timeout: 10000 },
+        ),
+        // Wait for collections to load
+        page.waitForSelector(
+          '[class*="collection"], [data-collection], .collection-item',
+          { timeout: 10000 },
+        ),
+        // Wait for navigation to be complete
+        page.waitForSelector('nav[class*="nav"], .navigation, .menu', {
+          timeout: 8000,
+        }),
+        // Wait for main content
+        page.waitForSelector("main, .main, #main, .content", { timeout: 8000 }),
+        // Fallback timeout
+        this.delay(8000),
+      ]);
+
+      // Additional wait for Shopify-specific elements
+      if (this.isJavaScriptHeavySite(page.url())) {
+        await Promise.race([
+          page.waitForSelector("[data-section-type], .shopify-section", {
+            timeout: 5000,
+          }),
+          page.waitForFunction(
+            () =>
+              !document.body.classList.contains("loading") &&
+              !document.querySelector('.loading, .spinner, [class*="load"]'),
+            { timeout: 10000 },
+          ),
+          this.delay(5000),
+        ]);
+      }
+    } catch (error) {
+      console.log("⚠️ Dynamic content wait timeout, continuing with scan...");
+    }
+  }
+
+  private async extractPageData(
+    page: Page,
+    result: ScanResult,
+    urlProcessor: UrlProcessor,
+  ): Promise<void> {
+    // Extract title with multiple fallbacks
+    result.title = await this.extractTitle(page);
+
+    // Extract meta description
+    result.meta_description = await this.extractMetaDescription(page);
+
+    // Extract headings
+    const headings = await this.extractHeadings(page);
+    result.h1s = headings.h1s;
+    result.h2s = headings.h2s;
+    result.h3s = headings.h3s;
+    result.h4s = headings.h4s;
+    result.h5s = headings.h5s;
+    result.h6s = headings.h6s;
+
+    // Extract content stats
+    const contentStats = await this.extractContentStats(page);
+    result.content_length = contentStats.contentLength;
+    result.word_count = contentStats.wordCount;
+
+    // Extract meta tags
+    const metaTags = await this.extractMetaTags(page);
+    result.open_graph = metaTags.openGraph;
+    result.twitter_card = metaTags.twitterCard;
+    result.canonical_url = metaTags.canonical;
+    result.is_indexable = metaTags.isIndexable;
+    result.has_robots_noindex = metaTags.hasRobotsNoindex;
+    result.has_robots_nofollow = metaTags.hasRobotsNofollow;
+
+    // Extract links with enhanced detection
+    await this.extractLinks(page, result, urlProcessor);
+
+    // Extract images
+    await this.extractImages(page, result, urlProcessor);
+
+    // Extract technical data
+    const techData = await this.extractTechnicalData(page);
+    result.js_count = techData.jsCount;
+    result.css_count = techData.cssCount;
+    result.structured_data = techData.structuredData;
+    result.schema_types = techData.schemaTypes;
+
+    // Mark as headless scan
+    result.scan_method = "headless";
+  }
+
+  private async extractTitle(page: Page): Promise<string> {
+    try {
+      // Multiple strategies to get the correct title
+      const titleStrategies = [
+        // Strategy 1: Page title
+        () => page.title(),
+
+        // Strategy 2: Open Graph title
+        () =>
+          page.$eval('meta[property="og:title"]', (el) =>
+            el.getAttribute("content"),
+          ),
+
+        // Strategy 3: First meaningful H1
+        () => page.$eval("h1", (el) => el.textContent?.trim()),
+
+        // Strategy 4: Twitter title
+        () =>
+          page.$eval('meta[name="twitter:title"]', (el) =>
+            el.getAttribute("content"),
+          ),
+
+        // Strategy 5: Product-specific selectors for e-commerce
+        () =>
+          page.$eval(
+            ".product-title, .product-name, [data-product-title]",
+            (el) => el.textContent?.trim(),
+          ),
+
+        // Strategy 6: Page-specific selectors
+        () =>
+          page.$eval(
+            ".page-title, .hero-title, h1.title",
+            (el) => el.textContent?.trim(),
+          ),
       ];
 
-      for (const selector of titleSources) {
+      for (const strategy of titleStrategies) {
         try {
-          const title = await page.$eval(selector, (el: Element) => {
-            if (el.tagName.toLowerCase() === "meta") {
-              return (el as HTMLMetaElement).getAttribute("content") || "";
-            }
-            return el.textContent?.trim() || "";
-          });
-
-          if (
-            title &&
-            title.length > 0 &&
-            !this.isPaymentProviderTitle(title)
-          ) {
-            return title;
+          const title = await strategy();
+          if (title && this.isValidTitle(title)) {
+            return this.cleanTitle(title);
           }
         } catch (e) {
-          // Try next selector
+          // Try next strategy
           continue;
         }
       }
 
-      // Fallback: get page title and clean it
-      const rawTitle = await page.title();
-      return this.cleanShopifyTitle(rawTitle);
+      // Fallback to page title even if it seems invalid
+      const fallbackTitle = await page.title();
+      return this.cleanTitle(fallbackTitle);
     } catch (error) {
       console.error("Error extracting title:", error);
       return "";
     }
   }
 
-  private isPaymentProviderTitle(title: string): boolean {
+  private isValidTitle(title: string): boolean {
+    if (!title || title.length < 2) return false;
+
+    // Check for payment provider titles that shouldn't be page titles
     const paymentProviders = [
       "American Express",
       "Visa",
@@ -277,44 +297,192 @@ export class Scanner {
       "Google Pay",
       "Stripe",
       "Shop Pay",
+      "Klarna",
+      "Afterpay",
+      "Sezzle",
     ];
-    return paymentProviders.includes(title.trim());
+
+    const trimmedTitle = title.trim();
+    return !paymentProviders.some(
+      (provider) =>
+        trimmedTitle === provider ||
+        trimmedTitle.toLowerCase() === provider.toLowerCase(),
+    );
   }
 
-  private cleanShopifyTitle(title: string): string {
-    // Remove common Shopify suffixes and payment provider names
-    let cleaned = title
-      .replace(/\s*–\s*.*$/, "") // Remove everything after –
-      .replace(/\s*\|\s*.*$/, "") // Remove everything after |
-      .replace(
-        /American Express|Visa|MasterCard|PayPal|Apple Pay|Google Pay|Stripe|Shop Pay/gi,
-        "",
-      )
+  private cleanTitle(title: string): string {
+    if (!title) return "";
+
+    // Remove common e-commerce suffixes and clean up
+    return title
+      .replace(/\s*[–|—]\s*.*$/, "") // Remove everything after em dash
+      .replace(/\s*\|\s*.*$/, "") // Remove everything after pipe
+      .replace(/\s*-\s*.*$/, "") // Remove everything after hyphen (be careful with this)
       .trim();
-
-    return cleaned || title; // Return original if cleaning results in empty string
   }
 
-  private async extractLinksFromShopifyPage(
+  private async extractMetaDescription(page: Page): Promise<string> {
+    try {
+      const selectors = [
+        'meta[name="description"]',
+        'meta[property="og:description"]',
+        'meta[name="twitter:description"]',
+      ];
+
+      for (const selector of selectors) {
+        try {
+          const content = await page.$eval(selector, (el) =>
+            el.getAttribute("content"),
+          );
+          if (content && content.trim().length > 0) {
+            return content.trim();
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+      return "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  private async extractHeadings(page: Page): Promise<{
+    h1s: string[];
+    h2s: string[];
+    h3s: string[];
+    h4s: string[];
+    h5s: string[];
+    h6s: string[];
+  }> {
+    try {
+      return await page.evaluate(() => {
+        const getHeadings = (tag: string) => {
+          return Array.from(document.querySelectorAll(tag))
+            .map((el) => el.textContent?.trim() || "")
+            .filter((text) => text.length > 0);
+        };
+
+        return {
+          h1s: getHeadings("h1"),
+          h2s: getHeadings("h2"),
+          h3s: getHeadings("h3"),
+          h4s: getHeadings("h4"),
+          h5s: getHeadings("h5"),
+          h6s: getHeadings("h6"),
+        };
+      });
+    } catch (error) {
+      return { h1s: [], h2s: [], h3s: [], h4s: [], h5s: [], h6s: [] };
+    }
+  }
+
+  private async extractContentStats(
+    page: Page,
+  ): Promise<{ contentLength: number; wordCount: number }> {
+    try {
+      return await page.evaluate(() => {
+        // Remove script and style elements
+        const clonedBody = document.body.cloneNode(true) as HTMLElement;
+        const scripts = clonedBody.querySelectorAll("script, style, noscript");
+        scripts.forEach((el) => el.remove());
+
+        const content = clonedBody.textContent || "";
+        const words = content
+          .trim()
+          .split(/\s+/)
+          .filter((w) => w.length > 0);
+
+        return {
+          contentLength: content.length,
+          wordCount: words.length,
+        };
+      });
+    } catch (error) {
+      return { contentLength: 0, wordCount: 0 };
+    }
+  }
+
+  private async extractMetaTags(page: Page): Promise<{
+    openGraph: Record<string, string>;
+    twitterCard: Record<string, string>;
+    canonical: string | null;
+    isIndexable: boolean;
+    hasRobotsNoindex: boolean;
+    hasRobotsNofollow: boolean;
+  }> {
+    try {
+      return await page.evaluate(() => {
+        const openGraph: Record<string, string> = {};
+        const twitterCard: Record<string, string> = {};
+
+        // Extract Open Graph tags
+        document.querySelectorAll('meta[property^="og:"]').forEach((meta) => {
+          const property = meta.getAttribute("property");
+          const content = meta.getAttribute("content");
+          if (property && content) {
+            openGraph[property.replace("og:", "")] = content;
+          }
+        });
+
+        // Extract Twitter Card tags
+        document.querySelectorAll('meta[name^="twitter:"]').forEach((meta) => {
+          const name = meta.getAttribute("name");
+          const content = meta.getAttribute("content");
+          if (name && content) {
+            twitterCard[name.replace("twitter:", "")] = content;
+          }
+        });
+
+        // Extract canonical URL
+        const canonicalEl = document.querySelector(
+          'link[rel="canonical"]',
+        ) as HTMLLinkElement;
+        const canonical = canonicalEl ? canonicalEl.href : null;
+
+        // Check robots meta tags
+        const robotsMeta = document.querySelector('meta[name="robots"]');
+        const robotsContent = robotsMeta
+          ? robotsMeta.getAttribute("content")?.toLowerCase() || ""
+          : "";
+
+        return {
+          openGraph,
+          twitterCard,
+          canonical,
+          isIndexable: !robotsContent.includes("noindex"),
+          hasRobotsNoindex: robotsContent.includes("noindex"),
+          hasRobotsNofollow: robotsContent.includes("nofollow"),
+        };
+      });
+    } catch (error) {
+      return {
+        openGraph: {},
+        twitterCard: {},
+        canonical: null,
+        isIndexable: true,
+        hasRobotsNoindex: false,
+        hasRobotsNofollow: false,
+      };
+    }
+  }
+
+  private async extractLinks(
     page: Page,
     result: ScanResult,
     urlProcessor: UrlProcessor,
   ): Promise<void> {
     try {
-      // Get all links including dynamically loaded ones
       const links = await page.evaluate(() => {
-        const linkElements = Array.from(document.querySelectorAll("a[href]"));
-
-        return linkElements
-          .map((a: Element) => {
+        return Array.from(document.querySelectorAll("a[href]"))
+          .map((a) => {
             const anchor = a as HTMLAnchorElement;
             return {
               href: anchor.href,
               text: anchor.textContent?.trim() || "",
               rel: anchor.getAttribute("rel") || "",
               className: anchor.className || "",
-              // Get parent context to identify navigation vs product links
-              parentClass: anchor.parentElement?.className || "",
+              dataset: { ...anchor.dataset },
             };
           })
           .filter(
@@ -327,40 +495,126 @@ export class Scanner {
           );
       });
 
-      console.log(`🔗 Found ${links.length} total links on page`);
+      console.log(`🔗 Found ${links.length} links on page`);
 
       for (const link of links) {
         try {
           const normalizedUrl = urlProcessor.normalize(link.href);
 
+          const linkData = {
+            url: normalizedUrl,
+            anchor_text: link.text,
+            rel_attributes: link.rel
+              ? link.rel.split(" ").filter((r) => r.length > 0)
+              : [],
+          };
+
           if (urlProcessor.isInternal(normalizedUrl)) {
-            result.internal_links.push({
-              url: normalizedUrl,
-              anchor_text: link.text,
-              rel_attributes: link.rel ? link.rel.split(" ") : [],
-            });
+            result.internal_links.push(linkData);
           } else {
-            result.external_links.push({
-              url: normalizedUrl,
-              anchor_text: link.text,
-              rel_attributes: link.rel ? link.rel.split(" ") : [],
-            });
+            result.external_links.push(linkData);
           }
         } catch (error) {
-          // Skip invalid URLs
           console.log(`⚠️ Skipping invalid URL: ${link.href}`);
         }
       }
 
       console.log(
-        `✅ Processed ${result.internal_links.length} internal links, ${result.external_links.length} external links`,
+        `✅ Processed ${result.internal_links.length} internal, ${result.external_links.length} external links`,
       );
     } catch (error) {
       console.error("Error extracting links:", error);
     }
   }
 
-  // Update needsHeadlessVerification to be more aggressive for e-commerce
+  private async extractImages(
+    page: Page,
+    result: ScanResult,
+    urlProcessor: UrlProcessor,
+  ): Promise<void> {
+    try {
+      const images = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll("img")).map((img) => ({
+          src: img.src,
+          alt: img.alt || "",
+          width: img.naturalWidth || img.width || 0,
+          height: img.naturalHeight || img.height || 0,
+        }));
+      });
+
+      for (const img of images) {
+        try {
+          const resolvedUrl = urlProcessor.resolve(result.url, img.src);
+          if (!resolvedUrl) continue;
+
+          result.images.push({
+            src: resolvedUrl,
+            alt: img.alt,
+            dimensions: { width: img.width, height: img.height },
+          });
+        } catch (error) {
+          // Skip invalid URLs
+        }
+      }
+    } catch (error) {
+      console.error("Error extracting images:", error);
+    }
+  }
+
+  private async extractTechnicalData(page: Page): Promise<{
+    jsCount: number;
+    cssCount: number;
+    structuredData: any[];
+    schemaTypes: string[];
+  }> {
+    try {
+      return await page.evaluate(() => {
+        const jsCount = document.querySelectorAll("script[src]").length;
+        const cssCount = document.querySelectorAll(
+          'link[rel="stylesheet"]',
+        ).length;
+
+        // Extract structured data
+        const structuredData: any[] = [];
+        const schemaTypes: string[] = [];
+
+        // JSON-LD structured data
+        document
+          .querySelectorAll('script[type="application/ld+json"]')
+          .forEach((script) => {
+            try {
+              const data = JSON.parse(script.textContent || "");
+              structuredData.push(data);
+
+              // Extract schema types
+              if (data["@type"]) {
+                schemaTypes.push(data["@type"]);
+              }
+              if (Array.isArray(data) && data.length > 0 && data[0]["@type"]) {
+                schemaTypes.push(data[0]["@type"]);
+              }
+            } catch (e) {
+              // Invalid JSON, skip
+            }
+          });
+
+        return {
+          jsCount,
+          cssCount,
+          structuredData,
+          schemaTypes: [...new Set(schemaTypes)], // Remove duplicates
+        };
+      });
+    } catch (error) {
+      return {
+        jsCount: 0,
+        cssCount: 0,
+        structuredData: [],
+        schemaTypes: [],
+      };
+    }
+  }
+
   private needsHeadlessVerification(result: ScanResult): boolean {
     const paymentProviders = [
       "American Express",
@@ -371,16 +625,19 @@ export class Scanner {
       "Google Pay",
       "Stripe",
       "Shop Pay",
+      "Klarna",
+      "Afterpay",
+      "Sezzle",
     ];
 
     return (
-      paymentProviders.includes(result.title || "") ||
       !result.title ||
+      paymentProviders.some((provider) => result.title?.includes(provider)) ||
       result.title.length < 3 ||
       (result.content_type?.includes("text/html") &&
         result.content_length < 1000) ||
       (result.h1s.length === 0 && result.h2s.length === 0) ||
-      result.internal_links.length < 3 // Very few links suggests missing JS content
+      result.internal_links.length < 2
     );
   }
 
@@ -389,6 +646,10 @@ export class Scanner {
     const result = this.createBaseScanResult(url, depth);
 
     try {
+      // Create abort controller for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
       const response = await fetch(url, {
         headers: {
           "User-Agent": this.userAgent,
@@ -399,7 +660,10 @@ export class Scanner {
           "Cache-Control": "no-cache",
         },
         redirect: "follow",
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       result.status = response.status;
       result.content_type = response.headers.get("content-type") || "";
@@ -418,6 +682,7 @@ export class Scanner {
       result.size_bytes = new TextEncoder().encode(html).length;
 
       await this.processHtml(result, html, urlProcessor);
+      result.scan_method = "http";
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -432,43 +697,8 @@ export class Scanner {
     html: string,
     urlProcessor: UrlProcessor,
   ): Promise<void> {
-    // Extract title - Fix for Shopify payment provider issue
-    let title = "";
-    const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
-    if (titleMatch) {
-      title = titleMatch[1].trim();
-
-      // Check if title is a payment provider - if so, look for alternatives
-      const paymentProviders = [
-        "American Express",
-        "Visa",
-        "MasterCard",
-        "PayPal",
-        "Apple Pay",
-        "Google Pay",
-        "Stripe",
-        "Shop Pay",
-      ];
-      if (paymentProviders.includes(title)) {
-        // Look for h1 or other title indicators
-        const h1Match = html.match(/<h1[^>]*>(.*?)<\/h1>/i);
-        if (h1Match) {
-          const h1Text = h1Match[1].replace(/<[^>]+>/g, "").trim();
-          if (h1Text && !paymentProviders.includes(h1Text)) {
-            title = h1Text;
-          }
-        }
-
-        // Look for og:title
-        const ogTitleMatch = html.match(
-          /<meta[^>]*property=["']og:title["'][^>]*content=["'](.*?)["']/i,
-        );
-        if (ogTitleMatch && !paymentProviders.includes(ogTitleMatch[1])) {
-          title = ogTitleMatch[1];
-        }
-      }
-    }
-    result.title = title;
+    // Extract title with fallbacks
+    result.title = this.extractTitleFromHtml(html);
 
     // Extract meta description
     const metaMatch = html.match(
@@ -484,7 +714,10 @@ export class Scanner {
       const headings = [];
       let match;
       while ((match = regex.exec(html)) !== null) {
-        headings.push(match[1].replace(/<[^>]+>/g, "").trim());
+        const text = match[1].replace(/<[^>]+>/g, "").trim();
+        if (text.length > 0) {
+          headings.push(text);
+        }
       }
       return headings;
     };
@@ -492,6 +725,9 @@ export class Scanner {
     result.h1s = extractHeadings("h1");
     result.h2s = extractHeadings("h2");
     result.h3s = extractHeadings("h3");
+    result.h4s = extractHeadings("h4");
+    result.h5s = extractHeadings("h5");
+    result.h6s = extractHeadings("h6");
 
     // Extract and process links
     this.extractLinksFromHtml(html, result, urlProcessor);
@@ -511,6 +747,52 @@ export class Scanner {
     result.word_count = textContent
       .split(/\s+/)
       .filter((w) => w.length > 0).length;
+
+    // Extract meta tags
+    result.canonical_url = this.extractCanonicalFromHtml(html);
+    result.is_indexable = !this.hasRobotsNoindex(html);
+    result.has_robots_noindex = this.hasRobotsNoindex(html);
+    result.has_robots_nofollow = this.hasRobotsNofollow(html);
+  }
+
+  private extractTitleFromHtml(html: string): string {
+    // Try multiple strategies for title extraction
+    const strategies = [
+      // Strategy 1: Regular title tag
+      () => {
+        const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
+        return titleMatch ? titleMatch[1].trim() : null;
+      },
+
+      // Strategy 2: Open Graph title
+      () => {
+        const ogMatch = html.match(
+          /<meta[^>]*property=["']og:title["'][^>]*content=["'](.*?)["']/i,
+        );
+        return ogMatch ? ogMatch[1] : null;
+      },
+
+      // Strategy 3: First H1
+      () => {
+        const h1Match = html.match(/<h1[^>]*>(.*?)<\/h1>/i);
+        return h1Match ? h1Match[1].replace(/<[^>]+>/g, "").trim() : null;
+      },
+    ];
+
+    for (const strategy of strategies) {
+      try {
+        const title = strategy();
+        if (title && this.isValidTitle(title)) {
+          return this.cleanTitle(title);
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    // Fallback to first title found, even if invalid
+    const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
+    return titleMatch ? this.cleanTitle(titleMatch[1].trim()) : "";
   }
 
   private extractLinksFromHtml(
@@ -531,10 +813,16 @@ export class Scanner {
         const resolvedUrl = urlProcessor.resolve(result.url, href);
         if (!resolvedUrl) continue;
 
+        // Extract rel attributes
+        const relMatch = match[0].match(/rel=["']([^"']*)["']/i);
+        const relAttributes = relMatch
+          ? relMatch[1].split(" ").filter((r) => r.length > 0)
+          : [];
+
         const linkData = {
           url: resolvedUrl,
           anchor_text: text || href,
-          rel_attributes: [],
+          rel_attributes: relAttributes,
         };
 
         if (urlProcessor.isInternal(resolvedUrl)) {
@@ -568,7 +856,6 @@ export class Scanner {
         result.images.push({
           src: resolvedUrl,
           alt: altMatch ? altMatch[1] : "",
-          // Note: Size will be fetched separately for HTTP scans
           dimensions: { width: 0, height: 0 },
         });
       } catch (error) {
@@ -577,74 +864,29 @@ export class Scanner {
     }
   }
 
-  private async extractLinksFromPage(
-    page: Page,
-    result: ScanResult,
-    urlProcessor: UrlProcessor,
-  ): Promise<void> {
-    const links = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll("a[href]")).map(
-        (a: Element) => {
-          const anchor = a as HTMLAnchorElement;
-          return {
-            href: anchor.href,
-            text: anchor.textContent?.trim() || "",
-            rel: anchor.getAttribute("rel") || "",
-          };
-        },
-      );
-    });
-
-    for (const link of links) {
-      if (urlProcessor.isInternal(link.href)) {
-        result.internal_links.push({
-          url: link.href,
-          anchor_text: link.text,
-          rel_attributes: link.rel ? link.rel.split(" ") : [],
-        });
-      } else {
-        result.external_links.push({
-          url: link.href,
-          anchor_text: link.text,
-          rel_attributes: link.rel ? link.rel.split(" ") : [],
-        });
-      }
-    }
+  private extractCanonicalFromHtml(html: string): string | null {
+    const canonicalMatch = html.match(
+      /<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']*)["']/i,
+    );
+    return canonicalMatch ? canonicalMatch[1] : null;
   }
 
-  private async extractImagesFromPage(
-    page: Page,
-    result: ScanResult,
-    urlProcessor: UrlProcessor,
-  ): Promise<void> {
-    const images = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll("img")).map(
-        (img: Element) => {
-          const image = img as HTMLImageElement;
-          return {
-            src: image.src,
-            alt: image.alt || "",
-            width: image.naturalWidth || image.width || 0,
-            height: image.naturalHeight || image.height || 0,
-          };
-        },
-      );
-    });
+  private hasRobotsNoindex(html: string): boolean {
+    const robotsMatch = html.match(
+      /<meta[^>]*name=["']robots["'][^>]*content=["']([^"']*)["']/i,
+    );
+    return robotsMatch
+      ? robotsMatch[1].toLowerCase().includes("noindex")
+      : false;
+  }
 
-    for (const img of images) {
-      try {
-        const resolvedUrl = urlProcessor.resolve(result.url, img.src);
-        if (!resolvedUrl) continue;
-
-        result.images.push({
-          src: resolvedUrl,
-          alt: img.alt,
-          dimensions: { width: img.width, height: img.height },
-        });
-      } catch (error) {
-        // Skip invalid URLs
-      }
-    }
+  private hasRobotsNofollow(html: string): boolean {
+    const robotsMatch = html.match(
+      /<meta[^>]*name=["']robots["'][^>]*content=["']([^"']*)["']/i,
+    );
+    return robotsMatch
+      ? robotsMatch[1].toLowerCase().includes("nofollow")
+      : false;
   }
 
   private createBaseScanResult(url: string, depth: number): ScanResult {
@@ -686,5 +928,9 @@ export class Scanner {
       errors: [],
       warnings: [],
     };
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
