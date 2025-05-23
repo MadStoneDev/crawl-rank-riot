@@ -1,6 +1,6 @@
 import { WebCrawler } from "../services/crawler";
 import { storeScanResults } from "../services/database";
-import { getSupabaseClient } from "../services/database/client";
+import { getSupabaseServiceClient } from "../services/database/client";
 
 export class CrawlScheduler {
   private intervalId: NodeJS.Timeout | null = null;
@@ -35,7 +35,7 @@ export class CrawlScheduler {
 
   private async checkAndScheduleCrawls(): Promise<void> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getSupabaseServiceClient();
 
       // Find projects that need recrawling (weekly)
       const weekAgo = new Date();
@@ -76,7 +76,7 @@ export class CrawlScheduler {
     );
 
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getSupabaseServiceClient();
 
       // Create a new scan record
       const { data: scanData, error: scanError } = await supabase
@@ -144,7 +144,7 @@ export class CrawlScheduler {
       );
 
       // Mark scan as failed if we have scanId
-      const supabase = getSupabaseClient();
+      const supabase = getSupabaseServiceClient();
       await supabase
         .from("scans")
         .update({

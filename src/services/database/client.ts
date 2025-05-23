@@ -65,7 +65,7 @@ export function getSupabaseServiceClient(): SupabaseClient<Database> {
  */
 export async function testDatabaseConnection(): Promise<boolean> {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getSupabaseServiceClient();
     const { data, error } = await supabase
       .from("profiles")
       .select("id")

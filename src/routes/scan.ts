@@ -1,7 +1,7 @@
 import { AppError } from "../utils/error";
 import { WebCrawler } from "../services/crawler";
 import { storeScanResults } from "../services/database";
-import { getSupabaseClient } from "../services/database/client";
+import { getSupabaseServiceClient } from "../services/database/client";
 import { Router, Request, Response, NextFunction } from "express";
 import {
   createSuccessResponse,
@@ -156,7 +156,7 @@ router.post(
         );
       }
 
-      const supabase = getSupabaseClient();
+      const supabase = getSupabaseServiceClient();
 
       // Fetch project information
       const { data: project, error: projectError } = await supabase
@@ -259,7 +259,7 @@ router.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { scanId } = req.params;
-      const supabase = getSupabaseClient();
+      const supabase = getSupabaseServiceClient();
 
       const { data: scan, error } = await supabase
         .from("scans")
@@ -321,7 +321,7 @@ async function processScanInBackground(
     await storeScanResults(projectId, scanId, scanResults);
 
     // Mark scan as completed
-    const supabase = getSupabaseClient();
+    const supabase = getSupabaseServiceClient();
     await supabase
       .from("scans")
       .update({
@@ -343,7 +343,7 @@ async function processScanInBackground(
     console.error(`Error in scan process for scan ${scanId}:`, error);
 
     // Mark scan as failed
-    const supabase = getSupabaseClient();
+    const supabase = getSupabaseServiceClient();
     await supabase
       .from("scans")
       .update({
