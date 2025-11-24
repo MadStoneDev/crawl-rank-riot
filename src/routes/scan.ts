@@ -1,6 +1,5 @@
 import { AppError } from "../utils/error";
 import { WebCrawler } from "../services/crawler";
-import { storeScanResults } from "../services/database";
 import { getSupabaseServiceClient } from "../services/database/client";
 import { Router, Request, Response, NextFunction } from "express";
 import {
@@ -11,130 +10,10 @@ import {
 const router = Router();
 
 /**
- * POST /api/test-crawl - Test crawling without saving to database
- * Use this endpoint to test the crawler functionality
+ * POST /api/scan/audit - Start a new audit scan
  */
 router.post(
-  "/test-crawl",
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { url, options = {} } = req.body;
-
-      // Validate URL
-      if (!url) {
-        return next(
-          new AppError("URL is required", "VALIDATION_ERROR", undefined, 400),
-        );
-      }
-
-      // Validate URL format
-      try {
-        new URL(url.startsWith("http") ? url : `https://${url}`);
-      } catch {
-        return next(
-          new AppError(
-            "Invalid URL format",
-            "VALIDATION_ERROR",
-            undefined,
-            400,
-          ),
-        );
-      }
-
-      console.log(`Test crawl request received for URL: ${url}`);
-
-      // Parse crawler options with defaults for testing
-      const crawlerOptions = {
-        maxDepth: options?.maxDepth || 2, // Smaller depth for testing
-        maxPages: options?.maxPages || 10, // Fewer pages for testing
-        concurrentRequests: options?.concurrentRequests || 2, // Lower concurrency for testing
-        timeout: options?.timeout || 60000, // 1 minute timeout
-        excludePatterns: [
-          /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
-          /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
-          /#.*/i,
-          /\?s=/i,
-          /\?p=\d+/i,
-          /\?(utm_|fbclid|gclid)/i,
-        ],
-      };
-
-      const startTime = Date.now();
-
-      // Run the crawler
-      const crawler = new WebCrawler(url);
-      const results = await crawler.crawl(url, crawlerOptions);
-
-      const endTime = Date.now();
-      const crawlDuration = endTime - startTime;
-
-      console.log(
-        `Test crawl completed for ${url}: ${results.length} pages in ${crawlDuration}ms`,
-      );
-
-      // Calculate summary statistics
-      const summary = {
-        totalPages: results.length,
-        totalInternalLinks: results.reduce(
-          (sum, page) => sum + page.internal_links.length,
-          0,
-        ),
-        totalExternalLinks: results.reduce(
-          (sum, page) => sum + page.external_links.length,
-          0,
-        ),
-        totalImages: results.reduce((sum, page) => sum + page.images.length, 0),
-        avgLoadTime:
-          results.length > 0
-            ? results.reduce((sum, page) => sum + (page.load_time_ms || 0), 0) /
-              results.length
-            : 0,
-        statusCodes: results.reduce(
-          (acc, page) => {
-            acc[page.status] = (acc[page.status] || 0) + 1;
-            return acc;
-          },
-          {} as Record<number, number>,
-        ),
-        scanMethods: results.reduce(
-          (acc, page) => {
-            const method = page.scan_method || "http";
-            acc[method] = (acc[method] || 0) + 1;
-            return acc;
-          },
-          {} as Record<string, number>,
-        ),
-        crawlDurationMs: crawlDuration,
-      };
-
-      // Return detailed response for testing
-      res.json(
-        createSuccessResponse(
-          {
-            summary,
-            pages: results,
-            crawlOptions: crawlerOptions,
-            metadata: {
-              crawledAt: new Date().toISOString(),
-              seedUrl: url,
-              userAgent: "RankRiot/1.0 SEO Crawler",
-            },
-          },
-          `Test crawl completed successfully. Found ${results.length} pages.`,
-        ),
-      );
-    } catch (error) {
-      console.error("Error in test crawl:", error);
-      next(error);
-    }
-  },
-);
-
-/**
- * POST /api/scan - Start a new website scan
- */
-router.post(
-  "/scan",
+  "/scan/audit",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { project_id, email, options = {} } = req.body;
@@ -177,14 +56,15 @@ router.post(
       }
 
       console.log(
-        `Scan request received for Project ID: ${project_id}, URL: ${project.url}, Email: ${email}`,
+        `Audit scan request received for Project ID: ${project_id}, URL: ${project.url}`,
       );
 
-      // Create a new scan record
+      // Create a new scan record with audit type
       const { data: scanData, error: scanError } = await supabase
         .from("scans")
         .insert({
           project_id: project_id,
+          scan_type: "audit",
           status: "in_progress",
           started_at: new Date().toISOString(),
           pages_scanned: 0,
@@ -214,12 +94,12 @@ router.post(
         .update({ last_scan_at: new Date().toISOString() })
         .eq("id", project_id);
 
-      // Parse crawler options with defaults
+      // Audit scans can be shallower
       const crawlerOptions = {
-        maxDepth: options?.maxDepth || 3,
-        maxPages: options?.maxPages || 100,
+        maxDepth: options?.maxDepth || 2,
+        maxPages: options?.maxPages || 50,
         concurrentRequests: options?.concurrentRequests || 3,
-        timeout: options?.timeout || 120000, // 2 minutes
+        timeout: options?.timeout || 120000,
         checkSitemaps: options?.checkSitemaps !== false,
         excludePatterns: [
           /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
@@ -238,13 +118,19 @@ router.post(
             project_id,
             scan_id: scanId,
             url: project.url,
+            scan_type: "audit",
           },
-          "Scan started successfully",
+          "Audit scan started successfully",
         ),
       );
 
-      // Run the crawler in the background
-      processScanInBackground(project.url, crawlerOptions, scanId, project_id);
+      // Run the audit scan in the background
+      processAuditScanInBackground(
+        project.url,
+        crawlerOptions,
+        scanId,
+        project_id,
+      );
     } catch (error) {
       next(error);
     }
@@ -252,44 +138,50 @@ router.post(
 );
 
 /**
- * GET /api/scan/:scanId - Get scan status and results
+ * GET /api/scan/audit/:scanId - Get audit scan results
  */
 router.get(
-  "/scan/:scanId",
+  "/scan/audit/:scanId",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { scanId } = req.params;
       const supabase = getSupabaseServiceClient();
 
-      const { data: scan, error } = await supabase
+      // Get scan info
+      const { data: scan, error: scanError } = await supabase
         .from("scans")
         .select("*")
         .eq("id", scanId)
+        .eq("scan_type", "audit")
         .single();
 
-      if (error || !scan) {
+      if (scanError || !scan) {
         return next(
-          new AppError("Scan not found", "SCAN_NOT_FOUND", error, 404),
+          new AppError(
+            "Audit scan not found",
+            "SCAN_NOT_FOUND",
+            scanError,
+            404,
+          ),
         );
       }
 
-      // If scan is completed, also fetch the pages
-      let pages: any[] = [];
+      // Get audit results if completed
+      let auditResults = null;
       if (scan.status === "completed") {
-        const { data: pagesData } = await supabase
-          .from("pages")
+        const { data: auditData } = await supabase
+          .from("audit_results")
           .select("*")
-          .eq("project_id", scan.project_id)
-          .order("created_at", { ascending: false })
-          .limit(scan.pages_scanned || 100);
+          .eq("scan_id", scanId)
+          .single();
 
-        pages = pagesData || [];
+        auditResults = auditData;
       }
 
       res.json(
         createSuccessResponse({
           scan,
-          pages: scan.status === "completed" ? pages : [],
+          audit_results: auditResults,
         }),
       );
     } catch (error) {
@@ -299,29 +191,53 @@ router.get(
 );
 
 /**
- * Processes a scan in the background with progress updates
+ * Process audit scan in the background
  */
-async function processScanInBackground(
+async function processAuditScanInBackground(
   url: string,
   options: any,
   scanId: string,
   projectId: string,
 ): Promise<void> {
   try {
-    console.log(`Starting background crawl for ${url}`);
+    console.log(`Starting background audit crawl for ${url}`);
 
-    // Pass scanId and projectId to crawler for progress updates
     const crawler = new WebCrawler(url, scanId, projectId);
     const scanResults = await crawler.crawl(url, options);
 
     console.log(
-      `Crawl completed for ${url}, found ${scanResults.length} pages`,
+      `Audit crawl completed for ${url}, found ${scanResults.length} pages`,
     );
 
-    // Store all the scan results in the database
-    await storeScanResults(projectId, scanId, scanResults);
+    // Run audit analysis
+    const { AuditAnalyzer } = await import("../services/audit-analyzer");
+    const analyzer = new AuditAnalyzer(scanResults, url);
+    const { analysis, recommendations, overallScore } =
+      await analyzer.analyze();
 
-    // Final scan completion update (this might be redundant now but keeping for safety)
+    // Prepare audit result data
+    const auditData = {
+      scan_id: scanId,
+      project_id: projectId,
+      modernization_score: analysis.modernization.score,
+      performance_score: analysis.performance.score,
+      completeness_score: analysis.completeness.score,
+      conversion_score: 0, // Placeholder for now
+      overall_score: overallScore,
+      tech_stack: analysis.techStack,
+      design_analysis: analysis.design,
+      missing_pages: analysis.completeness.missingPages,
+      found_pages: analysis.completeness.foundPages,
+      performance_metrics: analysis.performance,
+      modern_standards: analysis.modernStandards,
+      recommendations: recommendations,
+    };
+
+    // Store audit results
+    const { storeAuditResults } = await import("../services/audit-database");
+    await storeAuditResults(projectId, scanId, auditData);
+
+    // Update scan as completed
     const supabase = getSupabaseServiceClient();
     await supabase
       .from("scans")
@@ -329,29 +245,19 @@ async function processScanInBackground(
         status: "completed",
         completed_at: new Date().toISOString(),
         pages_scanned: scanResults.length,
-        links_scanned: scanResults.reduce(
-          (total, page) =>
-            total + page.internal_links.length + page.external_links.length,
-          0,
-        ),
         summary_stats: {
-          current_progress: 100,
-          final_stats: {
-            total_pages: scanResults.length,
-            completion_time: new Date().toISOString(),
-            scan_duration_ms: Date.now() - new Date(scanId).getTime(), // Rough estimate
-          },
+          overall_score: overallScore,
+          recommendations_count: recommendations.length,
         },
       })
       .eq("id", scanId);
 
     console.log(
-      `Scan completed for project ${projectId}, scan ${scanId}, processed ${scanResults.length} pages`,
+      `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100`,
     );
   } catch (error) {
-    console.error(`Error in scan process for scan ${scanId}:`, error);
+    console.error(`Error in audit scan process for scan ${scanId}:`, error);
 
-    // Mark scan as failed with error details
     const supabase = getSupabaseServiceClient();
     await supabase
       .from("scans")
@@ -367,7 +273,3 @@ async function processScanInBackground(
       .eq("id", scanId);
   }
 }
-
-router.use(errorHandlerMiddleware);
-
-export default router;
