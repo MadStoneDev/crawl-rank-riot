@@ -1,5 +1,8 @@
 ﻿import { getSupabaseServiceClient } from "./database/client";
-import { AuditResult } from "../types";
+import { Database } from "../database.types";
+
+type AuditResultInsert =
+  Database["public"]["Tables"]["audit_results"]["Insert"];
 
 /**
  * Store audit results in the database
@@ -7,14 +10,15 @@ import { AuditResult } from "../types";
 export async function storeAuditResults(
   projectId: string,
   scanId: string,
-  auditData: AuditResult,
+  auditData: any,
 ): Promise<void> {
   const supabase = getSupabaseServiceClient();
 
   try {
     console.log(`💾 Storing audit results for scan ${scanId}...`);
 
-    const { error } = await supabase.from("audit_results").insert({
+    // Explicitly type the insert data
+    const insertData: AuditResultInsert = {
       scan_id: scanId,
       project_id: projectId,
       modernization_score: auditData.modernization_score,
@@ -29,7 +33,9 @@ export async function storeAuditResults(
       performance_metrics: auditData.performance_metrics,
       modern_standards: auditData.modern_standards,
       recommendations: auditData.recommendations,
-    });
+    };
+
+    const { error } = await supabase.from("audit_results").insert(insertData);
 
     if (error) {
       console.error("Error storing audit results:", error);
