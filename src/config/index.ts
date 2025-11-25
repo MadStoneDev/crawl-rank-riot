@@ -35,7 +35,7 @@ export const config: Config = {
     environment: process.env.NODE_ENV || "development",
     allowedOrigins: process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(",")
-      : ["http://localhost:3000", "https://your-frontend-domain.com"],
+      : ["http://localhost:3000", "https://rankriot.app"],
   },
   database: {
     supabaseUrl: process.env.SUPABASE_URL || "",
