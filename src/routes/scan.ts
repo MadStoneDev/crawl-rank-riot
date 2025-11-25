@@ -10,6 +10,134 @@ import {
 const router = Router();
 
 /**
+ * POST /api/scan - Start a new SEO scan (full crawl)
+ */
+router.post(
+  "/scan",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { project_id, email, options = {} } = req.body;
+
+      // Validate inputs
+      if (!project_id) {
+        return next(
+          new AppError(
+            "Project ID is required",
+            "VALIDATION_ERROR",
+            undefined,
+            400,
+          ),
+        );
+      }
+      if (!email) {
+        return next(
+          new AppError("Email is required", "VALIDATION_ERROR", undefined, 400),
+        );
+      }
+
+      const supabase = getSupabaseServiceClient();
+
+      // Fetch project information
+      const { data: project, error: projectError } = await supabase
+        .from("projects")
+        .select("id, url")
+        .eq("id", project_id)
+        .single();
+
+      if (projectError || !project) {
+        return next(
+          new AppError(
+            "Project not found",
+            "PROJECT_NOT_FOUND",
+            projectError,
+            404,
+          ),
+        );
+      }
+
+      console.log(
+        `SEO scan request received for Project ID: ${project_id}, URL: ${project.url}`,
+      );
+
+      // Create a new scan record with SEO type
+      const { data: scanData, error: scanError } = await supabase
+        .from("scans")
+        .insert({
+          project_id: project_id,
+          scan_type: "seo",
+          status: "in_progress",
+          started_at: new Date().toISOString(),
+          pages_scanned: 0,
+          links_scanned: 0,
+          issues_found: 0,
+          last_progress_update: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (scanError) {
+        return next(
+          new AppError(
+            "Failed to create scan record",
+            "DATABASE_ERROR",
+            scanError,
+            500,
+          ),
+        );
+      }
+
+      const scanId = scanData.id;
+
+      // Update project's last_scan_at timestamp
+      await supabase
+        .from("projects")
+        .update({ last_scan_at: new Date().toISOString() })
+        .eq("id", project_id);
+
+      // SEO scans are more comprehensive
+      const crawlerOptions = {
+        maxDepth: options?.maxDepth || 5,
+        maxPages: options?.maxPages || 500,
+        concurrentRequests: options?.concurrentRequests || 3,
+        timeout: options?.timeout || 300000,
+        checkSitemaps: options?.checkSitemaps !== false,
+        excludePatterns: [
+          /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
+          /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
+          /#.*/i,
+          /\?s=/i,
+          /\?p=\d+/i,
+          /\?(utm_|fbclid|gclid)/i,
+        ],
+      };
+
+      // Return early response to client
+      res.json(
+        createSuccessResponse(
+          {
+            project_id,
+            scan_id: scanId,
+            url: project.url,
+            scan_type: "seo",
+          },
+          "SEO scan started successfully",
+        ),
+      );
+
+      // Run the SEO scan in the background
+      processSEOScanInBackground(
+        project.url,
+        crawlerOptions,
+        scanId,
+        project_id,
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
  * POST /api/scan/audit - Start a new audit scan
  */
 router.post(
@@ -191,6 +319,60 @@ router.get(
 );
 
 /**
+ * Process SEO scan in the background
+ */
+async function processSEOScanInBackground(
+  url: string,
+  options: any,
+  scanId: string,
+  projectId: string,
+): Promise<void> {
+  try {
+    console.log(`Starting background SEO crawl for ${url}`);
+
+    const crawler = new WebCrawler(url, scanId, projectId);
+    const scanResults = await crawler.crawl(url, options);
+
+    console.log(
+      `SEO crawl completed for ${url}, found ${scanResults.length} pages`,
+    );
+
+    // Store SEO scan results
+    const { storeScanResults } = await import("../services/database");
+    await storeScanResults(projectId, scanId, scanResults);
+
+    // Update scan as completed
+    const supabase = getSupabaseServiceClient();
+    await supabase
+      .from("scans")
+      .update({
+        status: "completed",
+        completed_at: new Date().toISOString(),
+        pages_scanned: scanResults.length,
+      })
+      .eq("id", scanId);
+
+    console.log(`SEO scan completed for project ${projectId}, scan ${scanId}`);
+  } catch (error) {
+    console.error(`Error in SEO scan process for scan ${scanId}:`, error);
+
+    const supabase = getSupabaseServiceClient();
+    await supabase
+      .from("scans")
+      .update({
+        status: "failed",
+        completed_at: new Date().toISOString(),
+        summary_stats: {
+          error_message:
+            error instanceof Error ? error.message : "Unknown error",
+          failed_at: new Date().toISOString(),
+        },
+      })
+      .eq("id", scanId);
+  }
+}
+
+/**
  * Process audit scan in the background
  */
 async function processAuditScanInBackground(
@@ -273,3 +455,5 @@ async function processAuditScanInBackground(
       .eq("id", scanId);
   }
 }
+
+export default router;
