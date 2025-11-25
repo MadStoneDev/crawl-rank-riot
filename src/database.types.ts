@@ -20,8 +20,10 @@ export type Database = {
           conversion_score: number | null
           created_at: string | null
           design_analysis: Json | null
+          found_pages: Json | null
           id: string
           missing_pages: Json | null
+          modern_standards: Json | null
           modernization_score: number | null
           overall_score: number | null
           performance_metrics: Json | null
@@ -36,8 +38,10 @@ export type Database = {
           conversion_score?: number | null
           created_at?: string | null
           design_analysis?: Json | null
+          found_pages?: Json | null
           id?: string
           missing_pages?: Json | null
+          modern_standards?: Json | null
           modernization_score?: number | null
           overall_score?: number | null
           performance_metrics?: Json | null
@@ -52,8 +56,10 @@ export type Database = {
           conversion_score?: number | null
           created_at?: string | null
           design_analysis?: Json | null
+          found_pages?: Json | null
           id?: string
           missing_pages?: Json | null
+          modern_standards?: Json | null
           modernization_score?: number | null
           overall_score?: number | null
           performance_metrics?: Json | null
@@ -538,6 +544,7 @@ export type Database = {
           last_scan_at: string | null
           name: string
           notification_email: string | null
+          project_type: string | null
           scan_frequency: string | null
           settings: Json | null
           updated_at: string | null
@@ -551,6 +558,7 @@ export type Database = {
           last_scan_at?: string | null
           name: string
           notification_email?: string | null
+          project_type?: string | null
           scan_frequency?: string | null
           settings?: Json | null
           updated_at?: string | null
@@ -564,6 +572,7 @@ export type Database = {
           last_scan_at?: string | null
           name?: string
           notification_email?: string | null
+          project_type?: string | null
           scan_frequency?: string | null
           settings?: Json | null
           updated_at?: string | null
