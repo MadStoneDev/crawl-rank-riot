@@ -60,6 +60,308 @@ export class AuditAnalyzer {
   }
 
   /**
+   * Analyze tech stack - IMPROVED VERSION
+   */
+  private async analyzeTechStack(): Promise<TechStackAnalysis> {
+    console.log("🔧 Analyzing tech stack...");
+
+    const findings: string[] = [];
+    const libraries: string[] = [];
+    const analytics: string[] = [];
+
+    let framework: string | undefined;
+    let cms: string | undefined;
+    let hasWordPress = false;
+    let hasShopify = false;
+    let hasReact = false;
+    let hasVue = false;
+    let hasNextJs = false;
+
+    // Detection confidence scores
+    let nextJsConfidence = 0;
+    let reactConfidence = 0;
+    let shopifyConfidence = 0;
+
+    // Analyze first few pages for tech detection
+    const samplesToCheck = this.scanResults.slice(0, 10);
+
+    for (const result of samplesToCheck) {
+      const content = JSON.stringify(result).toLowerCase();
+      const scripts = this.extractScripts(result);
+
+      // Next.js detection (high priority)
+      if (content.includes("_next/static") || content.includes("__next")) {
+        nextJsConfidence += 10;
+      }
+      if (content.includes("next/") || content.includes("nextjs")) {
+        nextJsConfidence += 5;
+      }
+      if (scripts.some((s) => s.includes("_next/") || s.includes("next-"))) {
+        nextJsConfidence += 10;
+      }
+
+      // React detection
+      if (scripts.some((s) => s.includes("react"))) {
+        reactConfidence += 10;
+      }
+      if (content.includes("react") && !content.includes("reactivate")) {
+        reactConfidence += 3;
+      }
+
+      // Shopify detection (be more specific)
+      if (
+        content.includes("cdn.shopify.com") ||
+        content.includes("myshopify.com")
+      ) {
+        shopifyConfidence += 10;
+      }
+      if (
+        content.includes("shopify.") &&
+        !content.includes("not shopify") &&
+        !content.includes("like shopify")
+      ) {
+        shopifyConfidence += 3;
+      }
+
+      // Detect CMS (WordPress)
+      if (content.includes("wp-content") || content.includes("wp-includes")) {
+        hasWordPress = true;
+        cms = "WordPress";
+      }
+
+      // Detect Vue
+      if (content.includes("vue") || scripts.some((s) => s.includes("vue"))) {
+        hasVue = true;
+      }
+
+      // Detect libraries
+      if (content.includes("jquery") && !libraries.includes("jQuery")) {
+        libraries.push("jQuery");
+      }
+      if (content.includes("bootstrap") && !libraries.includes("Bootstrap")) {
+        libraries.push("Bootstrap");
+      }
+      if (content.includes("tailwind") && !libraries.includes("Tailwind CSS")) {
+        libraries.push("Tailwind CSS");
+      }
+
+      // Detect analytics
+      if (content.includes("google-analytics") || content.includes("gtag")) {
+        if (!analytics.includes("Google Analytics")) {
+          analytics.push("Google Analytics");
+        }
+      }
+      if (content.includes("gtm") || content.includes("googletagmanager")) {
+        if (!analytics.includes("Google Tag Manager")) {
+          analytics.push("Google Tag Manager");
+        }
+      }
+    }
+
+    // Determine framework based on confidence (prioritize modern frameworks)
+    if (nextJsConfidence >= 10) {
+      hasNextJs = true;
+      hasReact = true;
+      framework = "Next.js";
+    } else if (reactConfidence >= 10) {
+      hasReact = true;
+      framework = "React";
+    } else if (hasVue) {
+      framework = "Vue.js";
+    }
+
+    // Only set Shopify if no modern framework detected AND confidence is high
+    if (shopifyConfidence >= 10 && !framework) {
+      hasShopify = true;
+      cms = "Shopify";
+    }
+
+    // Generate findings
+    if (framework) {
+      findings.push(`Modern framework detected: ${framework}`);
+    }
+    if (cms && !framework) {
+      findings.push(`CMS detected: ${cms}`);
+    }
+    if (libraries.length > 0) {
+      findings.push(`Libraries: ${libraries.join(", ")}`);
+    }
+    if (analytics.length === 0) {
+      findings.push("No analytics detected");
+    } else {
+      findings.push(`Analytics: ${analytics.join(", ")}`);
+    }
+
+    return {
+      framework,
+      cms,
+      libraries,
+      hasWordPress,
+      hasShopify,
+      hasReact,
+      hasVue,
+      hasNextJs,
+      analytics,
+      findings,
+    };
+  }
+
+  /**
+   * Analyze site completeness - IMPROVED VERSION
+   */
+  private async analyzeCompleteness(): Promise<CompletenessAnalysis> {
+    console.log("📋 Analyzing completeness...");
+
+    let score = 100;
+    const siteType = this.detectSiteType();
+    const expectedPages = this.getExpectedPages(siteType);
+    const foundPages: string[] = [];
+    const missingPages: string[] = [];
+
+    // Map of alternative names for common pages
+    const pageAliases: Record<string, string[]> = {
+      blog: ["blog", "articles", "posts", "news"],
+      about: ["about", "about-us", "aboutus", "our-story", "who-we-are"],
+      contact: [
+        "contact",
+        "contact-us",
+        "contactus",
+        "get-in-touch",
+        "reach-us",
+      ],
+      services: ["services", "what-we-do", "solutions", "offerings"],
+      team: ["team", "our-team", "people", "leadership", "about/team"],
+    };
+
+    for (const expected of expectedPages) {
+      const aliases = pageAliases[expected] || [expected];
+      let foundUrl: string | undefined;
+
+      const found = this.scanResults.some((r) => {
+        const path = new URL(r.url).pathname.toLowerCase();
+        const matched = aliases.some(
+          (alias) =>
+            path.includes(alias.toLowerCase()) ||
+            path === `/${alias.toLowerCase()}` ||
+            path === `/${alias.toLowerCase()}/`,
+        );
+
+        if (matched) {
+          foundUrl = r.url;
+        }
+        return matched;
+      });
+
+      if (found) {
+        // If we found it with an alias, note what we found
+        const actualPath = foundUrl ? new URL(foundUrl).pathname : expected;
+        foundPages.push(`${expected} (found as ${actualPath})`);
+      } else {
+        // Only penalize for truly missing essential pages
+        if (["about", "contact"].includes(expected)) {
+          missingPages.push(expected);
+          score -= 15; // Higher penalty for essential pages
+        } else {
+          missingPages.push(expected);
+          score -= 8; // Lower penalty for type-specific pages
+        }
+      }
+    }
+
+    // Check for contact form even if no /contact page
+    const hasContactForm = this.scanResults.some((r) => {
+      const content = JSON.stringify(r).toLowerCase();
+      return (
+        content.includes('type="email"') &&
+        (content.includes("contact") ||
+          content.includes("message") ||
+          content.includes("inquiry"))
+      );
+    });
+
+    if (hasContactForm && missingPages.includes("contact")) {
+      // Remove contact from missing, add note
+      const index = missingPages.indexOf("contact");
+      missingPages.splice(index, 1);
+      foundPages.push("contact (form found on another page)");
+      score += 10; // Add back some of the penalty
+    }
+
+    return {
+      score: Math.max(0, score),
+      expectedPages,
+      foundPages,
+      missingPages,
+      siteType,
+    };
+  }
+
+  /**
+   * Detect site type - IMPROVED VERSION
+   */
+  private detectSiteType(): string {
+    const allUrls = this.scanResults.map((r) => r.url.toLowerCase()).join(" ");
+
+    // E-commerce indicators
+    if (
+      allUrls.includes("/products") ||
+      allUrls.includes("/shop") ||
+      allUrls.includes("/cart")
+    ) {
+      return "ecommerce";
+    }
+
+    // SaaS indicators
+    if (
+      allUrls.includes("/pricing") ||
+      (allUrls.includes("/features") && allUrls.includes("/pricing"))
+    ) {
+      return "saas";
+    }
+
+    // Blog/Content site - check for multiple article pages
+    const blogIndicators = ["/blog/", "/articles/", "/posts/"];
+    const blogPageCount = this.scanResults.filter((r) =>
+      blogIndicators.some((ind) => r.url.toLowerCase().includes(ind)),
+    ).length;
+    if (blogPageCount >= 3) {
+      return "blog";
+    }
+
+    // Portfolio indicators
+    if (
+      allUrls.includes("/portfolio") ||
+      allUrls.includes("/projects") ||
+      (allUrls.includes("/work") && !allUrls.includes("/how-we-work"))
+    ) {
+      return "portfolio";
+    }
+
+    return "business";
+  }
+
+  /**
+   * Get expected pages - IMPROVED VERSION
+   */
+  private getExpectedPages(siteType: string): string[] {
+    const basePages = ["about", "contact"];
+
+    const typeSpecific: Record<string, string[]> = {
+      ecommerce: ["products", "cart", "shipping", "returns"],
+      saas: ["pricing", "features", "documentation"],
+      blog: ["blog", "archive", "categories"],
+      portfolio: ["portfolio", "services"],
+      business: ["services", "team"],
+    };
+
+    return [...basePages, ...(typeSpecific[siteType] || typeSpecific.business)];
+  }
+
+  // ... [Keep all other existing methods unchanged from original file] ...
+  // These include: analyzeModernization, analyzePerformance, analyzeDesign,
+  // analyzeModernStandards, generateRecommendations, calculateOverallScore, extractScripts
+
+  /**
    * Analyze modernization (jQuery, old patterns, etc.)
    */
   private async analyzeModernization(): Promise<ModernizationAnalysis> {
@@ -100,17 +402,16 @@ export class AuditAnalyzer {
     });
 
     if (hasModernFramework) {
+      score += 10;
       hasModernBuildTools = true;
-      findings.push("Site uses modern framework - excellent!");
+      findings.push("Modern JavaScript framework detected");
     } else {
-      score -= 10;
-      findings.push(
-        "Consider using a modern framework for better maintainability",
-      );
+      score -= 15;
+      findings.push("No modern JavaScript framework detected");
     }
 
     return {
-      score: Math.max(0, score),
+      score: Math.max(0, Math.min(100, score)),
       usesJQuery,
       usesOldFrameworks,
       hasModernBuildTools,
@@ -119,64 +420,73 @@ export class AuditAnalyzer {
   }
 
   /**
-   * Analyze performance metrics
+   * Analyze performance
    */
   private async analyzePerformance(): Promise<PerformanceAnalysis> {
     console.log("⚡ Analyzing performance...");
 
-    const findings: string[] = [];
     let score = 100;
+    const findings: string[] = [];
 
+    // Calculate averages
+    const validLoadTimes = this.scanResults.filter((r) => r.load_time_ms > 0);
     const avgLoadTime =
-      this.scanResults.reduce((sum, r) => sum + (r.load_time_ms || 0), 0) /
-      this.scanResults.length;
-    const avgFirstByteTime =
-      this.scanResults.reduce(
-        (sum, r) => sum + (r.first_byte_time_ms || 0),
-        0,
-      ) / this.scanResults.length;
-    const avgPageSize =
-      this.scanResults.reduce((sum, r) => sum + (r.size_bytes || 0), 0) /
-      this.scanResults.length;
+      validLoadTimes.length > 0
+        ? validLoadTimes.reduce((sum, r) => sum + r.load_time_ms, 0) /
+          validLoadTimes.length
+        : 0;
 
-    // Score based on load time
+    const validFBT = this.scanResults.filter((r) => r.first_byte_time_ms > 0);
+    const avgFirstByteTime =
+      validFBT.length > 0
+        ? validFBT.reduce((sum, r) => sum + r.first_byte_time_ms, 0) /
+          validFBT.length
+        : 0;
+
+    const validSizes = this.scanResults.filter((r) => r.size_bytes > 0);
+    const avgPageSize =
+      validSizes.length > 0
+        ? validSizes.reduce((sum, r) => sum + r.size_bytes, 0) /
+          validSizes.length
+        : 0;
+
+    // Evaluate load time
     if (avgLoadTime > 5000) {
-      score -= 40;
+      score -= 30;
       findings.push(
-        `Average load time is ${(avgLoadTime / 1000).toFixed(
+        `Average load time is slow (${(avgLoadTime / 1000).toFixed(
           2,
-        )}s - should be under 3s`,
+        )}s) - optimize critical resources`,
       );
     } else if (avgLoadTime > 3000) {
-      score -= 20;
+      score -= 15;
       findings.push(
-        `Average load time is ${(avgLoadTime / 1000).toFixed(
+        `Average load time could be improved (${(avgLoadTime / 1000).toFixed(
           2,
-        )}s - could be faster`,
+        )}s)`,
       );
     } else {
-      findings.push(`Excellent load time: ${(avgLoadTime / 1000).toFixed(2)}s`);
-    }
-
-    // Score based on TTFB
-    if (avgFirstByteTime > 800) {
-      score -= 20;
       findings.push(
-        `Slow server response time (${avgFirstByteTime}ms) - optimize backend or use CDN`,
-      );
-    } else if (avgFirstByteTime > 400) {
-      score -= 10;
-      findings.push(
-        `Server response time could be improved (${avgFirstByteTime}ms)`,
+        `Good load time (${(avgLoadTime / 1000).toFixed(2)}s average)`,
       );
     }
 
-    // Score based on page size
+    // Evaluate first byte time
+    if (avgFirstByteTime > 1000) {
+      score -= 15;
+      findings.push(
+        `Server response time is slow (${avgFirstByteTime.toFixed(
+          0,
+        )}ms) - optimize server configuration`,
+      );
+    }
+
+    // Evaluate page size
     const avgSizeMB = avgPageSize / (1024 * 1024);
     if (avgSizeMB > 3) {
       score -= 20;
       findings.push(
-        `Large average page size (${avgSizeMB.toFixed(
+        `Large page size (${avgSizeMB.toFixed(
           2,
         )}MB) - optimize images and assets`,
       );
@@ -201,151 +511,6 @@ export class AuditAnalyzer {
       avgFirstByteTime,
       avgPageSize,
       slowestPages,
-      findings,
-    };
-  }
-
-  /**
-   * Analyze site completeness (expected pages)
-   */
-  private async analyzeCompleteness(): Promise<CompletenessAnalysis> {
-    console.log("📋 Analyzing completeness...");
-
-    let score = 100;
-    const siteType = this.detectSiteType();
-    const expectedPages = this.getExpectedPages(siteType);
-    const foundPages: string[] = [];
-    const missingPages: string[] = [];
-
-    for (const expected of expectedPages) {
-      const found = this.scanResults.some((r) => {
-        const path = new URL(r.url).pathname.toLowerCase();
-        return (
-          path.includes(expected.toLowerCase()) ||
-          path === `/${expected.toLowerCase()}` ||
-          path === `/${expected.toLowerCase()}/`
-        );
-      });
-
-      if (found) {
-        foundPages.push(expected);
-      } else {
-        missingPages.push(expected);
-        score -= 10;
-      }
-    }
-
-    return {
-      score: Math.max(0, score),
-      expectedPages,
-      foundPages,
-      missingPages,
-      siteType,
-    };
-  }
-
-  /**
-   * Analyze tech stack
-   */
-  private async analyzeTechStack(): Promise<TechStackAnalysis> {
-    console.log("🔧 Analyzing tech stack...");
-
-    const findings: string[] = [];
-    const libraries: string[] = [];
-    const analytics: string[] = [];
-
-    let framework: string | undefined;
-    let cms: string | undefined;
-    let hasWordPress = false;
-    let hasShopify = false;
-    let hasReact = false;
-    let hasVue = false;
-    let hasNextJs = false;
-
-    // Analyze first few pages for tech detection
-    const samplesToCheck = this.scanResults.slice(0, 10);
-
-    for (const result of samplesToCheck) {
-      const content = JSON.stringify(result).toLowerCase();
-      const scripts = this.extractScripts(result);
-
-      // Detect CMS
-      if (content.includes("wp-content") || content.includes("wordpress")) {
-        hasWordPress = true;
-        cms = "WordPress";
-      }
-      if (content.includes("shopify") || content.includes("myshopify")) {
-        hasShopify = true;
-        cms = "Shopify";
-      }
-
-      // Detect frameworks
-      if (
-        content.includes("react") ||
-        scripts.some((s) => s.includes("react"))
-      ) {
-        hasReact = true;
-        framework = "React";
-      }
-      if (content.includes("vue") || scripts.some((s) => s.includes("vue"))) {
-        hasVue = true;
-        framework = "Vue";
-      }
-      if (content.includes("_next") || content.includes("next/")) {
-        hasNextJs = true;
-        framework = "Next.js";
-      }
-
-      // Detect libraries
-      if (content.includes("jquery") && !libraries.includes("jQuery")) {
-        libraries.push("jQuery");
-      }
-      if (content.includes("bootstrap") && !libraries.includes("Bootstrap")) {
-        libraries.push("Bootstrap");
-      }
-      if (content.includes("tailwind") && !libraries.includes("Tailwind CSS")) {
-        libraries.push("Tailwind CSS");
-      }
-
-      // Detect analytics
-      if (content.includes("google-analytics") || content.includes("gtag")) {
-        if (!analytics.includes("Google Analytics")) {
-          analytics.push("Google Analytics");
-        }
-      }
-      if (content.includes("gtm") || content.includes("googletagmanager")) {
-        if (!analytics.includes("Google Tag Manager")) {
-          analytics.push("Google Tag Manager");
-        }
-      }
-    }
-
-    // Generate findings
-    if (cms) {
-      findings.push(`Site built on ${cms}`);
-    }
-    if (framework) {
-      findings.push(`Using ${framework} framework`);
-    }
-    if (libraries.length > 0) {
-      findings.push(`Libraries detected: ${libraries.join(", ")}`);
-    }
-    if (analytics.length === 0) {
-      findings.push(
-        "No analytics detected - consider adding Google Analytics or similar",
-      );
-    }
-
-    return {
-      framework,
-      cms,
-      libraries,
-      hasWordPress,
-      hasShopify,
-      hasReact,
-      hasVue,
-      hasNextJs,
-      analytics,
       findings,
     };
   }
@@ -382,64 +547,54 @@ export class AuditAnalyzer {
           }
         });
       }
-    }
 
-    // Check for social media links
-    const allExternalLinks = this.scanResults.flatMap((r) => r.external_links);
-    const socialDomains = [
-      "facebook.com",
-      "twitter.com",
-      "instagram.com",
-      "linkedin.com",
-      "youtube.com",
-      "tiktok.com",
-    ];
-
-    for (const link of allExternalLinks) {
-      for (const domain of socialDomains) {
-        if (link.url.includes(domain)) {
-          hasSocialLinks = true;
-          const platform = domain.replace(".com", "");
-          if (!socialPlatforms.includes(platform)) {
-            socialPlatforms.push(platform);
-          }
-        }
-      }
-    }
-
-    // Look for copyright year
-    for (const result of this.scanResults) {
-      const content = JSON.stringify(result);
-      const yearMatches = content.match(/©\s*(\d{4})|copyright\s*(\d{4})/i);
-      if (yearMatches) {
-        const year = parseInt(yearMatches[1] || yearMatches[2]);
-        if (year >= 2020 && year <= new Date().getFullYear()) {
+      // Look for copyright year
+      const copyrightMatch = content.match(/copyright.*?(\d{4})/i);
+      if (copyrightMatch) {
+        const year = parseInt(copyrightMatch[1]);
+        if (year > 2000 && (!copyrightYear || year > copyrightYear)) {
           copyrightYear = year;
-          break;
         }
       }
+
+      // Check for social links
+      const socialDomains = [
+        "facebook.com",
+        "twitter.com",
+        "x.com",
+        "linkedin.com",
+        "instagram.com",
+        "youtube.com",
+        "tiktok.com",
+      ];
+
+      socialDomains.forEach((domain) => {
+        if (content.includes(domain) && !socialPlatforms.includes(domain)) {
+          socialPlatforms.push(domain);
+          hasSocialLinks = true;
+        }
+      });
     }
 
-    // Score based on findings
-    if (!copyrightYear || copyrightYear < new Date().getFullYear() - 2) {
-      score -= 15;
-      findings.push("Copyright year is outdated or missing");
+    // Evaluate design elements
+    if (fonts.length > 0) {
+      findings.push(`Fonts detected: ${fonts.slice(0, 3).join(", ")}`);
+    }
+
+    if (copyrightYear && copyrightYear < new Date().getFullYear()) {
+      score -= 5;
+      findings.push(`Copyright year outdated (${copyrightYear})`);
+    } else if (copyrightYear === new Date().getFullYear()) {
+      findings.push("Copyright year is current");
     }
 
     if (!hasSocialLinks) {
       score -= 10;
-      findings.push("No social media links found - consider adding them");
+      findings.push("No social media links detected");
     } else {
-      findings.push(`Social presence on: ${socialPlatforms.join(", ")}`);
-    }
-
-    if (fonts.length === 0) {
-      score -= 5;
       findings.push(
-        "Using system fonts only - consider web fonts for better branding",
+        `Social media presence: ${socialPlatforms.length} platforms`,
       );
-    } else {
-      findings.push(`Fonts detected: ${fonts.slice(0, 3).join(", ")}`);
     }
 
     return {
@@ -448,7 +603,9 @@ export class AuditAnalyzer {
       fonts,
       copyrightYear,
       hasSocialLinks,
-      socialPlatforms,
+      socialPlatforms: socialPlatforms.map((d) =>
+        d.replace(".com", "").replace("x", "X (Twitter)"),
+      ),
       findings,
     };
   }
@@ -457,62 +614,58 @@ export class AuditAnalyzer {
    * Analyze modern web standards
    */
   private async analyzeModernStandards(): Promise<ModernStandardsAnalysis> {
-    console.log("✨ Analyzing modern standards...");
+    console.log("🔒 Analyzing modern standards...");
 
     let score = 100;
     const findings: string[] = [];
 
     const usesHttps = this.baseUrl.startsWith("https://");
-    const hasValidFavicon = this.scanResults.some((r) =>
-      r.images.some((img) => img.src.includes("favicon")),
-    );
+    let hasValidFavicon = false;
+    let hasRobotsTxt = false;
+    let hasSitemap = false;
+    let mobileResponsive = false;
 
-    // Check for robots.txt and sitemap
-    const hasRobotsTxt = this.scanResults.some((r) =>
-      r.url.includes("robots.txt"),
-    );
-    const hasSitemap = this.scanResults.some(
-      (r) => r.url.includes("sitemap.xml") || r.url.includes("sitemap"),
-    );
-
-    // Basic mobile responsiveness check via viewport meta
-    const mobileResponsive = this.scanResults.some((r) => {
-      const content = JSON.stringify(r);
-      return (
-        content.includes("viewport") && content.includes("width=device-width")
-      );
-    });
-
-    // Score
+    // Check for HTTPS
     if (!usesHttps) {
       score -= 30;
-      findings.push("CRITICAL: Site not using HTTPS - security risk");
+      findings.push("Site not using HTTPS - major security concern");
     } else {
-      findings.push("Site uses HTTPS ✓");
+      findings.push("Site properly uses HTTPS");
     }
 
+    // Check for favicon
+    hasValidFavicon = this.scanResults.some((r) => {
+      const content = JSON.stringify(r);
+      return content.includes("favicon.ico") || content.includes('rel="icon"');
+    });
+
     if (!hasValidFavicon) {
-      score -= 10;
+      score -= 5;
       findings.push("No favicon detected");
     }
 
-    if (!hasRobotsTxt) {
-      score -= 15;
-      findings.push("No robots.txt found - important for SEO");
-    }
-
-    if (!hasSitemap) {
-      score -= 15;
-      findings.push("No sitemap detected - important for search engines");
-    }
+    // Check for mobile viewport meta tag
+    mobileResponsive = this.scanResults.some((r) => {
+      const content = JSON.stringify(r);
+      return content.includes('name="viewport"');
+    });
 
     if (!mobileResponsive) {
       score -= 20;
-      findings.push(
-        "Mobile viewport meta tag not found - may not be mobile-friendly",
-      );
+      findings.push("No mobile viewport meta tag - site may not be responsive");
     } else {
-      findings.push("Mobile responsive meta tags detected ✓");
+      findings.push("Mobile-friendly viewport detected");
+    }
+
+    // Check for robots.txt and sitemap (would need to fetch these separately)
+    // For now, check if sitemap is mentioned in any page
+    hasSitemap = this.scanResults.some((r) => {
+      return r.url.toLowerCase().includes("sitemap");
+    });
+
+    if (!hasSitemap) {
+      score -= 10;
+      findings.push("No sitemap detected");
     }
 
     return {
@@ -527,7 +680,7 @@ export class AuditAnalyzer {
   }
 
   /**
-   * Generate actionable recommendations
+   * Generate recommendations based on analysis
    */
   private generateRecommendations(
     analysis: AuditAnalysis,
@@ -563,16 +716,21 @@ export class AuditAnalyzer {
 
     // Completeness recommendations
     if (analysis.completeness.missingPages.length > 0) {
-      recommendations.push({
-        type: "important",
-        category: "completeness",
-        title: "Add Missing Essential Pages",
-        description: `Missing pages: ${analysis.completeness.missingPages.join(
-          ", ",
-        )}`,
-        impact: "Better user trust and navigation",
-        effort: "low",
-      });
+      const essentialMissing = analysis.completeness.missingPages.filter((p) =>
+        ["about", "contact"].includes(p),
+      );
+      if (essentialMissing.length > 0) {
+        recommendations.push({
+          type: "important",
+          category: "completeness",
+          title: "Add Missing Essential Pages",
+          description: `Missing important pages: ${essentialMissing.join(
+            ", ",
+          )}. These build trust with visitors.`,
+          impact: "Better user trust and credibility",
+          effort: "low",
+        });
+      }
     }
 
     // Standards recommendations
@@ -670,52 +828,5 @@ export class AuditAnalyzer {
     }
 
     return scripts;
-  }
-
-  /**
-   * Helper: Detect site type based on content
-   */
-  private detectSiteType(): string {
-    const allUrls = this.scanResults.map((r) => r.url.toLowerCase()).join(" ");
-
-    if (
-      allUrls.includes("/products") ||
-      allUrls.includes("/shop") ||
-      allUrls.includes("/cart")
-    ) {
-      return "ecommerce";
-    }
-    if (allUrls.includes("/pricing") || allUrls.includes("/features")) {
-      return "saas";
-    }
-    if (allUrls.includes("/blog") || allUrls.includes("/articles")) {
-      return "blog";
-    }
-    if (
-      allUrls.includes("/portfolio") ||
-      allUrls.includes("/projects") ||
-      allUrls.includes("/work")
-    ) {
-      return "portfolio";
-    }
-
-    return "business";
-  }
-
-  /**
-   * Helper: Get expected pages based on site type
-   */
-  private getExpectedPages(siteType: string): string[] {
-    const basePages = ["about", "contact"];
-
-    const typeSpecific: Record<string, string[]> = {
-      ecommerce: ["products", "shop", "cart", "shipping", "returns"],
-      saas: ["pricing", "features", "documentation", "login", "signup"],
-      blog: ["blog", "archive", "categories"],
-      portfolio: ["portfolio", "work", "projects", "services"],
-      business: ["services", "team", "testimonials"],
-    };
-
-    return [...basePages, ...(typeSpecific[siteType] || typeSpecific.business)];
   }
 }
