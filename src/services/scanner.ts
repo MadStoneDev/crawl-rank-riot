@@ -313,12 +313,34 @@ export class Scanner {
   private cleanTitle(title: string): string {
     if (!title) return "";
 
-    // Remove common e-commerce suffixes and clean up
-    return title
-      .replace(/\s*[–|—]\s*.*$/, "") // Remove everything after em dash
-      .replace(/\s*\|\s*.*$/, "") // Remove everything after pipe
-      .replace(/\s*-\s*.*$/, "") // Remove everything after hyphen (be careful with this)
-      .trim();
+    // Decode HTML entities
+    const decoded = title
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, " ");
+
+    // Common site name patterns to remove (only at end of title)
+    // These are typically brand suffixes like "Product Name | Brand" or "Page - Company Name"
+    const siteNamePatterns = [
+      /\s*[|–—]\s*(?:Official\s+)?(?:Site|Website|Home|Shop|Store|Online).*$/i,
+      /\s*[|–—]\s*(?:Buy|Order|Get|Shop)\s+.*$/i,
+      /\s*[|–—]\s*(?:Free Shipping|Fast Delivery).*$/i,
+    ];
+
+    let cleaned = decoded.trim();
+
+    // Only apply site name removal if it looks like a suffix pattern
+    for (const pattern of siteNamePatterns) {
+      cleaned = cleaned.replace(pattern, "");
+    }
+
+    // Remove excessive whitespace
+    cleaned = cleaned.replace(/\s+/g, " ").trim();
+
+    return cleaned;
   }
 
   private async extractMetaDescription(page: Page): Promise<string> {
@@ -645,50 +667,82 @@ export class Scanner {
     const urlProcessor = new UrlProcessor(url);
     const result = this.createBaseScanResult(url, depth);
 
-    try {
-      // Create abort controller for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+    const maxRetries = 3;
+    let lastError: Error | null = null;
 
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent": this.userAgent,
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.5",
-          "Accept-Encoding": "gzip, deflate",
-          "Cache-Control": "no-cache",
-        },
-        redirect: "follow",
-        signal: controller.signal,
-      });
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Create abort controller for timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
-      clearTimeout(timeoutId);
+        const response = await fetch(url, {
+          headers: {
+            "User-Agent": this.userAgent,
+            Accept:
+              "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",
+            "Cache-Control": "no-cache",
+          },
+          redirect: "follow",
+          signal: controller.signal,
+        });
 
-      result.status = response.status;
-      result.content_type = response.headers.get("content-type") || "";
+        clearTimeout(timeoutId);
 
-      if (response.url !== url) {
-        result.is_redirect = true;
-        result.redirected_from = url;
-        result.url = urlProcessor.normalize(response.url);
-      }
+        result.status = response.status;
+        result.content_type = response.headers.get("content-type") || "";
 
-      if (!result.content_type.includes("text/html")) {
+        // Check X-Robots-Tag header for noindex/nofollow
+        const xRobotsTag = response.headers.get("x-robots-tag") || "";
+        if (xRobotsTag.toLowerCase().includes("noindex")) {
+          result.has_robots_noindex = true;
+          result.is_indexable = false;
+        }
+        if (xRobotsTag.toLowerCase().includes("nofollow")) {
+          result.has_robots_nofollow = true;
+        }
+
+        if (response.url !== url) {
+          result.is_redirect = true;
+          result.redirected_from = url;
+          result.url = urlProcessor.normalize(response.url);
+        }
+
+        // Retry on 5xx errors (server errors are often transient)
+        if (response.status >= 500 && attempt < maxRetries) {
+          console.log(`⚠️ Got ${response.status} for ${url}, retrying (attempt ${attempt}/${maxRetries})...`);
+          await this.delay(1000 * attempt); // Exponential backoff
+          continue;
+        }
+
+        if (!result.content_type.includes("text/html")) {
+          return result;
+        }
+
+        const html = await response.text();
+        result.size_bytes = new TextEncoder().encode(html).length;
+
+        await this.processHtml(result, html, urlProcessor);
+        result.scan_method = "http";
+
+        // Success - exit retry loop
         return result;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Retry on network errors
+        if (attempt < maxRetries) {
+          console.log(`⚠️ Network error for ${url}, retrying (attempt ${attempt}/${maxRetries})...`);
+          await this.delay(1000 * attempt); // Exponential backoff
+          continue;
+        }
       }
-
-      const html = await response.text();
-      result.size_bytes = new TextEncoder().encode(html).length;
-
-      await this.processHtml(result, html, urlProcessor);
-      result.scan_method = "http";
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      result.errors = [`HTTP scan failed: ${errorMessage}`];
     }
 
+    // All retries failed
+    result.errors = [`HTTP scan failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`];
     return result;
   }
 
@@ -748,11 +802,19 @@ export class Scanner {
       .split(/\s+/)
       .filter((w) => w.length > 0).length;
 
-    // Extract meta tags
+    // Extract meta tags (merge with header-based detection, don't override)
     result.canonical_url = this.extractCanonicalFromHtml(html);
-    result.is_indexable = !this.hasRobotsNoindex(html);
-    result.has_robots_noindex = this.hasRobotsNoindex(html);
-    result.has_robots_nofollow = this.hasRobotsNofollow(html);
+    if (this.hasRobotsNoindex(html)) {
+      result.has_robots_noindex = true;
+      result.is_indexable = false;
+    }
+    if (this.hasRobotsNofollow(html)) {
+      result.has_robots_nofollow = true;
+    }
+    // Set indexable to true only if not already set to false by headers or meta
+    if (result.is_indexable === undefined || result.is_indexable === null) {
+      result.is_indexable = !result.has_robots_noindex;
+    }
   }
 
   private extractTitleFromHtml(html: string): string {

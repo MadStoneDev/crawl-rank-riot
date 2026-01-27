@@ -190,6 +190,30 @@ export async function storeScanResults(
       // Internal links
       for (const link of result.internal_links) {
         const destinationPageId = urlToPageId.get(link.url);
+
+        // Look up the destination page's status if it was crawled
+        let httpStatus: number | null = null;
+        let isBroken = false;
+
+        if (destinationPageId) {
+          // Find the result for this destination URL to get its actual status
+          const destResult = deduplicatedResults.find(r => r.url === link.url);
+          if (destResult) {
+            httpStatus = destResult.status;
+            // Only mark as broken if it returned a 4xx or 5xx error
+            isBroken = destResult.status >= 400;
+          } else {
+            // Page exists in DB but wasn't in this scan - assume it's fine
+            httpStatus = 200;
+            isBroken = false;
+          }
+        } else {
+          // Destination wasn't crawled (beyond depth limit, etc.)
+          // This is NOT broken - it's just uncrawled
+          httpStatus = null;
+          isBroken = false;
+        }
+
         allLinks.push({
           project_id: projectId,
           source_page_id: sourcePageId,
@@ -199,12 +223,12 @@ export async function storeScanResults(
           link_type: "internal",
           rel_attributes: link.rel_attributes,
           is_followed: !link.rel_attributes?.includes("nofollow"),
-          http_status: destinationPageId ? 200 : null, // Assume 200 if we have the page
-          is_broken: !destinationPageId, // Mark as broken if destination page not found
+          http_status: httpStatus,
+          is_broken: isBroken,
         });
       }
 
-      // External links
+      // External links - mark as unchecked (not broken)
       for (const link of result.external_links) {
         allLinks.push({
           project_id: projectId,
@@ -215,6 +239,8 @@ export async function storeScanResults(
           link_type: "external",
           rel_attributes: link.rel_attributes,
           is_followed: !link.rel_attributes?.includes("nofollow"),
+          http_status: null, // Not checked
+          is_broken: false, // External links are not marked as broken unless verified
         });
       }
     }
