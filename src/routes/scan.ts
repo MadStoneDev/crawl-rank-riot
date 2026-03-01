@@ -94,12 +94,12 @@ router.post(
         .update({ last_scan_at: new Date().toISOString() })
         .eq("id", project_id);
 
-      // SEO scans are more comprehensive
+      // SEO scans are more comprehensive — clamp values to safe ranges
       const crawlerOptions = {
-        maxDepth: options?.maxDepth || 5,
-        maxPages: options?.maxPages || 500,
-        concurrentRequests: options?.concurrentRequests || 3,
-        timeout: options?.timeout || 300000,
+        maxDepth: Math.max(1, Math.min(Number(options?.maxDepth) || 5, 10)),
+        maxPages: Math.max(1, Math.min(Number(options?.maxPages) || 500, 100000)),
+        concurrentRequests: Math.max(1, Math.min(Number(options?.concurrentRequests) || 3, 10)),
+        timeout: Math.max(10000, Math.min(Number(options?.timeout) || 300000, 600000)),
         checkSitemaps: options?.checkSitemaps !== false,
         excludePatterns: [
           /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
@@ -222,12 +222,12 @@ router.post(
         .update({ last_scan_at: new Date().toISOString() })
         .eq("id", project_id);
 
-      // Audit scans can be shallower
+      // Audit scans can be shallower — clamp values to safe ranges
       const crawlerOptions = {
-        maxDepth: options?.maxDepth || 2,
-        maxPages: options?.maxPages || 50,
-        concurrentRequests: options?.concurrentRequests || 3,
-        timeout: options?.timeout || 120000,
+        maxDepth: Math.max(1, Math.min(Number(options?.maxDepth) || 2, 10)),
+        maxPages: Math.max(1, Math.min(Number(options?.maxPages) || 50, 100000)),
+        concurrentRequests: Math.max(1, Math.min(Number(options?.concurrentRequests) || 3, 10)),
+        timeout: Math.max(10000, Math.min(Number(options?.timeout) || 120000, 600000)),
         checkSitemaps: options?.checkSitemaps !== false,
         excludePatterns: [
           /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,

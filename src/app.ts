@@ -1,4 +1,5 @@
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import routes from "./routes/index"; // Updated path to point to routes/index.ts
 import { config, validateConfig } from "./config";
 import { crawlScheduler } from "./utils/scheduler";
@@ -15,7 +16,29 @@ try {
 const app = express();
 const PORT = config.server.port;
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+// Rate limiting — general API
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // 60 requests per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+});
+
+// Rate limiting — scan endpoints (more restrictive)
+const scanLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 5, // 5 scan requests per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many scan requests, please try again later." },
+});
+
+app.use("/api", generalLimiter);
+app.use("/api/scan", scanLimiter);
 
 app.use(
   cors({

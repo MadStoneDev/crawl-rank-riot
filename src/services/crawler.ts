@@ -7,6 +7,7 @@ export class WebCrawler {
   private scanner: Scanner;
   private urlProcessor: UrlProcessor;
   private visited = new Set<string>();
+  private queued = new Set<string>(); // Track URLs already added to queue to prevent duplicates
   private queue: Array<{ url: string; depth: number }> = [];
   private results: ScanResult[] = [];
   private processing = new Set<string>(); // Track URLs being processed
@@ -217,6 +218,7 @@ export class WebCrawler {
 
     // Initialize
     this.visited.clear();
+    this.queued.clear();
     this.queue = [];
     this.results = [];
     this.processing.clear();
@@ -235,6 +237,7 @@ export class WebCrawler {
     // Add seed URL (will be normalized with correct www preference)
     const normalizedSeedUrl = this.urlProcessor.normalize(cleanSeedUrl);
     this.queue.push({ url: normalizedSeedUrl, depth: 0 });
+    this.queued.add(normalizedSeedUrl);
 
     // Check for sitemaps first if enabled
     if (checkSitemaps) {
@@ -304,6 +307,7 @@ export class WebCrawler {
 
       batch.push(item);
       this.processing.add(item.url);
+      this.visited.add(item.url); // Mark visited immediately to prevent race conditions
     }
 
     return batch;
@@ -329,11 +333,11 @@ export class WebCrawler {
         continue;
       }
 
-      // Skip if already visited, in queue, or being processed
+      // Skip if already visited, queued, or being processed
       if (
         this.visited.has(cleanUrl) ||
-        this.processing.has(cleanUrl) ||
-        this.isInQueue(cleanUrl)
+        this.queued.has(cleanUrl) ||
+        this.processing.has(cleanUrl)
       ) {
         continue;
       }
@@ -360,6 +364,7 @@ export class WebCrawler {
       .sort((a, b) => b.priority - a.priority)
       .forEach((link) => {
         this.queue.push({ url: link.url, depth: link.depth });
+        this.queued.add(link.url);
         addedCount++;
 
         if (link.priority > 7) {
@@ -373,7 +378,7 @@ export class WebCrawler {
   }
 
   private isInQueue(url: string): boolean {
-    return this.queue.some((item) => item.url === url);
+    return this.queued.has(url);
   }
 
   private isJavaScriptHeavySite(url: string): boolean {
@@ -495,7 +500,7 @@ export class WebCrawler {
           if (!cleanUrl) continue;
 
           if (this.urlProcessor.isInternal(cleanUrl)) {
-            if (!this.visited.has(cleanUrl) && !this.isInQueue(cleanUrl)) {
+            if (!this.visited.has(cleanUrl) && !this.queued.has(cleanUrl)) {
               // Calculate depth based on URL structure
               const urlDepth = this.calculateUrlDepth(
                 cleanUrl,
@@ -504,6 +509,7 @@ export class WebCrawler {
 
               if (urlDepth <= maxDepth) {
                 this.queue.push({ url: cleanUrl, depth: urlDepth });
+                this.queued.add(cleanUrl);
                 addedFromSitemap++;
               }
             }
