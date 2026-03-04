@@ -1,6 +1,6 @@
 ﻿import { Router } from "express";
 import scanRouter from "./scan"; // Make sure this path is correct
-// import { authMiddleware } from '../middleware/auth';
+import { authMiddleware } from "../middleware/auth";
 
 const router = Router();
 
@@ -13,8 +13,7 @@ router.get("/health", (req, res) => {
   });
 });
 
-// Scan routes (uncomment authMiddleware when ready)
-router.use("/", scanRouter);
-// router.use('/', authMiddleware, scanRouter);
+// Scan routes (protected by JWT auth)
+router.use("/", authMiddleware, scanRouter);
 
 export default router;
