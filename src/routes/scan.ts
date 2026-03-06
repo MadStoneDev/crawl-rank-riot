@@ -95,11 +95,14 @@ router.post(
         .eq("id", project_id);
 
       // SEO scans are more comprehensive — clamp values to safe ranges
+      const maxPages = Math.max(1, Math.min(Number(options?.maxPages) || 500, 100000));
+      // Timeout scales with maxPages: ~2s per page, min 5 minutes, max 6 hours
+      const defaultTimeout = Math.max(300_000, maxPages * 2_000);
       const crawlerOptions = {
         maxDepth: Math.max(1, Math.min(Number(options?.maxDepth) || 5, 10)),
-        maxPages: Math.max(1, Math.min(Number(options?.maxPages) || 500, 100000)),
+        maxPages,
         concurrentRequests: Math.max(1, Math.min(Number(options?.concurrentRequests) || 3, 10)),
-        timeout: Math.max(10000, Math.min(Number(options?.timeout) || 300000, 600000)),
+        timeout: Math.max(300_000, Math.min(Number(options?.timeout) || defaultTimeout, 21_600_000)),
         checkSitemaps: options?.checkSitemaps !== false,
         excludePatterns: [
           /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
@@ -223,11 +226,13 @@ router.post(
         .eq("id", project_id);
 
       // Audit scans can be shallower — clamp values to safe ranges
+      const auditMaxPages = Math.max(1, Math.min(Number(options?.maxPages) || 50, 100000));
+      const auditDefaultTimeout = Math.max(300_000, auditMaxPages * 2_000);
       const crawlerOptions = {
         maxDepth: Math.max(1, Math.min(Number(options?.maxDepth) || 2, 10)),
-        maxPages: Math.max(1, Math.min(Number(options?.maxPages) || 50, 100000)),
+        maxPages: auditMaxPages,
         concurrentRequests: Math.max(1, Math.min(Number(options?.concurrentRequests) || 3, 10)),
-        timeout: Math.max(10000, Math.min(Number(options?.timeout) || 120000, 600000)),
+        timeout: Math.max(300_000, Math.min(Number(options?.timeout) || auditDefaultTimeout, 21_600_000)),
         checkSitemaps: options?.checkSitemaps !== false,
         excludePatterns: [
           /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,

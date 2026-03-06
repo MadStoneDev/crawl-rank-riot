@@ -102,13 +102,14 @@ export class CrawlScheduler {
 
       const scanId = scanData.id;
 
-      // Run the crawler
-      const crawler = new WebCrawler(project.url);
+      // Run the crawler with timeout proportional to maxPages
+      const scheduledMaxPages = 500;
+      const crawler = new WebCrawler(project.url, scanId, project.id);
       const results = await crawler.crawl(project.url, {
         maxDepth: 3,
-        maxPages: 100,
+        maxPages: scheduledMaxPages,
         concurrentRequests: 2, // Lower concurrency for scheduled crawls
-        timeout: 300000, // 5 minutes
+        timeout: Math.max(300_000, scheduledMaxPages * 2_000),
       });
 
       console.log(

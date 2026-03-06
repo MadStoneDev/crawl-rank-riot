@@ -205,15 +205,16 @@ export class WebCrawler {
       maxDepth = 3,
       maxPages = 100,
       concurrentRequests = 3,
-      timeout = 60000,
       excludePatterns = [],
       checkSitemaps = true,
       forceHeadless = false,
     } = options;
+    // Default timeout scales with maxPages: ~2s per page, min 5 minutes
+    const timeout = options.timeout ?? Math.max(300_000, maxPages * 2_000);
 
     console.log(`🚀 Starting crawl of ${seedUrl}`);
     console.log(
-      `📊 Options: maxDepth=${maxDepth}, maxPages=${maxPages}, concurrent=${concurrentRequests}`,
+      `📊 Options: maxDepth=${maxDepth}, maxPages=${maxPages}, concurrent=${concurrentRequests}, timeout=${Math.round(timeout / 1000)}s`,
     );
 
     // Initialize
@@ -285,6 +286,16 @@ export class WebCrawler {
         console.log("🔄 Refining www preference with link analysis...");
         await this.urlProcessor.detectPreferredWwwFormat(this.results);
       }
+    }
+
+    // Log why the loop exited
+    const elapsed = Date.now() - startTime;
+    if (this.queue.length === 0) {
+      console.log(`✅ Crawl finished: queue empty after ${Math.round(elapsed / 1000)}s`);
+    } else if (this.results.length >= maxPages) {
+      console.log(`✅ Crawl finished: reached maxPages limit (${maxPages}) after ${Math.round(elapsed / 1000)}s, ${this.queue.length} URLs remaining in queue`);
+    } else {
+      console.log(`⚠️ Crawl stopped: timeout reached (${Math.round(elapsed / 1000)}s / ${Math.round(timeout / 1000)}s), ${this.results.length}/${maxPages} pages scanned, ${this.queue.length} URLs remaining in queue`);
     }
 
     await this.finalProgressUpdate();
