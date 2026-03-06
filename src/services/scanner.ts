@@ -510,10 +510,8 @@ export class Scanner {
           .filter(
             (link) =>
               link.href &&
-              !link.href.startsWith("javascript:") &&
-              !link.href.startsWith("mailto:") &&
-              !link.href.startsWith("tel:") &&
-              link.href !== "#",
+              link.href !== "#" &&
+              /^https?:\/\//i.test(link.href),
           );
       });
 
@@ -869,7 +867,18 @@ export class Scanner {
       const href = match[1];
       const text = match[2].replace(/<[^>]+>/g, "").trim();
 
-      if (!href || href === "#" || href.startsWith("javascript:")) continue;
+      if (
+        !href ||
+        href === "#" ||
+        href.startsWith("javascript:") ||
+        href.startsWith("mailto:") ||
+        href.startsWith("tel:") ||
+        href.startsWith("data:") ||
+        href.startsWith("ftp:") ||
+        href.startsWith("sms:") ||
+        href.startsWith("blob:") ||
+        href.startsWith("file:")
+      ) continue;
 
       try {
         const resolvedUrl = urlProcessor.resolve(result.url, href);

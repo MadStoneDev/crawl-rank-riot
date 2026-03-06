@@ -1,3 +1,26 @@
+/** Protocols that should never be treated as crawlable pages */
+const NON_HTTP_PROTOCOLS = [
+  "mailto:",
+  "tel:",
+  "javascript:",
+  "data:",
+  "ftp:",
+  "ftps:",
+  "blob:",
+  "file:",
+  "sms:",
+  "geo:",
+  "whatsapp:",
+  "skype:",
+  "viber:",
+  "callto:",
+];
+
+function isNonHttpUrl(url: string): boolean {
+  const lower = url.trim().toLowerCase();
+  return NON_HTTP_PROTOCOLS.some((p) => lower.startsWith(p));
+}
+
 export class UrlProcessor {
   private baseUrl: string;
   private baseDomain: string;
@@ -238,6 +261,11 @@ export class UrlProcessor {
     }
 
     try {
+      // Reject non-HTTP protocols early (mailto:, tel:, etc.)
+      if (isNonHttpUrl(url)) {
+        throw new Error(`Non-HTTP protocol: ${url}`);
+      }
+
       // Handle relative URLs by resolving against base URL if available
       let normalizedUrl: string;
 
@@ -363,7 +391,16 @@ export class UrlProcessor {
    */
   resolve(baseUrl: string, relativeUrl: string): string | null {
     try {
+      // Reject non-HTTP protocols before resolving
+      if (isNonHttpUrl(relativeUrl)) return null;
+
       const resolved = new URL(relativeUrl, baseUrl);
+
+      // Only allow http/https resolved URLs
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+        return null;
+      }
+
       return this.normalize(resolved.href);
     } catch (error) {
       return null;
@@ -527,14 +564,8 @@ export class UrlProcessor {
 
       const trimmed = url.trim();
 
-      // Skip invalid protocols
-      if (
-        trimmed.startsWith("javascript:") ||
-        trimmed.startsWith("mailto:") ||
-        trimmed.startsWith("tel:") ||
-        trimmed.startsWith("data:") ||
-        trimmed === "#"
-      ) {
+      // Skip non-HTTP protocols and fragments
+      if (trimmed === "#" || isNonHttpUrl(trimmed)) {
         return null;
       }
 
