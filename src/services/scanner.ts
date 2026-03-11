@@ -89,10 +89,12 @@ export class Scanner {
       });
 
       // Navigate with extended timeout for e-commerce sites
+      const navigateStart = Date.now();
       const response = await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: 60000,
       });
+      result.first_byte_time_ms = Date.now() - navigateStart;
 
       result.status = response?.status() || 0;
       result.url = urlProcessor.normalize(page.url());
@@ -618,6 +620,13 @@ export class Scanner {
               if (data["@type"]) {
                 schemaTypes.push(data["@type"]);
               }
+              if (data["@graph"] && Array.isArray(data["@graph"])) {
+                for (const item of data["@graph"]) {
+                  if (item["@type"]) {
+                    schemaTypes.push(item["@type"]);
+                  }
+                }
+              }
               if (Array.isArray(data) && data.length > 0 && data[0]["@type"]) {
                 schemaTypes.push(data[0]["@type"]);
               }
@@ -862,6 +871,13 @@ export class Scanner {
         if (data["@type"]) {
           result.schema_types.push(data["@type"]);
         }
+        if (data["@graph"] && Array.isArray(data["@graph"])) {
+          for (const item of data["@graph"]) {
+            if (item["@type"]) {
+              result.schema_types.push(item["@type"]);
+            }
+          }
+        }
         if (Array.isArray(data) && data.length > 0 && data[0]["@type"]) {
           result.schema_types.push(data[0]["@type"]);
         }
@@ -993,11 +1009,16 @@ export class Scanner {
         if (!resolvedUrl) continue;
 
         const altMatch = match[0].match(/alt=["'](.*?)["']/i);
+        const widthMatch = match[0].match(/width=["']?(\d+)/i);
+        const heightMatch = match[0].match(/height=["']?(\d+)/i);
 
         result.images.push({
           src: resolvedUrl,
           alt: altMatch ? altMatch[1] : "",
-          dimensions: { width: 0, height: 0 },
+          dimensions: {
+            width: widthMatch ? parseInt(widthMatch[1], 10) : 0,
+            height: heightMatch ? parseInt(heightMatch[1], 10) : 0,
+          },
         });
       } catch (error) {
         // Skip invalid URLs

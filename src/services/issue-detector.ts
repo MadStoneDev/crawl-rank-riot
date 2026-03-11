@@ -53,7 +53,16 @@ export async function detectAndStoreIssues(
       allIssues.push(...pageIssues);
     }
 
-    // Step 3b: Add broken link issues (sourced from page_links table)
+    // Step 3b: Detect cross-page duplicate titles and meta descriptions
+    const crossPageIssues = detectCrossPageDuplicates(
+      results,
+      pageIdMap,
+      projectId,
+      scanId,
+    );
+    allIssues.push(...crossPageIssues);
+
+    // Step 3c: Add broken link issues (sourced from page_links table)
     for (const link of brokenLinks) {
       allIssues.push({
         project_id: projectId,
@@ -175,6 +184,83 @@ async function fetchBrokenLinks(projectId: string): Promise<
   }
 
   return data ?? [];
+}
+
+/**
+ * Detect cross-page duplicates: pages sharing the same non-empty title
+ * or meta description. Creates one issue per affected page.
+ */
+function detectCrossPageDuplicates(
+  results: ScanResult[],
+  pageIdMap: Map<string, string>,
+  projectId: string,
+  scanId: string,
+): DetectedIssue[] {
+  const issues: DetectedIssue[] = [];
+
+  // Group pages by title
+  const titleMap = new Map<string, { url: string; pageId: string }[]>();
+  for (const result of results) {
+    const pageId = pageIdMap.get(result.url);
+    if (!pageId) continue;
+    const title = result.title?.trim();
+    if (!title) continue;
+    const existing = titleMap.get(title) || [];
+    existing.push({ url: result.url, pageId });
+    titleMap.set(title, existing);
+  }
+
+  for (const [title, pages] of titleMap) {
+    if (pages.length < 2) continue;
+    const duplicateUrls = pages.map((p) => p.url);
+    for (const page of pages) {
+      issues.push({
+        project_id: projectId,
+        page_id: page.pageId,
+        scan_id: scanId,
+        issue_type: "duplicate_title",
+        severity: "medium",
+        description: `Duplicate title shared with ${pages.length - 1} other page(s): "${title.length > 80 ? title.slice(0, 80) + "…" : title}"`,
+        details: {
+          title,
+          duplicate_urls: duplicateUrls.filter((u) => u !== page.url),
+        },
+      });
+    }
+  }
+
+  // Group pages by meta description
+  const descMap = new Map<string, { url: string; pageId: string }[]>();
+  for (const result of results) {
+    const pageId = pageIdMap.get(result.url);
+    if (!pageId) continue;
+    const desc = result.meta_description?.trim();
+    if (!desc) continue;
+    const existing = descMap.get(desc) || [];
+    existing.push({ url: result.url, pageId });
+    descMap.set(desc, existing);
+  }
+
+  for (const [desc, pages] of descMap) {
+    if (pages.length < 2) continue;
+    const duplicateUrls = pages.map((p) => p.url);
+    for (const page of pages) {
+      issues.push({
+        project_id: projectId,
+        page_id: page.pageId,
+        scan_id: scanId,
+        issue_type: "duplicate_meta_description",
+        severity: "medium",
+        description: `Duplicate meta description shared with ${pages.length - 1} other page(s): "${desc.length > 80 ? desc.slice(0, 80) + "…" : desc}"`,
+        details: {
+          meta_description: desc,
+          duplicate_urls: duplicateUrls.filter((u) => u !== page.url),
+        },
+      });
+    }
+  }
+
+  return issues;
 }
 
 /**

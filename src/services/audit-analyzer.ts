@@ -86,72 +86,66 @@ export class AuditAnalyzer {
     const samplesToCheck = this.scanResults.slice(0, 10);
 
     for (const result of samplesToCheck) {
-      const content = JSON.stringify(result).toLowerCase();
       const scripts = this.extractScripts(result);
+      const linkTags = this.extractLinkTags(result);
+      const urlLower = result.url.toLowerCase();
+      const allSrcPaths = [...scripts, ...linkTags].map((s) => s.toLowerCase());
+      const metaContent = JSON.stringify(result.open_graph || {}).toLowerCase() +
+        JSON.stringify(result.twitter_card || {}).toLowerCase();
 
-      // Next.js detection (high priority)
-      if (content.includes("_next/static") || content.includes("__next")) {
+      // Next.js detection (high priority) — check script/link paths only
+      if (allSrcPaths.some((s) => s.includes("_next/static") || s.includes("/__next"))) {
         nextJsConfidence += 10;
-      }
-      if (content.includes("next/") || content.includes("nextjs")) {
-        nextJsConfidence += 5;
       }
       if (scripts.some((s) => s.includes("_next/") || s.includes("next-"))) {
         nextJsConfidence += 10;
       }
 
-      // React detection
-      if (scripts.some((s) => s.includes("react"))) {
+      // React detection — check script paths only
+      if (scripts.some((s) => s.toLowerCase().includes("react"))) {
         reactConfidence += 10;
       }
-      if (content.includes("react") && !content.includes("reactivate")) {
-        reactConfidence += 3;
-      }
 
-      // Shopify detection (be more specific)
-      if (
-        content.includes("cdn.shopify.com") ||
-        content.includes("myshopify.com")
-      ) {
+      // Shopify detection — check script/link src, URL, and meta tags only
+      if (allSrcPaths.some((s) => s.includes("cdn.shopify.com"))) {
         shopifyConfidence += 10;
       }
-      if (
-        content.includes("shopify.") &&
-        !content.includes("not shopify") &&
-        !content.includes("like shopify")
-      ) {
+      if (urlLower.includes("myshopify.com")) {
+        shopifyConfidence += 10;
+      }
+      if (metaContent.includes("shopify")) {
         shopifyConfidence += 3;
       }
 
-      // Detect CMS (WordPress)
-      if (content.includes("wp-content") || content.includes("wp-includes")) {
+      // Detect CMS (WordPress) — check script/link paths only
+      if (allSrcPaths.some((s) => s.includes("wp-content") || s.includes("wp-includes"))) {
         hasWordPress = true;
         cms = "WordPress";
       }
 
-      // Detect Vue
-      if (content.includes("vue") || scripts.some((s) => s.includes("vue"))) {
+      // Detect Vue — check script paths only
+      if (scripts.some((s) => s.toLowerCase().includes("vue"))) {
         hasVue = true;
       }
 
-      // Detect libraries
-      if (content.includes("jquery") && !libraries.includes("jQuery")) {
+      // Detect libraries — check script paths only
+      if (scripts.some((s) => s.toLowerCase().includes("jquery")) && !libraries.includes("jQuery")) {
         libraries.push("jQuery");
       }
-      if (content.includes("bootstrap") && !libraries.includes("Bootstrap")) {
+      if (allSrcPaths.some((s) => s.includes("bootstrap")) && !libraries.includes("Bootstrap")) {
         libraries.push("Bootstrap");
       }
-      if (content.includes("tailwind") && !libraries.includes("Tailwind CSS")) {
+      if (allSrcPaths.some((s) => s.includes("tailwind")) && !libraries.includes("Tailwind CSS")) {
         libraries.push("Tailwind CSS");
       }
 
-      // Detect analytics
-      if (content.includes("google-analytics") || content.includes("gtag")) {
+      // Detect analytics — check script paths only
+      if (scripts.some((s) => s.toLowerCase().includes("google-analytics") || s.toLowerCase().includes("gtag"))) {
         if (!analytics.includes("Google Analytics")) {
           analytics.push("Google Analytics");
         }
       }
-      if (content.includes("gtm") || content.includes("googletagmanager")) {
+      if (scripts.some((s) => s.toLowerCase().includes("gtm") || s.toLowerCase().includes("googletagmanager"))) {
         if (!analytics.includes("Google Tag Manager")) {
           analytics.push("Google Tag Manager");
         }
@@ -390,14 +384,17 @@ export class AuditAnalyzer {
       );
     }
 
-    // Check for modern frameworks
+    // Check for modern frameworks via script/link paths
     const hasModernFramework = this.scanResults.some((result) => {
-      const content = JSON.stringify(result);
-      return (
-        content.includes("react") ||
-        content.includes("vue") ||
-        content.includes("next") ||
-        content.includes("nuxt")
+      const scripts = this.extractScripts(result);
+      const linkTags = this.extractLinkTags(result);
+      const allPaths = [...scripts, ...linkTags].map((s) => s.toLowerCase());
+      return allPaths.some(
+        (s) =>
+          s.includes("react") ||
+          s.includes("vue") ||
+          s.includes("_next/") ||
+          s.includes("nuxt"),
       );
     });
 
@@ -811,22 +808,75 @@ export class AuditAnalyzer {
   }
 
   /**
-   * Helper: Extract script sources from scan result
+   * Helper: Extract script-like sources from scan result link URLs.
+   * Since ScanResult doesn't store raw HTML, we infer script sources
+   * from external link URLs that point to .js files or known CDN paths.
    */
   private extractScripts(result: ScanResult): string[] {
     const scripts: string[] = [];
-    const content = JSON.stringify(result);
 
-    const scriptMatches = content.match(/<script[^>]*src=["']([^"']+)["']/gi);
-    if (scriptMatches) {
-      scriptMatches.forEach((match) => {
-        const srcMatch = match.match(/src=["']([^"']+)["']/i);
-        if (srcMatch) {
-          scripts.push(srcMatch[1]);
-        }
-      });
+    // Check external link URLs for JS file patterns
+    for (const link of result.external_links) {
+      const url = link.url.toLowerCase();
+      if (
+        url.endsWith(".js") ||
+        url.includes("/js/") ||
+        url.includes("cdn.") ||
+        url.includes("_next/") ||
+        url.includes("wp-content") ||
+        url.includes("wp-includes")
+      ) {
+        scripts.push(link.url);
+      }
     }
 
+    // Check internal link URLs for JS/framework paths
+    for (const link of result.internal_links) {
+      const url = link.url.toLowerCase();
+      if (
+        url.endsWith(".js") ||
+        url.includes("_next/") ||
+        url.includes("/static/js/") ||
+        url.includes("wp-content") ||
+        url.includes("wp-includes")
+      ) {
+        scripts.push(link.url);
+      }
+    }
+
+    // Also check the page URL itself for platform indicators
+    scripts.push(result.url);
+
     return scripts;
+  }
+
+  /**
+   * Helper: Extract link tag hrefs (stylesheets, etc.) from scan result.
+   * Inferred from external links pointing to CSS/asset CDN paths.
+   */
+  private extractLinkTags(result: ScanResult): string[] {
+    const links: string[] = [];
+
+    for (const link of result.external_links) {
+      const url = link.url.toLowerCase();
+      if (
+        url.endsWith(".css") ||
+        url.includes("/css/") ||
+        url.includes("cdn.shopify.com") ||
+        url.includes("cdn.") ||
+        url.includes("fonts.googleapis.com")
+      ) {
+        links.push(link.url);
+      }
+    }
+
+    for (const link of result.internal_links) {
+      const url = link.url.toLowerCase();
+      if (url.endsWith(".css") || url.includes("/css/") || url.includes("/static/")) {
+        links.push(link.url);
+      }
+    }
+
+    return links;
   }
 }
