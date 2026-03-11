@@ -37,6 +37,11 @@ export async function storeScanResults(
     const urlMap = new Map<string, ScanResult>();
 
     for (const result of results) {
+      // Skip non-HTTP URLs that should never be stored as pages
+      if (!/^https?:\/\//i.test(result.url)) {
+        console.log(`Skipping non-HTTP URL: ${result.url}`);
+        continue;
+      }
       const normalizedUrl = result.url.toLowerCase().trim();
       if (!urlMap.has(normalizedUrl)) {
         urlMap.set(normalizedUrl, result);
@@ -189,6 +194,8 @@ export async function storeScanResults(
 
       // Internal links
       for (const link of result.internal_links) {
+        // Skip non-HTTP URLs that may have slipped through extraction
+        if (!/^https?:\/\//i.test(link.url)) continue;
         const destinationPageId = urlToPageId.get(link.url);
 
         // Look up the destination page's status if it was crawled
@@ -230,6 +237,8 @@ export async function storeScanResults(
 
       // External links - mark as unchecked (not broken)
       for (const link of result.external_links) {
+        // Skip non-HTTP URLs that may have slipped through extraction
+        if (!/^https?:\/\//i.test(link.url)) continue;
         allLinks.push({
           project_id: projectId,
           source_page_id: sourcePageId,

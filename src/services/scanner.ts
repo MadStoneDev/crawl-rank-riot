@@ -813,6 +813,54 @@ export class Scanner {
     if (result.is_indexable === undefined || result.is_indexable === null) {
       result.is_indexable = !result.has_robots_noindex;
     }
+
+    // Extract Open Graph tags
+    const ogRegex = /<meta[^>]*property=["']og:([^"']+)["'][^>]*content=["']([^"']*)["'][^>]*>/gi;
+    const ogRegexAlt = /<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:([^"']+)["'][^>]*>/gi;
+    let ogMatch;
+    while ((ogMatch = ogRegex.exec(html)) !== null) {
+      result.open_graph[ogMatch[1]] = ogMatch[2];
+    }
+    while ((ogMatch = ogRegexAlt.exec(html)) !== null) {
+      result.open_graph[ogMatch[2]] = ogMatch[1];
+    }
+
+    // Extract Twitter Card tags
+    const twRegex = /<meta[^>]*name=["']twitter:([^"']+)["'][^>]*content=["']([^"']*)["'][^>]*>/gi;
+    const twRegexAlt = /<meta[^>]*content=["']([^"']*)["'][^>]*name=["']twitter:([^"']+)["'][^>]*>/gi;
+    let twMatch;
+    while ((twMatch = twRegex.exec(html)) !== null) {
+      result.twitter_card[twMatch[1]] = twMatch[2];
+    }
+    while ((twMatch = twRegexAlt.exec(html)) !== null) {
+      result.twitter_card[twMatch[2]] = twMatch[1];
+    }
+
+    // Extract JSON-LD structured data
+    const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let jsonLdMatch;
+    while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null) {
+      try {
+        const data = JSON.parse(jsonLdMatch[1].trim());
+        result.structured_data.push(data);
+        if (data["@type"]) {
+          result.schema_types.push(data["@type"]);
+        }
+        if (Array.isArray(data) && data.length > 0 && data[0]["@type"]) {
+          result.schema_types.push(data[0]["@type"]);
+        }
+      } catch (e) {
+        // Invalid JSON-LD, skip
+      }
+    }
+    // Deduplicate schema types
+    result.schema_types = [...new Set(result.schema_types)];
+
+    // Extract JS and CSS counts
+    const jsMatches = html.match(/<script[^>]*src=/gi);
+    result.js_count = jsMatches ? jsMatches.length : 0;
+    const cssMatches = html.match(/<link[^>]*rel=["']stylesheet["']/gi);
+    result.css_count = cssMatches ? cssMatches.length : 0;
   }
 
   private extractTitleFromHtml(html: string): string {
@@ -867,17 +915,23 @@ export class Scanner {
       const href = match[1];
       const text = match[2].replace(/<[^>]+>/g, "").trim();
 
+      const hrefLower = (href || "").trim().toLowerCase();
       if (
         !href ||
         href === "#" ||
-        href.startsWith("javascript:") ||
-        href.startsWith("mailto:") ||
-        href.startsWith("tel:") ||
-        href.startsWith("data:") ||
-        href.startsWith("ftp:") ||
-        href.startsWith("sms:") ||
-        href.startsWith("blob:") ||
-        href.startsWith("file:")
+        hrefLower.startsWith("javascript:") ||
+        hrefLower.startsWith("mailto:") ||
+        hrefLower.startsWith("tel:") ||
+        hrefLower.startsWith("data:") ||
+        hrefLower.startsWith("ftp:") ||
+        hrefLower.startsWith("sms:") ||
+        hrefLower.startsWith("blob:") ||
+        hrefLower.startsWith("file:") ||
+        hrefLower.startsWith("geo:") ||
+        hrefLower.startsWith("whatsapp:") ||
+        hrefLower.startsWith("skype:") ||
+        hrefLower.startsWith("viber:") ||
+        hrefLower.startsWith("callto:")
       ) continue;
 
       try {
