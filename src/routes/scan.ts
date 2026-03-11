@@ -346,6 +346,16 @@ async function processSEOScanInBackground(
     const { storeScanResults } = await import("../services/database");
     await storeScanResults(projectId, scanId, scanResults);
 
+    // Detect and store issues
+    const { detectAndStoreIssues } = await import(
+      "../services/issue-detector"
+    );
+    const issuesFound = await detectAndStoreIssues(
+      scanResults,
+      projectId,
+      scanId,
+    );
+
     // Update scan as completed
     const supabase = getSupabaseServiceClient();
     await supabase
@@ -354,10 +364,13 @@ async function processSEOScanInBackground(
         status: "completed",
         completed_at: new Date().toISOString(),
         pages_scanned: scanResults.length,
+        issues_found: issuesFound,
       })
       .eq("id", scanId);
 
-    console.log(`SEO scan completed for project ${projectId}, scan ${scanId}`);
+    console.log(
+      `SEO scan completed for project ${projectId}, scan ${scanId}, ${issuesFound} issues found`,
+    );
   } catch (error) {
     console.error(`Error in SEO scan process for scan ${scanId}:`, error);
 
@@ -424,6 +437,16 @@ async function processAuditScanInBackground(
     const { storeAuditResults } = await import("../services/audit-database");
     await storeAuditResults(projectId, scanId, auditData);
 
+    // Detect and store issues (audit scans also benefit from issue detection)
+    const { detectAndStoreIssues } = await import(
+      "../services/issue-detector"
+    );
+    const issuesFound = await detectAndStoreIssues(
+      scanResults,
+      projectId,
+      scanId,
+    );
+
     // Update scan as completed
     const supabase = getSupabaseServiceClient();
     await supabase
@@ -432,15 +455,17 @@ async function processAuditScanInBackground(
         status: "completed",
         completed_at: new Date().toISOString(),
         pages_scanned: scanResults.length,
+        issues_found: issuesFound,
         summary_stats: {
           overall_score: overallScore,
           recommendations_count: recommendations.length,
+          issues_found: issuesFound,
         },
       })
       .eq("id", scanId);
 
     console.log(
-      `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100`,
+      `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100, ${issuesFound} issues found`,
     );
   } catch (error) {
     console.error(`Error in audit scan process for scan ${scanId}:`, error);

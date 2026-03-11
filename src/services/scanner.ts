@@ -100,6 +100,7 @@ export class Scanner {
       if (page.url() !== url) {
         result.is_redirect = true;
         result.redirected_from = url;
+        result.redirect_url = urlProcessor.normalize(page.url());
       }
 
       // Wait for dynamic content to load
@@ -108,6 +109,9 @@ export class Scanner {
 
       // Extract all data from the page
       await this.extractPageData(page, result, urlProcessor);
+
+      // Capture page size in bytes
+      result.size_bytes = Buffer.byteLength(await page.content(), 'utf8');
 
       console.log(
         `🎭 Headless scan completed: ${result.title} (${result.internal_links.length} internal, ${result.external_links.length} external links)`,
@@ -199,6 +203,10 @@ export class Scanner {
     const contentStats = await this.extractContentStats(page);
     result.content_length = contentStats.contentLength;
     result.word_count = contentStats.wordCount;
+
+    // Extract keywords from page content
+    const bodyText = await page.evaluate(() => document.body?.innerText || "");
+    result.keywords = this.extractKeywords(bodyText);
 
     // Extract meta tags
     const metaTags = await this.extractMetaTags(page);
@@ -674,6 +682,7 @@ export class Scanner {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
+        const fetchStart = Date.now();
         const response = await fetch(url, {
           headers: {
             "User-Agent": this.userAgent,
@@ -686,6 +695,7 @@ export class Scanner {
           redirect: "follow",
           signal: controller.signal,
         });
+        result.first_byte_time_ms = Date.now() - fetchStart;
 
         clearTimeout(timeoutId);
 
@@ -705,6 +715,7 @@ export class Scanner {
         if (response.url !== url) {
           result.is_redirect = true;
           result.redirected_from = url;
+          result.redirect_url = urlProcessor.normalize(response.url);
           result.url = urlProcessor.normalize(response.url);
         }
 
@@ -752,9 +763,11 @@ export class Scanner {
     // Extract title with fallbacks
     result.title = this.extractTitleFromHtml(html);
 
-    // Extract meta description
+    // Extract meta description (handle both attribute orders)
     const metaMatch = html.match(
       /<meta[^>]*name=["']description["'][^>]*content=["'](.*?)["']/i,
+    ) || html.match(
+      /<meta[^>]*content=["'](.*?)["'][^>]*name=["']description["']/i,
     );
     if (metaMatch) {
       result.meta_description = metaMatch[1];
@@ -799,6 +812,9 @@ export class Scanner {
     result.word_count = textContent
       .split(/\s+/)
       .filter((w) => w.length > 0).length;
+
+    // Extract keywords from page content
+    result.keywords = this.extractKeywords(textContent);
 
     // Extract meta tags (merge with header-based detection, don't override)
     result.canonical_url = this.extractCanonicalFromHtml(html);
@@ -1053,6 +1069,33 @@ export class Scanner {
       errors: [],
       warnings: [],
     };
+  }
+
+  private extractKeywords(text: string): Array<{ word: string; count: number }> {
+    const stopWords = new Set([
+      "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+      "her", "was", "one", "our", "out", "has", "its", "let", "say", "she",
+      "too", "use", "that", "with", "this", "have", "from", "they", "been",
+      "said", "each", "make", "like", "long", "look", "many", "some", "than",
+      "them", "then", "what", "when", "will", "more", "into", "over", "such",
+      "take", "also", "back", "came", "come", "just", "only", "very", "well",
+      "your", "were", "which", "about", "after", "being", "could", "every",
+      "first", "found", "great", "their", "there", "these", "those", "under",
+      "where", "while", "would", "other", "still", "between", "should", "through",
+    ]);
+
+    const words = text.toLowerCase().match(/[a-z]{4,}/g) || [];
+    const freq = new Map<string, number>();
+    for (const word of words) {
+      if (!stopWords.has(word)) {
+        freq.set(word, (freq.get(word) || 0) + 1);
+      }
+    }
+
+    return Array.from(freq.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([word, count]) => ({ word, count }));
   }
 
   private delay(ms: number): Promise<void> {
