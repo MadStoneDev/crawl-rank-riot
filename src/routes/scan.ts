@@ -356,6 +356,12 @@ async function processSEOScanInBackground(
       scanId,
     );
 
+    // Check for backlinks from external pages
+    const { checkAndStoreBacklinks } = await import(
+      "../services/backlink-checker"
+    );
+    const backlinksFound = await checkAndStoreBacklinks(projectId, url);
+
     // Update scan as completed
     const supabase = getSupabaseServiceClient();
     await supabase
@@ -369,7 +375,7 @@ async function processSEOScanInBackground(
       .eq("id", scanId);
 
     console.log(
-      `SEO scan completed for project ${projectId}, scan ${scanId}, ${issuesFound} issues found`,
+      `SEO scan completed for project ${projectId}, scan ${scanId}, ${issuesFound} issues found, ${backlinksFound} backlinks discovered`,
     );
   } catch (error) {
     console.error(`Error in SEO scan process for scan ${scanId}:`, error);
@@ -447,6 +453,12 @@ async function processAuditScanInBackground(
       scanId,
     );
 
+    // Check for backlinks from external pages
+    const { checkAndStoreBacklinks } = await import(
+      "../services/backlink-checker"
+    );
+    const backlinksFound = await checkAndStoreBacklinks(projectId, url);
+
     // Update scan as completed
     const supabase = getSupabaseServiceClient();
     await supabase
@@ -460,12 +472,13 @@ async function processAuditScanInBackground(
           overall_score: overallScore,
           recommendations_count: recommendations.length,
           issues_found: issuesFound,
+          backlinks_found: backlinksFound,
         },
       })
       .eq("id", scanId);
 
     console.log(
-      `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100, ${issuesFound} issues found`,
+      `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100, ${issuesFound} issues found, ${backlinksFound} backlinks discovered`,
     );
   } catch (error) {
     console.error(`Error in audit scan process for scan ${scanId}:`, error);
