@@ -669,6 +669,17 @@ async function processAuditScanInBackground(
     // Store audit results
     await storeAuditResults(projectId, scanId, auditData);
 
+    // Run site-level analysis (llms.txt, robots.txt AI bots, sitemap validation)
+    let siteLevelData;
+    try {
+      siteLevelData = await analyzeSiteLevelData(url, scanResults);
+      console.log(
+        `Audit site-level analysis complete: robots.txt=${siteLevelData.robots_txt?.exists}, sitemap=${siteLevelData.sitemap_validation?.found}`,
+      );
+    } catch (error) {
+      console.error("Site-level analysis failed (non-critical):", error);
+    }
+
     // Detect and store issues (audit scans also benefit from issue detection)
     const issuesFound = await detectAndStoreIssues(
       scanResults,
@@ -676,25 +687,51 @@ async function processAuditScanInBackground(
       scanId,
     );
 
+    // Detect site-level issues
+    let siteIssuesFound = 0;
+    if (siteLevelData) {
+      try {
+        const supabaseForLookup = getSupabaseServiceClient();
+        const { data: homepagePage } = await supabaseForLookup
+          .from("pages")
+          .select("id")
+          .eq("project_id", projectId)
+          .eq("depth", 0)
+          .limit(1)
+          .single();
+
+        siteIssuesFound = await detectSiteLevelIssues(
+          siteLevelData,
+          projectId,
+          scanId,
+          homepagePage?.id || null,
+        );
+      } catch (error) {
+        console.error("Site-level issue detection failed:", error);
+      }
+    }
+
     // Check for backlinks from external pages
     const backlinksFound = await checkAndStoreBacklinks(projectId, url);
 
     // Update scan as completed
     const supabase = getSupabaseServiceClient();
     const completedAt = new Date().toISOString();
+    const totalIssues = issuesFound + siteIssuesFound;
     await supabase
       .from("scans")
       .update({
         status: "completed",
         completed_at: completedAt,
         pages_scanned: scanResults.length,
-        issues_found: issuesFound,
-        summary_stats: {
+        issues_found: totalIssues,
+        summary_stats: JSON.parse(JSON.stringify({
           overall_score: overallScore,
           recommendations_count: recommendations.length,
-          issues_found: issuesFound,
+          issues_found: totalIssues,
           backlinks_found: backlinksFound,
-        },
+          ...(siteLevelData && { site_level_data: siteLevelData }),
+        })),
       })
       .eq("id", scanId);
 
