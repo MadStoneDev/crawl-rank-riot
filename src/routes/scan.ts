@@ -6,6 +6,14 @@ import {
   createSuccessResponse,
   errorHandlerMiddleware,
 } from "../services/api/responses";
+import { AuthenticatedRequest } from "../middleware/auth";
+import { storeScanResults } from "../services/database";
+import { detectAndStoreIssues } from "../services/issue-detector";
+import { checkAndStoreBacklinks } from "../services/backlink-checker";
+import { AuditAnalyzer } from "../services/audit-analyzer";
+import { storeAuditResults } from "../services/audit-database";
+import { analyzeSiteLevelData } from "../services/site-analyzer";
+import { detectSiteLevelIssues } from "../services/site-issue-detector";
 
 const router = Router();
 
@@ -16,7 +24,7 @@ router.post(
   "/scan",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { project_id, email, options = {} } = req.body;
+      const { project_id, options = {} } = req.body;
 
       // Validate inputs
       if (!project_id) {
@@ -29,31 +37,42 @@ router.post(
           ),
         );
       }
-      if (!email) {
-        return next(
-          new AppError("Email is required", "VALIDATION_ERROR", undefined, 400),
-        );
-      }
 
       const supabase = getSupabaseServiceClient();
 
-      // Fetch project information
-      const { data: project, error: projectError } = await supabase
+      // Authorization: verify the authenticated user owns the project
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.id;
+
+      const { data: ownedProject, error: ownerError } = await supabase
         .from("projects")
-        .select("id, url")
+        .select("id, url, user_id")
         .eq("id", project_id)
         .single();
 
-      if (projectError || !project) {
+      if (ownerError || !ownedProject) {
         return next(
           new AppError(
             "Project not found",
             "PROJECT_NOT_FOUND",
-            projectError,
+            ownerError,
             404,
           ),
         );
       }
+
+      if (ownedProject.user_id !== userId) {
+        return next(
+          new AppError(
+            "You do not have permission to scan this project",
+            "FORBIDDEN",
+            undefined,
+            403,
+          ),
+        );
+      }
+
+      const project = ownedProject;
 
       console.log(
         `SEO scan request received for Project ID: ${project_id}, URL: ${project.url}`,
@@ -147,7 +166,7 @@ router.post(
   "/scan/audit",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { project_id, email, options = {} } = req.body;
+      const { project_id, options = {} } = req.body;
 
       // Validate inputs
       if (!project_id) {
@@ -160,31 +179,42 @@ router.post(
           ),
         );
       }
-      if (!email) {
-        return next(
-          new AppError("Email is required", "VALIDATION_ERROR", undefined, 400),
-        );
-      }
 
       const supabase = getSupabaseServiceClient();
 
-      // Fetch project information
-      const { data: project, error: projectError } = await supabase
+      // Authorization: verify the authenticated user owns the project
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.id;
+
+      const { data: ownedProject, error: ownerError } = await supabase
         .from("projects")
-        .select("id, url")
+        .select("id, url, user_id")
         .eq("id", project_id)
         .single();
 
-      if (projectError || !project) {
+      if (ownerError || !ownedProject) {
         return next(
           new AppError(
             "Project not found",
             "PROJECT_NOT_FOUND",
-            projectError,
+            ownerError,
             404,
           ),
         );
       }
+
+      if (ownedProject.user_id !== userId) {
+        return next(
+          new AppError(
+            "You do not have permission to scan this project",
+            "FORBIDDEN",
+            undefined,
+            403,
+          ),
+        );
+      }
+
+      const project = ownedProject;
 
       console.log(
         `Audit scan request received for Project ID: ${project_id}, URL: ${project.url}`,
@@ -299,6 +329,27 @@ router.get(
         );
       }
 
+      // Authorization: verify the scan belongs to a project owned by the user
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.id;
+
+      const { data: project, error: projectError } = await supabase
+        .from("projects")
+        .select("id, user_id")
+        .eq("id", scan.project_id)
+        .single();
+
+      if (projectError || !project || project.user_id !== userId) {
+        return next(
+          new AppError(
+            "You do not have permission to view this scan",
+            "FORBIDDEN",
+            undefined,
+            403,
+          ),
+        );
+      }
+
       // Get audit results if completed
       let auditResults = null;
       if (scan.status === "completed") {
@@ -324,6 +375,123 @@ router.get(
 );
 
 /**
+ * Create a snapshot of the current project state after a scan completes.
+ */
+async function createScanSnapshot(
+  projectId: string,
+  scanId: string,
+  pagesScanned: number,
+  issuesFound: number,
+  startedAt: string,
+  completedAt: string,
+): Promise<void> {
+  try {
+    const supabase = getSupabaseServiceClient();
+
+    // Get issue counts by severity for this scan
+    const { data: issues } = await supabase
+      .from("issues")
+      .select("severity")
+      .eq("project_id", projectId)
+      .eq("scan_id", scanId);
+
+    const issueCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+    if (issues) {
+      for (const issue of issues) {
+        const severity = (issue.severity?.toLowerCase() || "low") as keyof typeof issueCounts;
+        if (severity in issueCounts) {
+          issueCounts[severity]++;
+        }
+      }
+    }
+    const totalIssues = issueCounts.critical + issueCounts.high + issueCounts.medium + issueCounts.low;
+
+    // Get page statistics
+    const { count: totalPages } = await supabase
+      .from("pages")
+      .select("*", { count: "exact", head: true })
+      .eq("project_id", projectId)
+      .like("url", "http%");
+
+    const { count: indexablePages } = await supabase
+      .from("pages")
+      .select("*", { count: "exact", head: true })
+      .eq("project_id", projectId)
+      .eq("is_indexable", true)
+      .like("url", "http%");
+
+    // Get broken links count
+    const { count: brokenLinks } = await supabase
+      .from("page_links")
+      .select("*", { count: "exact", head: true })
+      .eq("project_id", projectId)
+      .eq("is_broken", true);
+
+    // Calculate average SEO score based on title, meta_description, h1s presence
+    const { data: pagesWithData } = await supabase
+      .from("pages")
+      .select("title, meta_description, h1s")
+      .eq("project_id", projectId)
+      .like("url", "http%");
+
+    let avgSeoScore = 0;
+    if (pagesWithData && pagesWithData.length > 0) {
+      const scores = pagesWithData.map((page) => {
+        let score = 100;
+        if (!page.title) score -= 20;
+        if (!page.meta_description) score -= 15;
+        const h1Count = Array.isArray(page.h1s) ? page.h1s.length : 0;
+        if (h1Count === 0) score -= 15;
+        else if (h1Count > 1) score -= 5;
+        return Math.max(0, score);
+      });
+      avgSeoScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+    }
+
+    const snapshotData = {
+      timestamp: new Date().toISOString(),
+      metrics: {
+        totalPages: totalPages || 0,
+        indexablePages: indexablePages || 0,
+        brokenLinks: brokenLinks || 0,
+        avgSeoScore,
+      },
+      issues: {
+        total: totalIssues,
+        critical: issueCounts.critical,
+        high: issueCounts.high,
+        medium: issueCounts.medium,
+        low: issueCounts.low,
+      },
+      scan: {
+        id: scanId,
+        status: "completed",
+        pagesScanned,
+        issuesFound,
+        startedAt,
+        completedAt,
+      },
+    };
+
+    const { error: snapshotError } = await supabase
+      .from("scan_snapshots")
+      .insert({
+        scan_id: scanId,
+        snapshot_data: snapshotData,
+      });
+
+    if (snapshotError) {
+      console.error(`Error creating snapshot for scan ${scanId}:`, snapshotError);
+    } else {
+      console.log(`Snapshot created for scan ${scanId}`);
+    }
+  } catch (error) {
+    // Snapshot creation is non-critical — log but don't throw
+    console.error(`Failed to create snapshot for scan ${scanId}:`, error);
+  }
+}
+
+/**
  * Process SEO scan in the background
  */
 async function processSEOScanInBackground(
@@ -343,56 +511,116 @@ async function processSEOScanInBackground(
     );
 
     // Store SEO scan results
-    const { storeScanResults } = await import("../services/database");
     await storeScanResults(projectId, scanId, scanResults);
 
+    // Run site-level analysis (llms.txt, robots.txt AI bots, sitemap validation)
+    let siteLevelData;
+    try {
+      console.log(`Running site-level analysis for ${url}...`);
+      siteLevelData = await analyzeSiteLevelData(url, scanResults);
+      console.log(
+        `Site-level analysis complete: llms.txt=${siteLevelData.llms_txt?.exists}, robots.txt=${siteLevelData.robots_txt?.exists}, sitemap=${siteLevelData.sitemap_validation?.found}`,
+      );
+    } catch (error) {
+      console.error("Site-level analysis failed (non-critical):", error);
+    }
+
     // Detect and store issues
-    const { detectAndStoreIssues } = await import(
-      "../services/issue-detector"
-    );
     const issuesFound = await detectAndStoreIssues(
       scanResults,
       projectId,
       scanId,
     );
 
+    // Detect site-level issues (llms.txt, robots.txt, sitemap)
+    let siteIssuesFound = 0;
+    if (siteLevelData) {
+      try {
+        const supabaseForLookup = getSupabaseServiceClient();
+        const { data: homepagePage } = await supabaseForLookup
+          .from("pages")
+          .select("id")
+          .eq("project_id", projectId)
+          .eq("depth", 0)
+          .limit(1)
+          .single();
+
+        siteIssuesFound = await detectSiteLevelIssues(
+          siteLevelData,
+          projectId,
+          scanId,
+          homepagePage?.id || null,
+        );
+      } catch (error) {
+        console.error("Site-level issue detection failed (non-critical):", error);
+      }
+    }
+
     // Check for backlinks from external pages
-    const { checkAndStoreBacklinks } = await import(
-      "../services/backlink-checker"
-    );
     const backlinksFound = await checkAndStoreBacklinks(projectId, url);
 
     // Update scan as completed
     const supabase = getSupabaseServiceClient();
+    const completedAt = new Date().toISOString();
+    const totalIssues = issuesFound + siteIssuesFound;
     await supabase
       .from("scans")
       .update({
         status: "completed",
-        completed_at: new Date().toISOString(),
+        completed_at: completedAt,
         pages_scanned: scanResults.length,
-        issues_found: issuesFound,
+        issues_found: totalIssues,
+        ...(siteLevelData && {
+          summary_stats: JSON.parse(JSON.stringify({
+            site_level_data: siteLevelData,
+          })),
+        }),
       })
       .eq("id", scanId);
 
+    // Create a snapshot for historical trends
+    // Fetch the scan to get started_at
+    const { data: scanRecord } = await supabase
+      .from("scans")
+      .select("started_at")
+      .eq("id", scanId)
+      .single();
+
+    await createScanSnapshot(
+      projectId,
+      scanId,
+      scanResults.length,
+      totalIssues,
+      scanRecord?.started_at || completedAt,
+      completedAt,
+    );
+
     console.log(
-      `SEO scan completed for project ${projectId}, scan ${scanId}, ${issuesFound} issues found, ${backlinksFound} backlinks discovered`,
+      `SEO scan completed for project ${projectId}, scan ${scanId}, ${totalIssues} issues found (${siteIssuesFound} site-level), ${backlinksFound} backlinks discovered`,
     );
   } catch (error) {
     console.error(`Error in SEO scan process for scan ${scanId}:`, error);
 
-    const supabase = getSupabaseServiceClient();
-    await supabase
-      .from("scans")
-      .update({
-        status: "failed",
-        completed_at: new Date().toISOString(),
-        summary_stats: {
-          error_message:
-            error instanceof Error ? error.message : "Unknown error",
-          failed_at: new Date().toISOString(),
-        },
-      })
-      .eq("id", scanId);
+    try {
+      const supabase = getSupabaseServiceClient();
+      await supabase
+        .from("scans")
+        .update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          summary_stats: {
+            error_message:
+              error instanceof Error ? error.message : "Unknown error",
+            failed_at: new Date().toISOString(),
+          },
+        })
+        .eq("id", scanId);
+    } catch (dbError) {
+      console.error(
+        `Failed to update scan ${scanId} status to failed:`,
+        dbError,
+      );
+    }
   }
 }
 
@@ -416,7 +644,6 @@ async function processAuditScanInBackground(
     );
 
     // Run audit analysis
-    const { AuditAnalyzer } = await import("../services/audit-analyzer");
     const analyzer = new AuditAnalyzer(scanResults, url);
     const { analysis, recommendations, overallScore } =
       await analyzer.analyze();
@@ -440,13 +667,9 @@ async function processAuditScanInBackground(
     };
 
     // Store audit results
-    const { storeAuditResults } = await import("../services/audit-database");
     await storeAuditResults(projectId, scanId, auditData);
 
     // Detect and store issues (audit scans also benefit from issue detection)
-    const { detectAndStoreIssues } = await import(
-      "../services/issue-detector"
-    );
     const issuesFound = await detectAndStoreIssues(
       scanResults,
       projectId,
@@ -454,18 +677,16 @@ async function processAuditScanInBackground(
     );
 
     // Check for backlinks from external pages
-    const { checkAndStoreBacklinks } = await import(
-      "../services/backlink-checker"
-    );
     const backlinksFound = await checkAndStoreBacklinks(projectId, url);
 
     // Update scan as completed
     const supabase = getSupabaseServiceClient();
+    const completedAt = new Date().toISOString();
     await supabase
       .from("scans")
       .update({
         status: "completed",
-        completed_at: new Date().toISOString(),
+        completed_at: completedAt,
         pages_scanned: scanResults.length,
         issues_found: issuesFound,
         summary_stats: {
@@ -477,25 +698,49 @@ async function processAuditScanInBackground(
       })
       .eq("id", scanId);
 
+    // Create a snapshot for historical trends
+    // Fetch the scan to get started_at
+    const { data: scanRecord } = await supabase
+      .from("scans")
+      .select("started_at")
+      .eq("id", scanId)
+      .single();
+
+    await createScanSnapshot(
+      projectId,
+      scanId,
+      scanResults.length,
+      issuesFound,
+      scanRecord?.started_at || completedAt,
+      completedAt,
+    );
+
     console.log(
       `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100, ${issuesFound} issues found, ${backlinksFound} backlinks discovered`,
     );
   } catch (error) {
     console.error(`Error in audit scan process for scan ${scanId}:`, error);
 
-    const supabase = getSupabaseServiceClient();
-    await supabase
-      .from("scans")
-      .update({
-        status: "failed",
-        completed_at: new Date().toISOString(),
-        summary_stats: {
-          error_message:
-            error instanceof Error ? error.message : "Unknown error",
-          failed_at: new Date().toISOString(),
-        },
-      })
-      .eq("id", scanId);
+    try {
+      const supabase = getSupabaseServiceClient();
+      await supabase
+        .from("scans")
+        .update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          summary_stats: {
+            error_message:
+              error instanceof Error ? error.message : "Unknown error",
+            failed_at: new Date().toISOString(),
+          },
+        })
+        .eq("id", scanId);
+    } catch (dbError) {
+      console.error(
+        `Failed to update scan ${scanId} status to failed:`,
+        dbError,
+      );
+    }
   }
 }
 

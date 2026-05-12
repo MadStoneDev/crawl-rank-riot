@@ -1,5 +1,6 @@
 import { ScanResult } from "../types";
-import { UrlProcessor } from "../utils/url";
+import { UrlProcessor, isPublicUrl } from "../utils/url";
+import { isJavaScriptHeavySite } from "../utils/browser";
 import puppeteer, { Browser, Page } from "puppeteer";
 
 export class Scanner {
@@ -13,8 +14,17 @@ export class Scanner {
   ): Promise<ScanResult> {
     const startTime = Date.now();
 
+    // SSRF protection: block requests to private/reserved IP ranges
+    const isSafe = await isPublicUrl(url);
+    if (!isSafe) {
+      const result = this.createBaseScanResult(url, depth);
+      result.errors = [`Blocked: URL resolves to a private or reserved IP address`];
+      result.status = 0;
+      return result;
+    }
+
     // For e-commerce and JS-heavy sites, use headless browser
-    if (this.isJavaScriptHeavySite(url) || forceHeadless) {
+    if (isJavaScriptHeavySite(url) || forceHeadless) {
       console.log(`🎭 Using headless browser for: ${url}`);
       const result = await this.headlessScan(url, depth);
       result.load_time_ms = Date.now() - startTime;
@@ -34,22 +44,6 @@ export class Scanner {
     return result;
   }
 
-  private isJavaScriptHeavySite(url: string): boolean {
-    const jsHeavyPlatforms = [
-      "shopify.com",
-      "shopifypreview.com",
-      "myshopify.com",
-      "squarespace.com",
-      "wix.com",
-      "webflow.io",
-      "bigcommerce.com",
-      "magento.com",
-    ];
-
-    const lowerUrl = url.toLowerCase();
-    return jsHeavyPlatforms.some((platform) => lowerUrl.includes(platform));
-  }
-
   private async headlessScan(url: string, depth: number): Promise<ScanResult> {
     const urlProcessor = new UrlProcessor(url);
     const result = this.createBaseScanResult(url, depth);
@@ -62,7 +56,6 @@ export class Scanner {
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
-          "--disable-web-security",
           "--disable-features=VizDisplayCompositor",
           "--disable-background-timer-throttling",
           "--disable-backgrounding-occluded-windows",
@@ -98,6 +91,11 @@ export class Scanner {
 
       result.status = response?.status() || 0;
       result.url = urlProcessor.normalize(page.url());
+
+      // Capture security headers from the response
+      if (response) {
+        result.security_headers = this.extractSecurityHeaders(response.headers());
+      }
 
       if (page.url() !== url) {
         result.is_redirect = true;
@@ -162,7 +160,7 @@ export class Scanner {
       ]);
 
       // Additional wait for Shopify-specific elements
-      if (this.isJavaScriptHeavySite(page.url())) {
+      if (isJavaScriptHeavySite(page.url())) {
         await Promise.race([
           page.waitForSelector("[data-section-type], .shopify-section", {
             timeout: 5000,
@@ -231,6 +229,39 @@ export class Scanner {
     result.css_count = techData.cssCount;
     result.structured_data = techData.structuredData;
     result.schema_types = techData.schemaTypes;
+
+    // Check for viewport meta tag
+    result.has_viewport_meta = await page.evaluate(() => {
+      return !!document.querySelector('meta[name="viewport"]');
+    });
+
+    // Check for mixed content (HTTPS page with HTTP resources)
+    result.has_mixed_content = await page.evaluate(() => {
+      if (window.location.protocol !== "https:") return false;
+      const selectors = 'img[src^="http:"], script[src^="http:"], link[href^="http:"], iframe[src^="http:"], video[src^="http:"], audio[src^="http:"], source[src^="http:"], object[data^="http:"], embed[src^="http:"]';
+      return document.querySelectorAll(selectors).length > 0;
+    });
+
+    // Extract hreflang tags
+    result.hreflang_tags = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('link[rel="alternate"][hreflang]'))
+        .map((el) => ({
+          lang: el.getAttribute("hreflang") || "",
+          url: (el as HTMLLinkElement).href || "",
+        }))
+        .filter((tag) => tag.lang && tag.url);
+    });
+
+    // Check canonical_is_self
+    result.canonical_is_self = this.checkCanonicalIsSelf(result.canonical_url, result.url);
+
+    // Check URL issues
+    result.url_issues = this.analyzeUrlIssues(result.url);
+
+    // Check heading hierarchy
+    const hierarchyResult = this.checkHeadingHierarchy(result);
+    result.heading_hierarchy_valid = hierarchyResult.valid;
+    result.heading_hierarchy_issues = hierarchyResult.issues;
 
     // Mark as headless scan
     result.scan_method = "headless";
@@ -569,6 +600,8 @@ export class Scanner {
           alt: img.alt || "",
           width: img.naturalWidth || img.width || 0,
           height: img.naturalHeight || img.height || 0,
+          loading: img.getAttribute("loading") || "",
+          srcset: img.getAttribute("srcset") || "",
         }));
       });
 
@@ -581,6 +614,9 @@ export class Scanner {
             src: resolvedUrl,
             alt: img.alt,
             dimensions: { width: img.width, height: img.height },
+            loading: img.loading,
+            srcset: img.srcset || undefined,
+            format: this.deriveImageFormat(resolvedUrl),
           });
         } catch (error) {
           // Skip invalid URLs
@@ -691,25 +727,62 @@ export class Scanner {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
+        // Track redirect chain by following redirects manually
+        const redirectChain: string[] = [];
+        let currentUrl = url;
+        let response: Response | null = null;
+        const maxRedirects = 10;
+
         const fetchStart = Date.now();
-        const response = await fetch(url, {
-          headers: {
-            "User-Agent": this.userAgent,
-            Accept:
-              "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "Cache-Control": "no-cache",
-          },
-          redirect: "follow",
-          signal: controller.signal,
-        });
+
+        for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
+          response = await fetch(currentUrl, {
+            headers: {
+              "User-Agent": this.userAgent,
+              Accept:
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.5",
+              "Accept-Encoding": "gzip, deflate",
+              "Cache-Control": "no-cache",
+            },
+            redirect: "manual",
+            signal: controller.signal,
+          });
+
+          if (response.status >= 300 && response.status < 400) {
+            const location = response.headers.get("location");
+            if (location) {
+              redirectChain.push(currentUrl);
+              // Resolve relative redirect URLs
+              try {
+                currentUrl = new URL(location, currentUrl).href;
+              } catch {
+                currentUrl = location;
+              }
+              continue;
+            }
+          }
+          break;
+        }
+
         result.first_byte_time_ms = Date.now() - fetchStart;
 
         clearTimeout(timeoutId);
 
+        if (!response) {
+          throw new Error("No response received");
+        }
+
+        // Store the redirect chain (only if there were redirects)
+        if (redirectChain.length > 0) {
+          result.redirect_chain = redirectChain;
+        }
+
         result.status = response.status;
         result.content_type = response.headers.get("content-type") || "";
+
+        // Capture security headers
+        result.security_headers = this.extractSecurityHeadersFromFetch(response.headers);
 
         // Check X-Robots-Tag header for noindex/nofollow
         const xRobotsTag = response.headers.get("x-robots-tag") || "";
@@ -721,11 +794,11 @@ export class Scanner {
           result.has_robots_nofollow = true;
         }
 
-        if (response.url !== url) {
+        if (currentUrl !== url) {
           result.is_redirect = true;
           result.redirected_from = url;
-          result.redirect_url = urlProcessor.normalize(response.url);
-          result.url = urlProcessor.normalize(response.url);
+          result.redirect_url = urlProcessor.normalize(currentUrl);
+          result.url = urlProcessor.normalize(currentUrl);
         }
 
         // Retry on 5xx errors (server errors are often transient)
@@ -893,6 +966,54 @@ export class Scanner {
     result.js_count = jsMatches ? jsMatches.length : 0;
     const cssMatches = html.match(/<link[^>]*rel=["']stylesheet["']/gi);
     result.css_count = cssMatches ? cssMatches.length : 0;
+
+    // Check for viewport meta tag
+    result.has_viewport_meta = /<meta[^>]*name=["']viewport["']/i.test(html);
+
+    // Check for mixed content (HTTPS page with HTTP resources)
+    if (result.url.startsWith("https://")) {
+      const mixedContentPatterns = [
+        /<img[^>]*src=["']http:\/\//i,
+        /<script[^>]*src=["']http:\/\//i,
+        /<link[^>]*href=["']http:\/\//i,
+        /<iframe[^>]*src=["']http:\/\//i,
+        /<video[^>]*src=["']http:\/\//i,
+        /<audio[^>]*src=["']http:\/\//i,
+        /<source[^>]*src=["']http:\/\//i,
+        /<object[^>]*data=["']http:\/\//i,
+        /<embed[^>]*src=["']http:\/\//i,
+      ];
+      result.has_mixed_content = mixedContentPatterns.some((pattern) => pattern.test(html));
+    } else {
+      result.has_mixed_content = false;
+    }
+
+    // Extract hreflang tags
+    const hreflangRegex = /<link[^>]*rel=["']alternate["'][^>]*hreflang=["']([^"']*)["'][^>]*href=["']([^"']*)["'][^>]*>/gi;
+    const hreflangRegexAlt = /<link[^>]*hreflang=["']([^"']*)["'][^>]*rel=["']alternate["'][^>]*href=["']([^"']*)["'][^>]*>/gi;
+    const hreflangRegexAlt2 = /<link[^>]*href=["']([^"']*)["'][^>]*rel=["']alternate["'][^>]*hreflang=["']([^"']*)["'][^>]*>/gi;
+    result.hreflang_tags = [];
+    let hreflangMatch;
+    while ((hreflangMatch = hreflangRegex.exec(html)) !== null) {
+      result.hreflang_tags.push({ lang: hreflangMatch[1], url: hreflangMatch[2] });
+    }
+    while ((hreflangMatch = hreflangRegexAlt.exec(html)) !== null) {
+      result.hreflang_tags.push({ lang: hreflangMatch[1], url: hreflangMatch[2] });
+    }
+    while ((hreflangMatch = hreflangRegexAlt2.exec(html)) !== null) {
+      result.hreflang_tags.push({ lang: hreflangMatch[2], url: hreflangMatch[1] });
+    }
+
+    // Check canonical_is_self
+    result.canonical_is_self = this.checkCanonicalIsSelf(result.canonical_url, result.url);
+
+    // Check URL issues
+    result.url_issues = this.analyzeUrlIssues(result.url);
+
+    // Check heading hierarchy
+    const hierarchyResult = this.checkHeadingHierarchy(result);
+    result.heading_hierarchy_valid = hierarchyResult.valid;
+    result.heading_hierarchy_issues = hierarchyResult.issues;
   }
 
   private extractTitleFromHtml(html: string): string {
@@ -1011,6 +1132,8 @@ export class Scanner {
         const altMatch = match[0].match(/alt=["'](.*?)["']/i);
         const widthMatch = match[0].match(/width=["']?(\d+)/i);
         const heightMatch = match[0].match(/height=["']?(\d+)/i);
+        const loadingMatch = match[0].match(/loading=["']([^"']*)["']/i);
+        const srcsetMatch = match[0].match(/srcset=["']([^"']*)["']/i);
 
         result.images.push({
           src: resolvedUrl,
@@ -1019,6 +1142,9 @@ export class Scanner {
             width: widthMatch ? parseInt(widthMatch[1], 10) : 0,
             height: heightMatch ? parseInt(heightMatch[1], 10) : 0,
           },
+          loading: loadingMatch ? loadingMatch[1] : "",
+          srcset: srcsetMatch ? srcsetMatch[1] : undefined,
+          format: this.deriveImageFormat(resolvedUrl),
         });
       } catch (error) {
         // Skip invalid URLs
@@ -1076,15 +1202,24 @@ export class Scanner {
       external_links: [],
       images: [],
       redirect_url: null,
+      redirect_chain: [],
       content_type: "",
       size_bytes: 0,
       load_time_ms: 0,
       first_byte_time_ms: 0,
+      security_headers: {},
+      has_viewport_meta: false,
+      has_mixed_content: false,
       structured_data: [],
       schema_types: [],
       js_count: 0,
       css_count: 0,
       keywords: [],
+      heading_hierarchy_valid: true,
+      heading_hierarchy_issues: [],
+      hreflang_tags: [],
+      canonical_is_self: false,
+      url_issues: [],
       scan_method: "http",
       scanned_at: new Date().toISOString(),
       errors: [],
@@ -1117,6 +1252,173 @@ export class Scanner {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([word, count]) => ({ word, count }));
+  }
+
+  /**
+   * Extract security-relevant headers from a Puppeteer HTTP response.
+   */
+  private extractSecurityHeaders(headers: Record<string, string>): Record<string, string> {
+    const securityHeaderNames = [
+      "content-security-policy",
+      "strict-transport-security",
+      "x-frame-options",
+      "x-content-type-options",
+      "referrer-policy",
+      "permissions-policy",
+    ];
+    const result: Record<string, string> = {};
+    for (const name of securityHeaderNames) {
+      const value = headers[name];
+      if (value) {
+        result[name] = value;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Extract security-relevant headers from a fetch Response.
+   */
+  private extractSecurityHeadersFromFetch(headers: Headers): Record<string, string> {
+    const securityHeaderNames = [
+      "content-security-policy",
+      "strict-transport-security",
+      "x-frame-options",
+      "x-content-type-options",
+      "referrer-policy",
+      "permissions-policy",
+    ];
+    const result: Record<string, string> = {};
+    for (const name of securityHeaderNames) {
+      const value = headers.get(name);
+      if (value) {
+        result[name] = value;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Derive image format from the URL file extension.
+   */
+  private deriveImageFormat(url: string): string {
+    try {
+      const pathname = new URL(url).pathname.toLowerCase();
+      const extMatch = pathname.match(/\.([a-z0-9]+)(?:\?.*)?$/);
+      if (extMatch) {
+        const ext = extMatch[1];
+        const formatMap: Record<string, string> = {
+          jpg: "jpeg",
+          jpeg: "jpeg",
+          png: "png",
+          gif: "gif",
+          webp: "webp",
+          avif: "avif",
+          svg: "svg",
+          ico: "ico",
+          bmp: "bmp",
+          tiff: "tiff",
+          tif: "tiff",
+        };
+        return formatMap[ext] || ext;
+      }
+    } catch {
+      // Invalid URL
+    }
+    return "";
+  }
+
+  /**
+   * Check if the canonical URL matches the page's own URL (normalized comparison).
+   */
+  private checkCanonicalIsSelf(canonical: string | null, pageUrl: string): boolean {
+    if (!canonical) return false;
+    try {
+      const normalizeForComparison = (u: string): string => {
+        const parsed = new URL(u);
+        // Normalize: lowercase host, remove trailing slash, remove default ports
+        let normalized = parsed.protocol + "//" + parsed.host.toLowerCase() + parsed.pathname.replace(/\/+$/, "") + parsed.search;
+        return normalized.toLowerCase();
+      };
+      return normalizeForComparison(canonical) === normalizeForComparison(pageUrl);
+    } catch {
+      // If URL parsing fails, do simple string comparison
+      return canonical === pageUrl;
+    }
+  }
+
+  /**
+   * Analyze the URL for common SEO issues.
+   */
+  private analyzeUrlIssues(url: string): string[] {
+    const issues: string[] = [];
+    try {
+      const parsed = new URL(url);
+      const pathname = parsed.pathname;
+
+      // Check for uppercase letters in the path
+      if (/[A-Z]/.test(pathname)) {
+        issues.push("URL contains uppercase letters");
+      }
+
+      // Check for underscores instead of hyphens
+      if (pathname.includes("_")) {
+        issues.push("URL contains underscores instead of hyphens");
+      }
+
+      // Check for excessive length (> 115 chars for full URL)
+      if (url.length > 115) {
+        issues.push(`URL is excessively long (${url.length} characters, recommended max 115)`);
+      }
+
+      // Check for dynamic parameters
+      if (parsed.search) {
+        issues.push("URL contains dynamic query parameters");
+      }
+    } catch {
+      // Invalid URL, skip analysis
+    }
+    return issues;
+  }
+
+  /**
+   * Check heading hierarchy for skipped levels.
+   */
+  private checkHeadingHierarchy(result: ScanResult): { valid: boolean; issues: string[] } {
+    const issues: string[] = [];
+    const levels = [
+      { level: 1, headings: result.h1s },
+      { level: 2, headings: result.h2s },
+      { level: 3, headings: result.h3s },
+      { level: 4, headings: result.h4s },
+      { level: 5, headings: result.h5s },
+      { level: 6, headings: result.h6s },
+    ];
+
+    // Find which heading levels are present
+    const presentLevels = levels
+      .filter((l) => l.headings.length > 0)
+      .map((l) => l.level);
+
+    // Check for skipped levels between the lowest and highest present
+    if (presentLevels.length >= 2) {
+      for (let i = 0; i < presentLevels.length - 1; i++) {
+        const current = presentLevels[i];
+        const next = presentLevels[i + 1];
+        if (next - current > 1) {
+          const skipped: string[] = [];
+          for (let s = current + 1; s < next; s++) {
+            skipped.push(`H${s}`);
+          }
+          issues.push(`Heading level skipped: H${current} to H${next} (missing ${skipped.join(", ")})`);
+        }
+      }
+    }
+
+    return {
+      valid: issues.length === 0,
+      issues,
+    };
   }
 
   private delay(ms: number): Promise<void> {

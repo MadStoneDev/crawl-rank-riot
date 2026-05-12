@@ -65,16 +65,23 @@ export interface ScanResult {
       width: number;
       height: number;
     };
+    loading?: string;
+    srcset?: string;
+    format?: string;
   }>;
 
   // Technical information
   redirect_url: string | null;
   is_redirect?: boolean;
   redirected_from?: string;
+  redirect_chain?: string[];
   content_type: string;
   size_bytes: number;
   load_time_ms: number;
   first_byte_time_ms: number;
+  security_headers?: Record<string, string>;
+  has_viewport_meta?: boolean;
+  has_mixed_content?: boolean;
 
   // Structured data
   structured_data: any[];
@@ -89,12 +96,43 @@ export interface ScanResult {
     word: string;
     count: number;
   }>;
+  heading_hierarchy_valid?: boolean;
+  heading_hierarchy_issues?: string[];
+  hreflang_tags?: Array<{ lang: string; url: string }>;
+  canonical_is_self?: boolean;
+  url_issues?: string[];
 
   // Crawler metadata
   scan_method?: "http" | "headless";
   scanned_at: string;
   errors?: string[];
   warnings?: string[];
+}
+
+export interface SiteLevelData {
+  llms_txt?: {
+    exists: boolean;
+    content?: string;
+    fields?: Record<string, string>;
+  };
+  robots_txt?: {
+    exists: boolean;
+    content?: string;
+    ai_bots_blocked: string[];
+    ai_bots_allowed: string[];
+    blocked_paths: Array<{ user_agent: string; paths: string[] }>;
+    sitemap_urls: string[];
+  };
+  sitemap_validation?: {
+    found: boolean;
+    url?: string;
+    valid: boolean;
+    url_count?: number;
+    errors: string[];
+    has_lastmod: boolean;
+    urls_in_sitemap_not_crawled: string[];
+    crawled_not_in_sitemap: string[];
+  };
 }
 
 export type ScanStatus = "pending" | "in_progress" | "completed" | "failed";

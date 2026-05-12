@@ -43,7 +43,7 @@ app.use("/api/scan", scanLimiter);
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
+      if (!origin) return callback(new Error("Not allowed by CORS"));
 
       if (config.server.allowedOrigins.includes(origin)) {
         return callback(null, true);
@@ -56,14 +56,6 @@ app.use(
   }),
 );
 
-app.get("/health", (req: Request, res: Response) => {
-  res.json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    scheduler: crawlScheduler ? "running" : "stopped",
-  });
-});
-
 // API routes
 app.use("/api", routes);
 
@@ -75,7 +67,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.use(errorHandlerMiddleware);
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
 
@@ -88,13 +80,17 @@ app.listen(PORT, () => {
 process.on("SIGTERM", () => {
   console.log("SIGTERM received, shutting down gracefully");
   crawlScheduler.stop();
-  process.exit(0);
+  server.close(() => {
+    process.exit(0);
+  });
 });
 
 process.on("SIGINT", () => {
   console.log("SIGINT received, shutting down gracefully");
   crawlScheduler.stop();
-  process.exit(0);
+  server.close(() => {
+    process.exit(0);
+  });
 });
 
 process.on("uncaughtException", (error) => {

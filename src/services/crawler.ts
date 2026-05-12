@@ -2,6 +2,7 @@ import { Scanner } from "./scanner";
 import { UrlProcessor } from "../utils/url";
 import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
+import { isJavaScriptHeavySite } from "../utils/browser";
 
 export class WebCrawler {
   private scanner: Scanner;
@@ -16,7 +17,7 @@ export class WebCrawler {
   private scanId: string | null = null;
   private projectId: string | null = null;
   private lastProgressUpdate: number = 0;
-  private progressUpdateInterval: number = 1000; // Update every 2 seconds
+  private progressUpdateInterval: number = 1000; // Update every 1 second
 
   constructor(baseUrl: string, scanId?: string, projectId?: string) {
     this.scanner = new Scanner();
@@ -50,7 +51,7 @@ export class WebCrawler {
 
       // Detect if this needs special handling
       const needsHeadless =
-        forceHeadless || this.isJavaScriptHeavySite(item.url);
+        forceHeadless || isJavaScriptHeavySite(item.url);
 
       const result = await this.scanner.scan(
         item.url,
@@ -390,22 +391,6 @@ export class WebCrawler {
 
   private isInQueue(url: string): boolean {
     return this.queued.has(url);
-  }
-
-  private isJavaScriptHeavySite(url: string): boolean {
-    const jsHeavyPlatforms = [
-      "shopify.com",
-      "shopifypreview.com",
-      "myshopify.com",
-      "squarespace.com",
-      "wix.com",
-      "webflow.io",
-      "bigcommerce.com",
-      "magento.com",
-    ];
-
-    const lowerUrl = url.toLowerCase();
-    return jsHeavyPlatforms.some((platform) => lowerUrl.includes(platform));
   }
 
   private async processSitemaps(

@@ -37,22 +37,39 @@ export class CrawlScheduler {
     try {
       const supabase = getSupabaseServiceClient();
 
-      // Find projects that need recrawling (weekly)
+      // Find projects that need recrawling (weekly and monthly)
       const weekAgo = new Date();
       weekAgo.setDate(weekAgo.getDate() - 7);
 
-      const { data: projects, error } = await supabase
+      const monthAgo = new Date();
+      monthAgo.setDate(monthAgo.getDate() - 30);
+
+      const { data: weeklyProjects, error: weeklyError } = await supabase
         .from("projects")
         .select("*")
         .or(`last_scan_at.is.null,last_scan_at.lt.${weekAgo.toISOString()}`)
         .eq("scan_frequency", "weekly");
 
-      if (error) {
-        console.error("Error fetching projects for scheduling:", error);
-        return;
+      if (weeklyError) {
+        console.error("Error fetching weekly projects for scheduling:", weeklyError);
       }
 
-      if (!projects || projects.length === 0) {
+      const { data: monthlyProjects, error: monthlyError } = await supabase
+        .from("projects")
+        .select("*")
+        .or(`last_scan_at.is.null,last_scan_at.lt.${monthAgo.toISOString()}`)
+        .eq("scan_frequency", "monthly");
+
+      if (monthlyError) {
+        console.error("Error fetching monthly projects for scheduling:", monthlyError);
+      }
+
+      const projects = [
+        ...(weeklyProjects || []),
+        ...(monthlyProjects || []),
+      ];
+
+      if (projects.length === 0) {
         console.log("No projects need recrawling at this time");
         return;
       }

@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from "express";
-import { createClient } from "@supabase/supabase-js";
 import { sendUnauthorized } from "../services/api/responses";
+import { getSupabaseClient } from "../services/database/client";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -32,21 +32,7 @@ export function authMiddleware(
     return;
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.error("Auth middleware: Missing SUPABASE_URL or SUPABASE_ANON_KEY");
-    res.status(500).json({ status: "error", message: "Server configuration error" });
-    return;
-  }
-
-  // Create a one-off client with the user's token to verify it
-  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: { Authorization: `Bearer ${token}` },
-    },
-  });
+  const supabase = getSupabaseClient();
 
   supabase.auth
     .getUser(token)

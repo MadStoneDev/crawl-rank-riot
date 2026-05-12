@@ -55,13 +55,12 @@ export function errorHandlerMiddleware(
   res: Response,
   next: NextFunction,
 ): void {
-  // Log the error for debugging
+  // Log the error for debugging (excluding request body to prevent sensitive data leakage)
   console.error("Error occurred:", {
     message: err.message,
     stack: err.stack,
     url: req.url,
     method: req.method,
-    body: req.body,
     params: req.params,
     query: req.query,
   });
@@ -79,105 +78,6 @@ export function errorHandlerMiddleware(
 
   // Send error response
   res.status(appError.statusCode).json(errorToResponse(appError));
-}
-
-/**
- * Middleware to handle async route errors
- */
-export function asyncHandler(fn: Function) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-}
-
-/**
- * Send paginated response
- */
-export function createPaginatedResponse<T>(
-  data: T[],
-  total: number,
-  page: number = 1,
-  limit: number = 10,
-  message = "Data retrieved successfully",
-): ApiResponse<{
-  items: T[];
-  pagination: {
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
-    hasNext: boolean;
-    hasPrev: boolean;
-  };
-}> {
-  const totalPages = Math.ceil(total / limit);
-
-  return createSuccessResponse(
-    {
-      items: data,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1,
-      },
-    },
-    message,
-  );
-}
-
-/**
- * Middleware to validate request body against schema
- */
-export function validateRequestBody(requiredFields: string[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const missingFields = requiredFields.filter((field) => {
-      return (
-        req.body[field] === undefined ||
-        req.body[field] === null ||
-        req.body[field] === ""
-      );
-    });
-
-    if (missingFields.length > 0) {
-      return next(
-        new AppError(
-          `Missing required fields: ${missingFields.join(", ")}`,
-          ErrorCode.VALIDATION_ERROR,
-          { missingFields },
-          400,
-        ),
-      );
-    }
-
-    next();
-  };
-}
-
-/**
- * Middleware to validate request parameters
- */
-export function validateRequestParams(requiredParams: string[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const missingParams = requiredParams.filter((param) => {
-      return req.params[param] === undefined || req.params[param] === "";
-    });
-
-    if (missingParams.length > 0) {
-      return next(
-        new AppError(
-          `Missing required parameters: ${missingParams.join(", ")}`,
-          ErrorCode.VALIDATION_ERROR,
-          { missingParams },
-          400,
-        ),
-      );
-    }
-
-    next();
-  };
 }
 
 /**

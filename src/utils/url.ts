@@ -1,3 +1,79 @@
+import { promises as dns } from "dns";
+import { isIPv4, isIPv6 } from "net";
+
+/**
+ * Check if an IP address belongs to a private/reserved range.
+ */
+function isPrivateIP(ip: string): boolean {
+  // IPv4 private/reserved ranges
+  if (isIPv4(ip)) {
+    const parts = ip.split(".").map(Number);
+    // 10.0.0.0/8
+    if (parts[0] === 10) return true;
+    // 172.16.0.0/12
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    // 192.168.0.0/16
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    // 127.0.0.0/8 (loopback)
+    if (parts[0] === 127) return true;
+    // 169.254.0.0/16 (link-local)
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    // 0.0.0.0/8
+    if (parts[0] === 0) return true;
+    return false;
+  }
+
+  // IPv6 private/reserved ranges
+  if (isIPv6(ip)) {
+    const normalized = ip.toLowerCase();
+    // ::1 (loopback)
+    if (normalized === "::1") return true;
+    // fc00::/7 (unique local)
+    if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+    // fe80::/10 (link-local)
+    if (normalized.startsWith("fe80")) return true;
+    // :: (unspecified)
+    if (normalized === "::") return true;
+    return false;
+  }
+
+  return false;
+}
+
+/**
+ * Validate that a URL resolves to a public IP address (SSRF protection).
+ * Returns true if the URL is safe to fetch, false if it resolves to a
+ * private/reserved IP range.
+ */
+export async function isPublicUrl(url: string): Promise<boolean> {
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname;
+
+    // If the hostname is already an IP address, check it directly
+    if (isIPv4(hostname) || isIPv6(hostname)) {
+      return !isPrivateIP(hostname);
+    }
+
+    // Resolve DNS and check all returned addresses
+    const addresses = await dns.resolve(hostname);
+    if (!addresses || addresses.length === 0) {
+      return false;
+    }
+
+    for (const addr of addresses) {
+      if (isPrivateIP(addr)) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch {
+    // DNS resolution failure -- block by default
+    return false;
+  }
+}
+
 /** Protocols that should never be treated as crawlable pages */
 const NON_HTTP_PROTOCOLS = [
   "mailto:",
@@ -438,8 +514,6 @@ export class UrlProcessor {
       /\?.*filter/i, // Filter pages
       /\?.*sort/i, // Sort pages
       /login|logout|register|signin|signup/i, // Auth pages
-      /privacy-policy|terms|cookie-policy/i, // Legal pages
-      /contact|about\/team/i, // Non-product pages that rarely change
     ];
 
     const allPatterns = [...defaultExclusions, ...excludePatterns];

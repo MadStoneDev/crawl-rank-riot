@@ -40,7 +40,7 @@ export const config: Config = {
   database: {
     supabaseUrl: process.env.SUPABASE_URL || "",
     supabaseAnonKey: process.env.SUPABASE_ANON_KEY || "",
-    supabaseServiceKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY,
   },
   crawler: {
     userAgent: process.env.CRAWLER_USER_AGENT || "RankRiot/1.0 SEO Crawler",
@@ -112,33 +112,4 @@ export function validateConfig(): void {
   if (errors.length > 0) {
     throw new Error(`Configuration validation failed:\n${errors.join("\n")}`);
   }
-}
-
-/**
- * Get environment-specific configuration
- */
-export function getEnvironmentConfig() {
-  return {
-    isDevelopment: config.server.environment === "development",
-    isProduction: config.server.environment === "production",
-    isTest: config.server.environment === "test",
-  };
-}
-
-/**
- * Print configuration (safe for logging)
- */
-export function printConfig(): void {
-  console.log("Configuration loaded:");
-  console.log("- Server port:", config.server.port);
-  console.log("- Environment:", config.server.environment);
-  console.log("- Allowed origins:", config.server.allowedOrigins.join(", "));
-  console.log("- Supabase URL:", config.database.supabaseUrl);
-  console.log("- Crawler max depth:", config.crawler.maxDepth);
-  console.log("- Crawler max pages:", config.crawler.maxPages);
-  console.log(
-    "- Crawler concurrent requests:",
-    config.crawler.concurrentRequests,
-  );
-  console.log("- Scheduler enabled:", config.scheduler.enabled);
 }

@@ -17,8 +17,9 @@ interface DetectedIssue {
 /**
  * Detect SEO issues from scan results and store them in the database.
  *
- * Clears all existing issues for the project before inserting new ones,
- * since each scan represents a fresh analysis of the entire site.
+ * Issues are accumulated across scans so that historical data is preserved
+ * for trend analysis. The frontend filters by scan_id when it needs
+ * current-scan issues only.
  */
 export async function detectAndStoreIssues(
   results: ScanResult[],
@@ -79,26 +80,17 @@ export async function detectAndStoreIssues(
       });
     }
 
-    // Step 4: Clear old issues for this project (fresh analysis per scan)
-    const { error: deleteError } = await supabase
-      .from("issues")
-      .delete()
-      .eq("project_id", projectId);
-
-    if (deleteError) {
-      console.error("Error clearing old issues:", deleteError);
-      // Continue anyway -- inserting new issues is more important
-    }
-
-    // Step 5: Insert new issues in batches
+    // Step 4: Insert new issues (old issues are kept for historical trends).
     if (allIssues.length === 0) {
-      console.log("No issues detected");
+      console.log("No issues detected for this scan");
       return 0;
     }
 
     const batchSize = 50;
     let totalInserted = 0;
+    let insertFailed = false;
 
+    // Step 5: Insert new issues in batches
     for (let i = 0; i < allIssues.length; i += batchSize) {
       const batch = allIssues.slice(i, i + batchSize);
       const { error: insertError } = await supabase
@@ -110,13 +102,20 @@ export async function detectAndStoreIssues(
           `Error inserting issues batch ${Math.floor(i / batchSize) + 1}:`,
           insertError,
         );
+        insertFailed = true;
       } else {
         totalInserted += batch.length;
       }
     }
 
+    if (insertFailed && totalInserted === 0) {
+      console.error(
+        "All issue inserts failed for this scan",
+      );
+    }
+
     console.log(
-      `Issue detection complete: ${totalInserted} issues found for project ${projectId}`,
+      `Issue detection complete: ${totalInserted} issues found for project ${projectId} (scan ${scanId})`,
     );
     return totalInserted;
   } catch (error) {
@@ -491,5 +490,203 @@ function analyzePageIssues(
     }
   }
 
+  // ── NEW CHECKS ───────────────────────────────────────────────────────
+
+  // Heading hierarchy validation
+  if (result.heading_hierarchy_valid === false) {
+    const hierarchyIssues = result.heading_hierarchy_issues ?? [];
+    addIssue(
+      "heading_hierarchy_invalid",
+      "medium",
+      `Heading hierarchy is invalid: ${hierarchyIssues.length > 0 ? hierarchyIssues.join("; ") : "structural issues detected"}`,
+      {
+        url: result.url,
+        issues: hierarchyIssues,
+      },
+    );
+  }
+
+  // Missing viewport meta tag
+  if (result.has_viewport_meta === false) {
+    addIssue(
+      "missing_viewport_meta",
+      "medium",
+      "Page is missing a viewport meta tag, which is critical for mobile rendering and mobile SEO",
+      { url: result.url },
+    );
+  }
+
+  // Mixed content (HTTP resources on HTTPS pages)
+  if (result.has_mixed_content === true) {
+    addIssue(
+      "mixed_content",
+      "high",
+      "Page loads HTTP resources on an HTTPS page, causing mixed content warnings and potential security issues",
+      { url: result.url },
+    );
+  }
+
+  // URL structure issues
+  if (result.url_issues && result.url_issues.length > 0) {
+    addIssue(
+      "url_structure_issues",
+      "low",
+      `URL has ${result.url_issues.length} structural issue(s): ${result.url_issues.join("; ")}`,
+      {
+        url: result.url,
+        issues: result.url_issues,
+      },
+    );
+  }
+
+  // Canonical mismatch
+  if (
+    result.canonical_url != null &&
+    result.canonical_is_self === false
+  ) {
+    addIssue(
+      "canonical_mismatch",
+      "medium",
+      `Canonical URL does not match the page URL (canonical points to ${result.canonical_url})`,
+      {
+        url: result.url,
+        canonical_url: result.canonical_url,
+      },
+    );
+  }
+
+  // Missing lazy loading on images (only flag if more than 3 images)
+  if (result.images && result.images.length > 3) {
+    const hasLazy = result.images.some((img) => img.loading === "lazy");
+    if (!hasLazy) {
+      addIssue(
+        "missing_image_lazy_loading",
+        "low",
+        `None of the ${result.images.length} images use lazy loading`,
+        {
+          url: result.url,
+          image_count: result.images.length,
+        },
+      );
+    }
+  }
+
+  // Non-modern image formats
+  if (result.images && result.images.length > 0) {
+    const modernFormats = new Set(["webp", "avif", "svg"]);
+    const formatCounts: Record<string, number> = {};
+    let nonModernCount = 0;
+
+    for (const img of result.images) {
+      const format = img.format?.toLowerCase() ?? guessFormatFromSrc(img.src);
+      formatCounts[format] = (formatCounts[format] ?? 0) + 1;
+      if (!modernFormats.has(format)) {
+        nonModernCount++;
+      }
+    }
+
+    if (nonModernCount > result.images.length / 2) {
+      addIssue(
+        "non_modern_image_format",
+        "low",
+        `${nonModernCount} of ${result.images.length} images use legacy formats (not WebP, AVIF, or SVG)`,
+        {
+          url: result.url,
+          format_breakdown: formatCounts,
+          non_modern_count: nonModernCount,
+          total_images: result.images.length,
+        },
+      );
+    }
+  }
+
+  // Missing hreflang tags (placeholder — not auto-detected yet)
+  // Future: only flag on pages detected as multilingual
+  // if (result.hreflang_tags is empty && page is multilingual) { ... }
+
+  // Missing security headers
+  if (result.security_headers) {
+    const missingHeaders: string[] = [];
+    const criticalHeaders: Record<string, string> = {
+      "strict-transport-security": "HSTS (Strict-Transport-Security)",
+      "x-content-type-options": "X-Content-Type-Options",
+    };
+
+    for (const [header, label] of Object.entries(criticalHeaders)) {
+      if (!result.security_headers[header]) {
+        missingHeaders.push(label);
+      }
+    }
+
+    if (missingHeaders.length > 0) {
+      addIssue(
+        "missing_security_headers",
+        "low",
+        `Missing security headers: ${missingHeaders.join(", ")}`,
+        {
+          url: result.url,
+          missing_headers: missingHeaders,
+        },
+      );
+    }
+  }
+
+  // Redirect chain (3+ hops)
+  if (result.redirect_chain && result.redirect_chain.length >= 3) {
+    addIssue(
+      "redirect_chain",
+      "high",
+      `Redirect chain has ${result.redirect_chain.length} hops, wasting crawl budget and slowing page load`,
+      {
+        url: result.url,
+        chain: result.redirect_chain,
+        hop_count: result.redirect_chain.length,
+      },
+    );
+  }
+
+  // Keyword not in title
+  if (
+    result.keywords &&
+    result.keywords.length > 0 &&
+    result.title &&
+    result.title.trim().length > 0
+  ) {
+    const topKeyword = result.keywords[0].word.toLowerCase();
+    const titleLower = result.title.toLowerCase();
+    if (!titleLower.includes(topKeyword)) {
+      addIssue(
+        "keyword_not_in_title",
+        "low",
+        `Top keyword "${result.keywords[0].word}" does not appear in the page title`,
+        {
+          url: result.url,
+          top_keyword: result.keywords[0].word,
+          title: result.title,
+        },
+      );
+    }
+  }
+
   return issues;
+}
+
+/**
+ * Guess image format from URL when no explicit format field is available.
+ */
+function guessFormatFromSrc(src: string): string {
+  try {
+    const pathname = new URL(src, "https://placeholder.local").pathname.toLowerCase();
+    if (pathname.endsWith(".webp")) return "webp";
+    if (pathname.endsWith(".avif")) return "avif";
+    if (pathname.endsWith(".svg")) return "svg";
+    if (pathname.endsWith(".png")) return "png";
+    if (pathname.endsWith(".jpg") || pathname.endsWith(".jpeg")) return "jpeg";
+    if (pathname.endsWith(".gif")) return "gif";
+    if (pathname.endsWith(".bmp")) return "bmp";
+    if (pathname.endsWith(".ico")) return "ico";
+  } catch {
+    // Invalid URL — fall through
+  }
+  return "unknown";
 }

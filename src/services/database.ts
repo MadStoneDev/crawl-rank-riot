@@ -1,6 +1,6 @@
 import { ScanResult } from "../types";
 import { Tables } from "../database.types";
-import { getSupabaseClient, getSupabaseServiceClient } from "./database/client";
+import { getSupabaseServiceClient } from "./database/client";
 
 type Page = Tables<`pages`>;
 
@@ -108,6 +108,15 @@ export async function storeScanResults(
       keywords: result.keywords,
       open_graph: result.open_graph,
       twitter_card: result.twitter_card,
+      security_headers: result.security_headers || null,
+      redirect_chain: result.redirect_chain || null,
+      has_viewport_meta: result.has_viewport_meta ?? null,
+      has_mixed_content: result.has_mixed_content ?? null,
+      heading_hierarchy_valid: result.heading_hierarchy_valid ?? null,
+      heading_hierarchy_issues: result.heading_hierarchy_issues || null,
+      hreflang_tags: result.hreflang_tags || null,
+      canonical_is_self: result.canonical_is_self ?? null,
+      url_issues: result.url_issues || null,
       crawl_priority: result.depth === 0 ? 10 : Math.max(1, 10 - result.depth),
       updated_at: new Date().toISOString(),
     }));
@@ -388,7 +397,7 @@ export async function getScanResults(
   projectId: string,
   scanId?: string,
 ): Promise<{ pages: any[]; links: any[] }> {
-  const supabase = getSupabaseClient();
+  const supabase = getSupabaseServiceClient();
 
   try {
     // Get pages

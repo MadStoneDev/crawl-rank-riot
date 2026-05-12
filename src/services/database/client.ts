@@ -2,6 +2,7 @@ import { Database } from "../../database.types";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 let supabaseClient: SupabaseClient<Database> | null = null;
+let supabaseServiceClient: SupabaseClient<Database> | null = null;
 
 /**
  * Get or create Supabase client instance
@@ -40,24 +41,28 @@ export function getSupabaseClient(): SupabaseClient<Database> {
  * Get Supabase client with service role key (for admin operations)
  */
 export function getSupabaseServiceClient(): SupabaseClient<Database> {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!supabaseServiceClient) {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
 
-  if (!supabaseUrl || !supabaseServiceKey) {
-    throw new Error(
-      "Missing Supabase service configuration. Please check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.",
-    );
+    if (!supabaseUrl || !supabaseServiceKey) {
+      throw new Error(
+        "Missing Supabase service configuration. Please check SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables.",
+      );
+    }
+
+    supabaseServiceClient = createClient<Database>(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+      db: {
+        schema: "public",
+      },
+    });
   }
 
-  return createClient<Database>(supabaseUrl, supabaseServiceKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-    db: {
-      schema: "public",
-    },
-  });
+  return supabaseServiceClient;
 }
 
 /**
@@ -88,10 +93,13 @@ export async function testDatabaseConnection(): Promise<boolean> {
  * Close database connections (for graceful shutdown)
  */
 export function closeDatabaseConnections(): void {
+  // Supabase client doesn't have an explicit close method
+  // but we can nullify the references
   if (supabaseClient) {
-    // Supabase client doesn't have an explicit close method
-    // but we can nullify the reference
     supabaseClient = null;
-    console.log("Database connections closed");
   }
+  if (supabaseServiceClient) {
+    supabaseServiceClient = null;
+  }
+  console.log("Database connections closed");
 }
