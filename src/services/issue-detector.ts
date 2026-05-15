@@ -63,7 +63,34 @@ export async function detectAndStoreIssues(
     );
     allIssues.push(...crossPageIssues);
 
-    // Step 3c: Add broken link issues (sourced from page_links table)
+    // Step 3c: Detect orphan pages (no internal inbound links except self)
+    const inboundCounts = new Map<string, number>();
+    for (const result of results) {
+      for (const link of result.internal_links) {
+        if (link.url !== result.url) {
+          inboundCounts.set(link.url, (inboundCounts.get(link.url) || 0) + 1);
+        }
+      }
+    }
+    for (const result of results) {
+      if (result.depth === 0) continue;
+      const pageId = pageIdMap.get(result.url);
+      if (!pageId) continue;
+      const inbound = inboundCounts.get(result.url) || 0;
+      if (inbound === 0) {
+        allIssues.push({
+          project_id: projectId,
+          page_id: pageId,
+          scan_id: scanId,
+          issue_type: "orphan_page",
+          severity: "medium",
+          description: "Page has no internal links pointing to it (orphan page)",
+          details: { url: result.url, inbound_links: 0 },
+        });
+      }
+    }
+
+    // Step 3d: Add broken link issues (sourced from page_links table)
     for (const link of brokenLinks) {
       allIssues.push({
         project_id: projectId,
@@ -478,6 +505,67 @@ function analyzePageIssues(
       "Page has no structured data / schema markup",
       { url: result.url },
     );
+  }
+
+  // Structured data validation
+  if (result.structured_data && result.structured_data.length > 0) {
+    const sdIssues: string[] = [];
+    for (const sd of result.structured_data) {
+      if (!sd["@type"]) {
+        sdIssues.push("Missing @type property");
+        continue;
+      }
+      const type = sd["@type"];
+
+      if (type === "Organization" || type === "LocalBusiness") {
+        if (!sd.name) sdIssues.push(`${type}: missing "name"`);
+        if (!sd.url) sdIssues.push(`${type}: missing "url"`);
+      }
+      if (type === "Article" || type === "BlogPosting" || type === "NewsArticle") {
+        if (!sd.headline) sdIssues.push(`${type}: missing "headline"`);
+        if (!sd.datePublished) sdIssues.push(`${type}: missing "datePublished"`);
+        if (!sd.author) sdIssues.push(`${type}: missing "author"`);
+        if (!sd.image) sdIssues.push(`${type}: missing "image"`);
+      }
+      if (type === "Product") {
+        if (!sd.name) sdIssues.push(`Product: missing "name"`);
+        if (!sd.offers && !sd.price) sdIssues.push(`Product: missing "offers" or "price"`);
+        if (!sd.image) sdIssues.push(`Product: missing "image"`);
+      }
+      if (type === "BreadcrumbList") {
+        if (!sd.itemListElement || !Array.isArray(sd.itemListElement) || sd.itemListElement.length === 0) {
+          sdIssues.push("BreadcrumbList: missing or empty itemListElement");
+        }
+      }
+      if (type === "FAQPage") {
+        if (!sd.mainEntity || !Array.isArray(sd.mainEntity) || sd.mainEntity.length === 0) {
+          sdIssues.push("FAQPage: missing or empty mainEntity");
+        }
+      }
+      if (type === "WebSite") {
+        if (!sd.name) sdIssues.push("WebSite: missing \"name\"");
+      }
+
+      // Check @graph items
+      if (sd["@graph"] && Array.isArray(sd["@graph"])) {
+        for (const item of sd["@graph"]) {
+          if (!item["@type"]) sdIssues.push("@graph item missing @type");
+        }
+      }
+    }
+
+    if (sdIssues.length > 0) {
+      addIssue(
+        "invalid_structured_data",
+        "medium",
+        `Structured data has ${sdIssues.length} issue(s): ${sdIssues.slice(0, 3).join("; ")}${sdIssues.length > 3 ? ` (+${sdIssues.length - 3} more)` : ""}`,
+        {
+          url: result.url,
+          schema_types: result.schema_types,
+          issues: sdIssues,
+        },
+      );
+    }
   }
 
   const THREE_MB = 3 * 1024 * 1024;

@@ -66,7 +66,7 @@ async function fetchLlmsTxt(
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await fetch(`${origin}/llms.txt`, {
-      headers: { "User-Agent": "RankRiot/1.0 SEO Analyzer" },
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
       signal: controller.signal,
       redirect: "follow",
     });
@@ -128,7 +128,7 @@ async function fetchAndParseRobotsTxt(
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await fetch(`${origin}/robots.txt`, {
-      headers: { "User-Agent": "RankRiot/1.0 SEO Analyzer" },
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
       signal: controller.signal,
       redirect: "follow",
     });
@@ -257,7 +257,7 @@ async function validateSitemap(
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const response = await fetch(sitemapUrl, {
-      headers: { "User-Agent": "RankRiot/1.0 SEO Analyzer" },
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
       signal: controller.signal,
       redirect: "follow",
     });
@@ -289,7 +289,7 @@ async function validateSitemap(
           const subTimeout = setTimeout(() => subController.abort(), 10000);
 
           const subResponse = await fetch(subUrl, {
-            headers: { "User-Agent": "RankRiot/1.0 SEO Analyzer" },
+            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
             signal: subController.signal,
             redirect: "follow",
           });
