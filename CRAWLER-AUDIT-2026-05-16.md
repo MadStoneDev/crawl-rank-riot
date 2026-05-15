@@ -327,37 +327,37 @@ These are table-stakes features every major competitor has:
 
 ## PART 7: PRIORITY FIX ORDER
 
-### Phase 1: Critical Bugs (do first)
-1. Fix self-defeating URL exclusions (separate SEO vs audit exclusion profiles)
-2. Fix sitemap User-Agent for Shopify
-3. Add non-HTML file extension filtering
-4. Add ecommerce page aliases (refund-policy, shipping-policy, etc.)
-5. Fix mailto:/tel: link filtering
-6. Add project ownership check to scan endpoints
-7. Fix hasRobotsTxt and hasSitemap always-false bugs
-8. Fix social platform string replacement bug
+### Phase 1: Critical Bugs -- DONE (de46608)
+1. [x] Fix self-defeating URL exclusions (separate SEO vs audit exclusion profiles)
+2. [x] Fix sitemap User-Agent for Shopify
+3. [x] Add non-HTML file extension filtering
+4. [x] Add ecommerce page aliases (refund-policy, shipping-policy, etc.)
+5. [x] Fix mailto:/tel: link filtering (already handled by upstream)
+6. [x] Add project ownership check to scan endpoints (already in upstream)
+7. [x] Fix hasRobotsTxt and hasSitemap always-false bugs
+8. [x] Fix social platform string replacement bug
 
-### Phase 2: Architecture (do second)
-9. Implement browser pool for headless scanning
-10. Fix race condition in URL processing (retry mechanism)
-11. Cache Supabase service client
-12. Fix env var name mismatch
-13. Remove unused dependencies
-14. Fix deploy script extension
+### Phase 2: Architecture -- DONE (420362c)
+9. [x] Implement browser pool for headless scanning
+10. [x] Fix race condition in URL processing (retry mechanism)
+11. [x] Cache Supabase service client (already singleton in upstream)
+12. [x] Fix env var name mismatch (SUPABASE_SERVICE_KEY / SERVICE_ROLE_KEY)
+13. [x] Remove unused dependencies (cleaned in upstream)
+14. [x] Fix deploy script extension (fixed in upstream)
 
-### Phase 3: Feature Gaps -- High Impact (do third)
-15. Enhanced image analysis (file size, dimensions, format, lazy loading)
-16. Contact form detection via DOM analysis
-17. Content hash for exact duplicate detection
-18. Readability scoring
-19. Structured data validation
-20. Core Web Vitals integration (PageSpeed Insights API)
+### Phase 3: Feature Gaps -- DONE (16869af)
+15. [x] Enhanced image analysis (file size via HEAD requests, flagging >200KB)
+16. [x] Contact form detection via DOM analysis (form+textarea, email+keywords)
+17. [x] Content hash for exact duplicate detection (SHA-256)
+18. [x] Readability scoring (Flesch Reading Ease)
+19. [ ] Structured data validation (future)
+20. [ ] Core Web Vitals integration / PageSpeed Insights API (future)
 
-### Phase 4: Competitive Features (do fourth)
-21. Internal PageRank / Link Score calculation
-22. Hreflang validation
-23. Anchor text distribution analysis
-24. Redirect loop detection
-25. Canonical chain validation
-26. Mobile-friendliness checks beyond viewport
-27. Sitemap vs crawl comparison report
+### Phase 4: Competitive Features -- DONE (9e6bbef)
+21. [ ] Internal PageRank / Link Score calculation (future)
+22. [x] Hreflang validation (self-ref, x-default, lang code format)
+23. [x] Anchor text distribution analysis (generic anchor detection)
+24. [x] Redirect loop detection
+25. [x] Canonical chain validation (canonical-not-self detection)
+26. [ ] Mobile-friendliness checks beyond viewport (future)
+27. [ ] Sitemap vs crawl comparison report (future)
