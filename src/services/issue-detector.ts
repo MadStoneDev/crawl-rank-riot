@@ -228,6 +228,35 @@ function detectCrossPageDuplicates(
     }
   }
 
+  // Group pages by content hash (exact duplicate content detection)
+  const hashMap = new Map<string, { url: string; pageId: string }[]>();
+  for (const result of results) {
+    const pageId = pageIdMap.get(result.url);
+    if (!pageId || !result.content_hash) continue;
+    if (result.word_count < 50) continue;
+    const existing = hashMap.get(result.content_hash) || [];
+    existing.push({ url: result.url, pageId });
+    hashMap.set(result.content_hash, existing);
+  }
+
+  for (const [hash, pages] of hashMap) {
+    if (pages.length < 2) continue;
+    const duplicateUrls = pages.map((p) => p.url);
+    for (const page of pages) {
+      issues.push({
+        project_id: projectId,
+        page_id: page.pageId,
+        scan_id: scanId,
+        issue_type: "duplicate_content",
+        severity: "high",
+        description: `Exact duplicate content found on ${pages.length - 1} other page(s)`,
+        details: {
+          duplicate_urls: duplicateUrls.filter((u) => u !== page.url),
+        },
+      });
+    }
+  }
+
   // Group pages by meta description
   const descMap = new Map<string, { url: string; pageId: string }[]>();
   for (const result of results) {
@@ -600,9 +629,28 @@ function analyzePageIssues(
     }
   }
 
-  // Missing hreflang tags (placeholder — not auto-detected yet)
-  // Future: only flag on pages detected as multilingual
-  // if (result.hreflang_tags is empty && page is multilingual) { ... }
+  // Oversized images (> 200KB)
+  if (result.images && result.images.length > 0) {
+    const oversized = result.images.filter(
+      (img) => img.file_size_bytes && img.file_size_bytes > 200_000,
+    );
+    if (oversized.length > 0) {
+      addIssue(
+        "oversized_images",
+        "medium",
+        `${oversized.length} image(s) exceed 200 KB`,
+        {
+          url: result.url,
+          images: oversized.slice(0, 5).map((img) => ({
+            src: img.src,
+            size_kb: Math.round((img.file_size_bytes || 0) / 1024),
+            format: img.format,
+            dimensions: img.dimensions,
+          })),
+        },
+      );
+    }
+  }
 
   // Missing security headers
   if (result.security_headers) {
@@ -641,6 +689,20 @@ function analyzePageIssues(
         url: result.url,
         chain: result.redirect_chain,
         hop_count: result.redirect_chain.length,
+      },
+    );
+  }
+
+  // Poor readability
+  if (result.readability_score !== undefined && result.readability_score < 30 && result.word_count > 100) {
+    addIssue(
+      "poor_readability",
+      "low",
+      `Content readability is very low (Flesch score: ${result.readability_score}/100). Aim for 60-70 for web content.`,
+      {
+        url: result.url,
+        readability_score: result.readability_score,
+        word_count: result.word_count,
       },
     );
   }

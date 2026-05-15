@@ -66,6 +66,7 @@ export interface ScanResult {
       width: number;
       height: number;
     };
+    file_size_bytes?: number;
     loading?: string;
     srcset?: string;
     format?: string;
@@ -102,6 +103,12 @@ export interface ScanResult {
   hreflang_tags?: Array<{ lang: string; url: string }>;
   canonical_is_self?: boolean;
   url_issues?: string[];
+
+  // Content fingerprint for duplicate detection
+  content_hash?: string;
+
+  // Readability
+  readability_score?: number;
 
   // Crawler metadata
   scan_method?: "http" | "headless";

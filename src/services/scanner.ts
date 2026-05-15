@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { ScanResult } from "../types";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
 import { isJavaScriptHeavySite, getSharedBrowserPool } from "../utils/browser";
@@ -195,9 +196,10 @@ export class Scanner {
     result.content_length = contentStats.contentLength;
     result.word_count = contentStats.wordCount;
 
-    // Extract keywords from page content
     const bodyText = await page.evaluate(() => document.body?.innerText || "");
     result.keywords = this.extractKeywords(bodyText);
+    result.content_hash = this.computeContentHash(bodyText);
+    result.readability_score = this.computeReadabilityScore(bodyText);
 
     // Extract meta tags
     const metaTags = await this.extractMetaTags(page);
@@ -213,6 +215,7 @@ export class Scanner {
 
     // Extract images
     await this.extractImages(page, result, urlProcessor);
+    await this.fetchImageFileSizes(result.images);
 
     // Extract technical data
     const techData = await this.extractTechnicalData(page);
@@ -886,6 +889,9 @@ export class Scanner {
       .split(/\s+/)
       .filter((w) => w.length > 0).length;
 
+    result.content_hash = this.computeContentHash(textContent);
+    result.readability_score = this.computeReadabilityScore(textContent);
+
     // Extract keywords from page content
     result.keywords = this.extractKeywords(textContent);
 
@@ -1005,6 +1011,9 @@ export class Scanner {
     const hierarchyResult = this.checkHeadingHierarchy(result);
     result.heading_hierarchy_valid = hierarchyResult.valid;
     result.heading_hierarchy_issues = hierarchyResult.issues;
+
+    // Fetch image file sizes (background, non-blocking)
+    await this.fetchImageFileSizes(result.images);
   }
 
   private extractTitleFromHtml(html: string): string {
@@ -1211,6 +1220,8 @@ export class Scanner {
       hreflang_tags: [],
       canonical_is_self: false,
       url_issues: [],
+      content_hash: undefined,
+      readability_score: undefined,
       scan_method: "http",
       scanned_at: new Date().toISOString(),
       errors: [],
@@ -1410,6 +1421,73 @@ export class Scanner {
       valid: issues.length === 0,
       issues,
     };
+  }
+
+  /**
+   * Compute a SHA-256 hash of the main text content for duplicate detection.
+   */
+  private computeContentHash(text: string): string {
+    const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+    return createHash("sha256").update(normalized).digest("hex");
+  }
+
+  /**
+   * Compute Flesch Reading Ease score.
+   * Higher = easier to read (60-70 is ideal for web content).
+   */
+  private computeReadabilityScore(text: string): number {
+    const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+    const words = text.split(/\s+/).filter((w) => w.length > 0);
+    const syllables = words.reduce((sum, w) => sum + this.countSyllables(w), 0);
+
+    if (sentences.length === 0 || words.length === 0) return 0;
+
+    const avgWordsPerSentence = words.length / sentences.length;
+    const avgSyllablesPerWord = syllables / words.length;
+
+    const score = 206.835 - 1.015 * avgWordsPerSentence - 84.6 * avgSyllablesPerWord;
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  private countSyllables(word: string): number {
+    const w = word.toLowerCase().replace(/[^a-z]/g, "");
+    if (w.length <= 3) return 1;
+    const vowelGroups = w.match(/[aeiouy]+/g);
+    let count = vowelGroups ? vowelGroups.length : 1;
+    if (w.endsWith("e")) count--;
+    if (w.endsWith("le") && w.length > 2 && !/[aeiouy]/.test(w[w.length - 3])) count++;
+    return Math.max(1, count);
+  }
+
+  /**
+   * Fetch file sizes for images via HEAD requests (limited to first N images).
+   */
+  private async fetchImageFileSizes(
+    images: ScanResult["images"],
+    limit: number = 10,
+  ): Promise<void> {
+    const toCheck = images.slice(0, limit);
+    const promises = toCheck.map(async (img) => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const resp = await fetch(img.src, {
+          method: "HEAD",
+          signal: controller.signal,
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          },
+        });
+        clearTimeout(timeout);
+        const cl = resp.headers.get("content-length");
+        if (cl) {
+          img.file_size_bytes = parseInt(cl, 10);
+        }
+      } catch {
+        // Skip — file size unknown
+      }
+    });
+    await Promise.allSettled(promises);
   }
 
   private delay(ms: number): Promise<void> {
