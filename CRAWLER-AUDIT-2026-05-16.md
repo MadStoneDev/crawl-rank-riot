@@ -350,14 +350,17 @@ These are table-stakes features every major competitor has:
 16. [x] Contact form detection via DOM analysis (form+textarea, email+keywords)
 17. [x] Content hash for exact duplicate detection (SHA-256)
 18. [x] Readability scoring (Flesch Reading Ease)
-19. [ ] Structured data validation (future)
+19. [x] Structured data validation (9d4407e — per-type required field checks)
 20. [ ] Core Web Vitals integration / PageSpeed Insights API (future)
 
-### Phase 4: Competitive Features -- DONE (9e6bbef)
-21. [ ] Internal PageRank / Link Score calculation (future)
+### Phase 4: Competitive Features -- DONE (9e6bbef, 9d4407e)
+21. [x] Orphan page detection (9d4407e — pages with zero internal inbound links)
 22. [x] Hreflang validation (self-ref, x-default, lang code format)
 23. [x] Anchor text distribution analysis (generic anchor detection)
 24. [x] Redirect loop detection
 25. [x] Canonical chain validation (canonical-not-self detection)
 26. [ ] Mobile-friendliness checks beyond viewport (future)
-27. [ ] Sitemap vs crawl comparison report (future)
+27. [x] Sitemap vs crawl comparison report (already in site-analyzer.ts)
+
+### Additional fixes applied
+- Site analyzer User-Agent changed from bot-like to browser UA (9d4407e)
