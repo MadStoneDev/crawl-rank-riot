@@ -43,11 +43,12 @@ export function getSupabaseClient(): SupabaseClient<Database> {
 export function getSupabaseServiceClient(): SupabaseClient<Database> {
   if (!supabaseServiceClient) {
     const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
+    const supabaseServiceKey =
+      process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!supabaseUrl || !supabaseServiceKey) {
       throw new Error(
-        "Missing Supabase service configuration. Please check SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables.",
+        "Missing Supabase service configuration. Please check SUPABASE_URL and SUPABASE_SERVICE_KEY (or SUPABASE_SERVICE_ROLE_KEY) environment variables.",
       );
     }
 

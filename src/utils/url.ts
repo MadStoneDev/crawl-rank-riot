@@ -498,27 +498,51 @@ export class UrlProcessor {
   }
 
   /**
-   * Check if a URL should be excluded from crawling
+   * Check if a URL should be excluded from crawling.
+   * In "audit" mode, only non-page resources and infrastructure paths are excluded.
+   * In "seo" mode (default), auth pages, search/filter/sort query params are also excluded.
    */
-  shouldExclude(url: string, excludePatterns: RegExp[] = []): boolean {
-    // Default exclusion patterns
-    const defaultExclusions = [
-      /\.(jpg|jpeg|png|gif|svg|webp|ico|bmp|tiff)$/i, // Images
-      /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|tar|gz)$/i, // Documents
-      /\.(mp3|mp4|avi|mov|wmv|flv|wav|ogg)$/i, // Media files
-      /\/(wp-admin|wp-includes|wp-content\/plugins)\//i, // WordPress admin
-      /\/admin\//i, // General admin paths
-      /\/ajax\//i, // AJAX endpoints
-      /\/api\//i, // API endpoints (unless specifically needed)
-      /\?.*search/i, // Search results
-      /\?.*filter/i, // Filter pages
-      /\?.*sort/i, // Sort pages
-      /login|logout|register|signin|signup/i, // Auth pages
-    ];
+  shouldExclude(
+    url: string,
+    excludePatterns: RegExp[] = [],
+    mode: "seo" | "audit" = "seo",
+  ): boolean {
+    // Non-HTML file extensions — always excluded in both modes
+    const nonPageExtensions =
+      /\.(jpg|jpeg|png|gif|svg|webp|ico|bmp|tiff|pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|tar|gz|mp3|mp4|avi|mov|wmv|flv|wav|ogg|txt|md|xml|json|csv|yaml|yml|css|js|woff|woff2|ttf|eot|map)$/i;
 
-    const allPatterns = [...defaultExclusions, ...excludePatterns];
+    try {
+      const urlObj = new URL(url);
+      const pathname = urlObj.pathname.toLowerCase();
+      const queryString = urlObj.search;
 
-    return allPatterns.some((pattern) => pattern.test(url));
+      if (nonPageExtensions.test(pathname)) return true;
+
+      // Infrastructure paths — always excluded
+      const infrastructurePatterns = [
+        /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
+        /\/admin\//i,
+        /\/ajax\//i,
+        /\/api\//i,
+      ];
+      if (infrastructurePatterns.some((p) => p.test(pathname))) return true;
+
+      // SEO-only exclusions (skip in audit mode so completeness checks work)
+      if (mode === "seo") {
+        if (/login|logout|register|signin|signup/i.test(pathname)) return true;
+        // Query-string exclusions — only match after "?"
+        if (queryString) {
+          if (/[?&](search|filter|sort)=/i.test(queryString)) return true;
+        }
+      }
+
+      // Custom patterns from caller
+      if (excludePatterns.some((p) => p.test(url))) return true;
+
+      return false;
+    } catch {
+      return excludePatterns.some((p) => p.test(url));
+    }
   }
 
   /**
@@ -606,24 +630,8 @@ export class UrlProcessor {
     return Math.max(1, priority);
   }
 
-  /**
-   * Basic check if domain supports HTTPS
-   */
-  private supportsHttps(hostname: string): boolean {
-    // Common domains that support HTTPS
-    const httpsSupported = [
-      "shopify.com",
-      "myshopify.com",
-      "squarespace.com",
-      "wix.com",
-      "webflow.io",
-      "wordpress.com",
-      "github.io",
-      "netlify.app",
-      "vercel.app",
-    ];
-
-    return httpsSupported.some((domain) => hostname.includes(domain));
+  private supportsHttps(_hostname: string): boolean {
+    return true;
   }
 
   /**

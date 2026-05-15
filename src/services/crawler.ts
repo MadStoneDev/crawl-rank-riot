@@ -4,20 +4,24 @@ import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
 import { isJavaScriptHeavySite } from "../utils/browser";
 
+const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
 export class WebCrawler {
   private scanner: Scanner;
   private urlProcessor: UrlProcessor;
   private visited = new Set<string>();
-  private queued = new Set<string>(); // Track URLs already added to queue to prevent duplicates
+  private queued = new Set<string>();
   private queue: Array<{ url: string; depth: number }> = [];
   private results: ScanResult[] = [];
-  private processing = new Set<string>(); // Track URLs being processed
+  private processing = new Set<string>();
   private maxConcurrentRequests: number = 3;
+  private crawlMode: "seo" | "audit" = "seo";
 
   private scanId: string | null = null;
   private projectId: string | null = null;
   private lastProgressUpdate: number = 0;
-  private progressUpdateInterval: number = 1000; // Update every 1 second
+  private progressUpdateInterval: number = 1000;
 
   constructor(baseUrl: string, scanId?: string, projectId?: string) {
     this.scanner = new Scanner();
@@ -39,8 +43,7 @@ export class WebCrawler {
         return;
       }
 
-      // Use the URL processor's shouldExclude method combined with provided patterns
-      if (this.urlProcessor.shouldExclude(item.url, excludePatterns)) {
+      if (this.urlProcessor.shouldExclude(item.url, excludePatterns, this.crawlMode)) {
         console.log(`🚫 Skipping excluded URL: ${item.url}`);
         return;
       }
@@ -209,7 +212,9 @@ export class WebCrawler {
       excludePatterns = [],
       checkSitemaps = true,
       forceHeadless = false,
+      crawlMode = "seo",
     } = options;
+    this.crawlMode = crawlMode;
     // Default timeout scales with maxPages: ~2s per page, min 5 minutes
     const timeout = options.timeout ?? Math.max(300_000, maxPages * 2_000);
 
@@ -354,8 +359,7 @@ export class WebCrawler {
         continue;
       }
 
-      // Check if URL should be excluded
-      if (this.urlProcessor.shouldExclude(cleanUrl)) {
+      if (this.urlProcessor.shouldExclude(cleanUrl, [], this.crawlMode)) {
         console.log(`🚫 Excluding URL: ${cleanUrl}`);
         continue;
       }
@@ -389,10 +393,6 @@ export class WebCrawler {
     return addedCount;
   }
 
-  private isInQueue(url: string): boolean {
-    return this.queued.has(url);
-  }
-
   private async processSitemaps(
     baseUrl: string,
     maxDepth: number,
@@ -415,7 +415,8 @@ export class WebCrawler {
 
         const response = await fetch(sitemapUrl, {
           headers: {
-            "User-Agent": "RankRiot/1.0 SEO Crawler",
+            "User-Agent": BROWSER_USER_AGENT,
+            "Accept": "text/xml,application/xml,text/html,*/*;q=0.8",
           },
           signal: controller.signal,
         });
@@ -496,8 +497,11 @@ export class WebCrawler {
           if (!cleanUrl) continue;
 
           if (this.urlProcessor.isInternal(cleanUrl)) {
-            if (!this.visited.has(cleanUrl) && !this.queued.has(cleanUrl)) {
-              // Calculate depth based on URL structure
+            if (
+              !this.visited.has(cleanUrl) &&
+              !this.queued.has(cleanUrl) &&
+              !this.urlProcessor.shouldExclude(cleanUrl, [], this.crawlMode)
+            ) {
               const urlDepth = this.calculateUrlDepth(
                 cleanUrl,
                 this.urlProcessor.getBaseUrl(),
@@ -522,9 +526,7 @@ export class WebCrawler {
   }
 
   private calculateUrlDepth(url: string, baseUrl: string): number {
-    // Use the URL processor's getPathDepth method for consistency
-    const pathDepth = this.urlProcessor.getPathDepth(url);
-    return Math.min(pathDepth, 3); // Cap at depth 3
+    return this.urlProcessor.getPathDepth(url);
   }
 
   private delay(ms: number): Promise<void> {

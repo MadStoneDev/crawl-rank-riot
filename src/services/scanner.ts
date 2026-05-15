@@ -1240,7 +1240,7 @@ export class Scanner {
       "where", "while", "would", "other", "still", "between", "should", "through",
     ]);
 
-    const words = text.toLowerCase().match(/[a-z]{4,}/g) || [];
+    const words = text.toLowerCase().match(/[\p{L}]{4,}/gu) || [];
     const freq = new Map<string, number>();
     for (const word of words) {
       if (!stopWords.has(word)) {

@@ -17,6 +17,7 @@ export interface CrawlOptions {
   checkSitemaps?: boolean;
   useHeadlessBrowser?: boolean;
   forceHeadless?: boolean;
+  crawlMode?: "seo" | "audit";
 }
 
 export interface ScanResult {

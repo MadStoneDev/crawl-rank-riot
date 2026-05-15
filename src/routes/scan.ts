@@ -123,14 +123,7 @@ router.post(
         concurrentRequests: Math.max(1, Math.min(Number(options?.concurrentRequests) || 3, 10)),
         timeout: Math.max(300_000, Math.min(Number(options?.timeout) || defaultTimeout, 21_600_000)),
         checkSitemaps: options?.checkSitemaps !== false,
-        excludePatterns: [
-          /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
-          /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
-          /#.*/i,
-          /\?s=/i,
-          /\?p=\d+/i,
-          /\?(utm_|fbclid|gclid)/i,
-        ],
+        crawlMode: "seo" as const,
       };
 
       // Return early response to client
@@ -264,14 +257,7 @@ router.post(
         concurrentRequests: Math.max(1, Math.min(Number(options?.concurrentRequests) || 3, 10)),
         timeout: Math.max(300_000, Math.min(Number(options?.timeout) || auditDefaultTimeout, 21_600_000)),
         checkSitemaps: options?.checkSitemaps !== false,
-        excludePatterns: [
-          /\.(jpg|jpeg|png|gif|svg|webp|pdf|doc|docx|xls|xlsx|zip|tar)$/i,
-          /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,
-          /#.*/i,
-          /\?s=/i,
-          /\?p=\d+/i,
-          /\?(utm_|fbclid|gclid)/i,
-        ],
+        crawlMode: "audit" as const,
       };
 
       // Return early response to client

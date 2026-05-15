@@ -212,19 +212,31 @@ export class AuditAnalyzer {
     const foundPages: string[] = [];
     const missingPages: string[] = [];
 
-    // Map of alternative names for common pages
     const pageAliases: Record<string, string[]> = {
       blog: ["blog", "articles", "posts", "news"],
-      about: ["about", "about-us", "aboutus", "our-story", "who-we-are"],
+      about: ["about", "about-us", "aboutus", "our-story", "who-we-are", "company"],
       contact: [
-        "contact",
-        "contact-us",
-        "contactus",
-        "get-in-touch",
-        "reach-us",
+        "contact", "contact-us", "contactus", "get-in-touch", "reach-us",
+        "page/contact", "pages/contact", "support",
       ],
       services: ["services", "what-we-do", "solutions", "offerings"],
       team: ["team", "our-team", "people", "leadership", "about/team"],
+      returns: [
+        "returns", "refund-policy", "refund", "policies/refund-policy",
+        "policies/refund", "return-policy",
+      ],
+      shipping: [
+        "shipping", "shipping-policy", "delivery", "policies/shipping-policy",
+        "policies/shipping",
+      ],
+      products: ["products", "shop", "store", "collections"],
+      cart: ["cart", "basket", "checkout"],
+      pricing: ["pricing", "plans", "packages"],
+      features: ["features", "capabilities", "platform"],
+      documentation: ["docs", "documentation", "help", "knowledge-base", "faq"],
+      portfolio: ["portfolio", "work", "projects", "case-studies"],
+      archive: ["archive", "archives"],
+      categories: ["categories", "topics", "tags"],
     };
 
     for (const expected of expectedPages) {
@@ -262,15 +274,19 @@ export class AuditAnalyzer {
       }
     }
 
-    // Check for contact form even if no /contact page
+    // Check for contact form even if no /contact page — look for <form> with <textarea>
+    // or type="email" combined with message/contact/inquiry keywords
     const hasContactForm = this.scanResults.some((r) => {
       const content = JSON.stringify(r).toLowerCase();
-      return (
-        content.includes('type="email"') &&
-        (content.includes("contact") ||
-          content.includes("message") ||
-          content.includes("inquiry"))
-      );
+      const hasForm = content.includes("<form");
+      const hasTextarea = content.includes("<textarea");
+      const hasEmailInput = content.includes('type="email"') || content.includes("type='email'");
+      const hasContactKeywords =
+        content.includes("contact") ||
+        content.includes("message") ||
+        content.includes("inquiry") ||
+        content.includes("get in touch");
+      return (hasForm && hasTextarea) || (hasEmailInput && hasContactKeywords);
     });
 
     if (hasContactForm && missingPages.includes("contact")) {
@@ -545,8 +561,8 @@ export class AuditAnalyzer {
         });
       }
 
-      // Look for copyright year
-      const copyrightMatch = content.match(/copyright.*?(\d{4})/i);
+      // Look for copyright year — match "Copyright 2024" or "© 2024"
+      const copyrightMatch = content.match(/(?:copyright|©)\s*(?:.*?)\b(20\d{2})\b/i);
       if (copyrightMatch) {
         const year = parseInt(copyrightMatch[1]);
         if (year > 2000 && (!copyrightYear || year > copyrightYear)) {
@@ -600,9 +616,10 @@ export class AuditAnalyzer {
       fonts,
       copyrightYear,
       hasSocialLinks,
-      socialPlatforms: socialPlatforms.map((d) =>
-        d.replace(".com", "").replace("x", "X (Twitter)"),
-      ),
+      socialPlatforms: socialPlatforms.map((d) => {
+        const name = d.replace(".com", "");
+        return name === "x" ? "X (Twitter)" : name;
+      }),
       findings,
     };
   }
@@ -654,15 +671,49 @@ export class AuditAnalyzer {
       findings.push("Mobile-friendly viewport detected");
     }
 
-    // Check for robots.txt and sitemap (would need to fetch these separately)
-    // For now, check if sitemap is mentioned in any page
-    hasSitemap = this.scanResults.some((r) => {
-      return r.url.toLowerCase().includes("sitemap");
-    });
+    // Actually fetch robots.txt and sitemap.xml
+    try {
+      const baseUrlObj = new URL(this.baseUrl);
+      const robotsUrl = `${baseUrlObj.protocol}//${baseUrlObj.host}/robots.txt`;
+      const controller1 = new AbortController();
+      const timeout1 = setTimeout(() => controller1.abort(), 8000);
+      const robotsResp = await fetch(robotsUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        signal: controller1.signal,
+      });
+      clearTimeout(timeout1);
+      hasRobotsTxt = robotsResp.ok;
+    } catch {
+      hasRobotsTxt = false;
+    }
+
+    if (!hasRobotsTxt) {
+      score -= 5;
+      findings.push("No robots.txt found");
+    } else {
+      findings.push("robots.txt found");
+    }
+
+    try {
+      const baseUrlObj = new URL(this.baseUrl);
+      const sitemapUrl = `${baseUrlObj.protocol}//${baseUrlObj.host}/sitemap.xml`;
+      const controller2 = new AbortController();
+      const timeout2 = setTimeout(() => controller2.abort(), 8000);
+      const sitemapResp = await fetch(sitemapUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        signal: controller2.signal,
+      });
+      clearTimeout(timeout2);
+      hasSitemap = sitemapResp.ok;
+    } catch {
+      hasSitemap = false;
+    }
 
     if (!hasSitemap) {
       score -= 10;
-      findings.push("No sitemap detected");
+      findings.push("No sitemap.xml found");
+    } else {
+      findings.push("sitemap.xml found");
     }
 
     return {
