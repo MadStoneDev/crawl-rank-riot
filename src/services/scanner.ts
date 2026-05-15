@@ -1,7 +1,7 @@
 import { ScanResult } from "../types";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
-import { isJavaScriptHeavySite } from "../utils/browser";
-import puppeteer, { Browser, Page } from "puppeteer";
+import { isJavaScriptHeavySite, getSharedBrowserPool } from "../utils/browser";
+import { Browser, Page } from "puppeteer";
 
 export class Scanner {
   private userAgent =
@@ -48,22 +48,12 @@ export class Scanner {
     const urlProcessor = new UrlProcessor(url);
     const result = this.createBaseScanResult(url, depth);
 
-    let browser: Browser | undefined;
+    const pool = getSharedBrowserPool();
+    let page: Page | undefined;
     try {
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-dev-shm-usage",
-          "--disable-features=VizDisplayCompositor",
-          "--disable-background-timer-throttling",
-          "--disable-backgrounding-occluded-windows",
-          "--disable-renderer-backgrounding",
-        ],
-      });
+      const browser = await pool.acquire();
 
-      const page: Page = await browser.newPage();
+      page = await browser.newPage();
 
       // Set realistic viewport and user agent
       await page.setUserAgent(this.userAgent);
@@ -122,9 +112,10 @@ export class Scanner {
       result.errors = [`Headless scan failed: ${errorMessage}`];
       console.error(`❌ Headless scan error for ${url}:`, error);
     } finally {
-      if (browser) {
-        await browser.close();
+      if (page) {
+        try { await page.close(); } catch { /* page may already be closed */ }
       }
+      pool.release();
     }
 
     return result;

@@ -2,7 +2,7 @@ import { Scanner } from "./scanner";
 import { UrlProcessor } from "../utils/url";
 import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
-import { isJavaScriptHeavySite } from "../utils/browser";
+import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser";
 
 const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -12,7 +12,7 @@ export class WebCrawler {
   private urlProcessor: UrlProcessor;
   private visited = new Set<string>();
   private queued = new Set<string>();
-  private queue: Array<{ url: string; depth: number }> = [];
+  private queue: Array<{ url: string; depth: number; retries?: number }> = [];
   private results: ScanResult[] = [];
   private processing = new Set<string>();
   private maxConcurrentRequests: number = 3;
@@ -30,15 +30,16 @@ export class WebCrawler {
     this.projectId = projectId || null;
   }
 
+  private static readonly MAX_RETRIES = 2;
+
   private async processUrl(
-    item: { url: string; depth: number },
+    item: { url: string; depth: number; retries?: number },
     maxDepth: number,
     maxPages: number,
     excludePatterns: RegExp[],
     forceHeadless: boolean,
   ): Promise<void> {
     try {
-      // Skip if we've hit limits
       if (this.results.length >= maxPages || item.depth > maxDepth) {
         return;
       }
@@ -48,11 +49,8 @@ export class WebCrawler {
         return;
       }
 
-      this.visited.add(item.url);
-
       console.log(`🔍 Scanning (depth ${item.depth}): ${item.url}`);
 
-      // Detect if this needs special handling
       const needsHeadless =
         forceHeadless || isJavaScriptHeavySite(item.url);
 
@@ -61,6 +59,18 @@ export class WebCrawler {
         item.depth,
         needsHeadless,
       );
+
+      // Treat 5xx as transient — re-queue for retry
+      if (result.status >= 500) {
+        const retries = item.retries || 0;
+        if (retries < WebCrawler.MAX_RETRIES) {
+          console.log(`⚠️ Got ${result.status} for ${item.url}, will retry (${retries + 1}/${WebCrawler.MAX_RETRIES})`);
+          this.queue.push({ url: item.url, depth: item.depth, retries: retries + 1 });
+          return;
+        }
+      }
+
+      this.visited.add(item.url);
       this.results.push(result);
 
       console.log(
@@ -69,10 +79,8 @@ export class WebCrawler {
         } internal links found)`,
       );
 
-      // Update progress in database periodically
       await this.updateScanProgress();
 
-      // Add internal links to queue if not at max depth
       if (item.depth < maxDepth) {
         const newLinks = this.processInternalLinks(
           result.internal_links,
@@ -81,13 +89,18 @@ export class WebCrawler {
         console.log(`🔗 Added ${newLinks} new URLs to queue from ${item.url}`);
       }
 
-      // Add delay between requests
       const delay = needsHeadless ? 2000 : 500;
       await this.delay(delay);
     } catch (error) {
       console.error(`❌ Error processing ${item.url}:`, error);
+      const retries = item.retries || 0;
+      if (retries < WebCrawler.MAX_RETRIES) {
+        console.log(`🔄 Re-queuing ${item.url} for retry (${retries + 1}/${WebCrawler.MAX_RETRIES})`);
+        this.queue.push({ url: item.url, depth: item.depth, retries: retries + 1 });
+      } else {
+        this.visited.add(item.url);
+      }
     } finally {
-      // Remove from processing set
       this.processing.delete(item.url);
     }
   }
@@ -305,26 +318,25 @@ export class WebCrawler {
     }
 
     await this.finalProgressUpdate();
+    await closeSharedBrowserPool();
 
     console.log(`✅ Crawl completed: ${this.results.length} pages found`);
     return this.results;
   }
 
-  private getNextBatch(size: number): Array<{ url: string; depth: number }> {
-    const batch: Array<{ url: string; depth: number }> = [];
+  private getNextBatch(size: number): Array<{ url: string; depth: number; retries?: number }> {
+    const batch: Array<{ url: string; depth: number; retries?: number }> = [];
 
     while (batch.length < size && this.queue.length > 0) {
       const item = this.queue.shift();
       if (!item) break;
 
-      // Skip if already visited or being processed
       if (this.visited.has(item.url) || this.processing.has(item.url)) {
         continue;
       }
 
       batch.push(item);
       this.processing.add(item.url);
-      this.visited.add(item.url); // Mark visited immediately to prevent race conditions
     }
 
     return batch;
