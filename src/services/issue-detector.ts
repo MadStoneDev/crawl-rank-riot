@@ -730,6 +730,98 @@ function analyzePageIssues(
     }
   }
 
+  // Hreflang validation
+  if (result.hreflang_tags && result.hreflang_tags.length > 0) {
+    const selfLangs = result.hreflang_tags.filter((t) => {
+      try {
+        const tagUrl = new URL(t.url).pathname.replace(/\/+$/, "");
+        const pageUrl = new URL(result.url).pathname.replace(/\/+$/, "");
+        return tagUrl === pageUrl;
+      } catch { return false; }
+    });
+    const hasSelfRef = selfLangs.length > 0;
+    const hasXDefault = result.hreflang_tags.some((t) => t.lang === "x-default");
+
+    const hreflangIssues: string[] = [];
+    if (!hasSelfRef) hreflangIssues.push("Missing self-referencing hreflang tag");
+    if (!hasXDefault) hreflangIssues.push("Missing x-default hreflang tag");
+
+    const invalidLangs = result.hreflang_tags.filter((t) =>
+      t.lang !== "x-default" && !/^[a-z]{2}(-[A-Za-z]{2,})?$/.test(t.lang),
+    );
+    if (invalidLangs.length > 0) {
+      hreflangIssues.push(`Invalid language codes: ${invalidLangs.map((t) => t.lang).join(", ")}`);
+    }
+
+    if (hreflangIssues.length > 0) {
+      addIssue(
+        "hreflang_issues",
+        "medium",
+        hreflangIssues.join(". "),
+        {
+          url: result.url,
+          issues: hreflangIssues,
+          tags: result.hreflang_tags,
+        },
+      );
+    }
+  }
+
+  // Non-descriptive anchor text
+  const genericAnchors = ["click here", "read more", "learn more", "here", "more", "link", "this"];
+  const allLinks = [...result.internal_links, ...result.external_links];
+  const genericLinks = allLinks.filter((link) =>
+    genericAnchors.includes(link.anchor_text.toLowerCase().trim()),
+  );
+  if (genericLinks.length > 0) {
+    addIssue(
+      "non_descriptive_anchor_text",
+      "low",
+      `${genericLinks.length} link(s) use non-descriptive anchor text (e.g. "click here", "read more")`,
+      {
+        url: result.url,
+        links: genericLinks.slice(0, 10).map((l) => ({
+          anchor: l.anchor_text,
+          destination: l.url,
+        })),
+      },
+    );
+  }
+
+  // Redirect loop detection (URL appears in its own redirect chain)
+  if (result.redirect_chain && result.redirect_chain.length > 0) {
+    const chainSet = new Set(result.redirect_chain);
+    if (chainSet.size < result.redirect_chain.length) {
+      addIssue(
+        "redirect_loop",
+        "critical",
+        "Redirect loop detected — URL redirects back to itself",
+        {
+          url: result.url,
+          chain: result.redirect_chain,
+        },
+      );
+    }
+  }
+
+  // Canonical pointing to a different page that also has a different canonical (chain)
+  if (
+    result.canonical_url &&
+    result.canonical_is_self === false &&
+    result.status >= 200 &&
+    result.status < 400
+  ) {
+    addIssue(
+      "canonical_not_self",
+      "medium",
+      `Page has a canonical URL pointing to a different page: ${result.canonical_url}`,
+      {
+        url: result.url,
+        canonical_url: result.canonical_url,
+      },
+    );
+  }
+
   return issues;
 }
 
