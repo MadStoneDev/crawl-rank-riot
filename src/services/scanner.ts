@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { ScanResult } from "../types";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
 import { isJavaScriptHeavySite, getSharedBrowserPool } from "../utils/browser";
-import { Browser, Page } from "puppeteer";
+import { Page } from "puppeteer";
 
 export class Scanner {
   private userAgent =
@@ -729,7 +729,16 @@ export class Scanner {
 
         const fetchStart = Date.now();
 
+        const seenUrls = new Set<string>();
+
         for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
+          if (seenUrls.has(currentUrl)) {
+            // Redirect loop detected — record it and break
+            result.redirect_chain = [...redirectChain, currentUrl];
+            break;
+          }
+          seenUrls.add(currentUrl);
+
           response = await fetch(currentUrl, {
             headers: {
               "User-Agent": this.userAgent,
@@ -1427,7 +1436,11 @@ export class Scanner {
    * Compute a SHA-256 hash of the main text content for duplicate detection.
    */
   private computeContentHash(text: string): string {
-    const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+    const normalized = text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
     return createHash("sha256").update(normalized).digest("hex");
   }
 

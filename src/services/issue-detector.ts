@@ -266,7 +266,7 @@ function detectCrossPageDuplicates(
     hashMap.set(result.content_hash, existing);
   }
 
-  for (const [hash, pages] of hashMap) {
+  for (const [, pages] of hashMap) {
     if (pages.length < 2) continue;
     const duplicateUrls = pages.map((p) => p.url);
     for (const page of pages) {
@@ -834,8 +834,9 @@ function analyzePageIssues(
     if (!hasSelfRef) hreflangIssues.push("Missing self-referencing hreflang tag");
     if (!hasXDefault) hreflangIssues.push("Missing x-default hreflang tag");
 
+    const langRegex = /^[a-zA-Z]{2,3}(-[a-zA-Z]{2,8})*$/;
     const invalidLangs = result.hreflang_tags.filter((t) =>
-      t.lang !== "x-default" && !/^[a-z]{2}(-[A-Za-z]{2,})?$/.test(t.lang),
+      t.lang !== "x-default" && !langRegex.test(t.lang),
     );
     if (invalidLangs.length > 0) {
       hreflangIssues.push(`Invalid language codes: ${invalidLangs.map((t) => t.lang).join(", ")}`);

@@ -120,30 +120,37 @@ export async function checkAndStoreBacklinks(
       return 0;
     }
 
-    // Clear old backlinks for this project and insert new ones
-    const { error: deleteError } = await supabase
-      .from("backlinks")
-      .delete()
-      .eq("project_id", projectId);
-
-    if (deleteError) {
-      console.error("Error clearing old backlinks:", deleteError);
-    }
-
-    // Insert in batches
+    // Insert new backlinks first, then delete old ones.
+    // This avoids data loss if insertion fails.
     const insertBatchSize = 50;
     let totalInserted = 0;
+    let insertFailed = false;
 
     for (let i = 0; i < discovered.length; i += insertBatchSize) {
       const batch = discovered.slice(i, i + insertBatchSize);
       const { error: insertError } = await supabase
         .from("backlinks")
-        .insert(batch);
+        .upsert(batch, { onConflict: "project_id,source_url,source_domain" });
 
       if (insertError) {
-        console.error("Error inserting backlinks batch:", insertError);
+        console.error("Error upserting backlinks batch:", insertError);
+        insertFailed = true;
       } else {
         totalInserted += batch.length;
+      }
+    }
+
+    // Only clean up stale backlinks if all inserts succeeded
+    if (!insertFailed && totalInserted > 0) {
+      const discoveredSourceUrls = discovered.map((d) => d.source_url);
+      const { error: deleteError } = await supabase
+        .from("backlinks")
+        .delete()
+        .eq("project_id", projectId)
+        .not("source_url", "in", `(${discoveredSourceUrls.map((u) => `"${u}"`).join(",")})`);
+
+      if (deleteError) {
+        console.error("Error cleaning up stale backlinks:", deleteError);
       }
     }
 

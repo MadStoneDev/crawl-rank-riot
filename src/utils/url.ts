@@ -417,7 +417,7 @@ export class UrlProcessor {
       }
 
       // Ensure consistent protocol (prefer https)
-      if (urlObj.protocol === "http:" && this.supportsHttps(urlObj.hostname)) {
+      if (urlObj.protocol === "http:") {
         urlObj.protocol = "https:";
       }
 
@@ -628,10 +628,6 @@ export class UrlProcessor {
     }
 
     return Math.max(1, priority);
-  }
-
-  private supportsHttps(_hostname: string): boolean {
-    return true;
   }
 
   /**
