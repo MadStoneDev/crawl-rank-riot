@@ -33,20 +33,22 @@ export async function storeScanResults(
     const existingUrlSet = new Set(existingPages?.map((p) => p.url) || []);
     console.log(`📊 Found ${existingUrlSet.size} existing pages in database`);
 
-    // STEP 1.5: Proactively remove any non-HTTP pages that may exist from older scans
-    const nonHttpPages = (existingPages || []).filter(
-      (p) => !/^https?:\/\//i.test(p.url),
+    // STEP 1.5: Proactively remove any bogus pages from older scans
+    const bogusPages = (existingPages || []).filter(
+      (p) =>
+        !/^https?:\/\//i.test(p.url) ||
+        /^https?:\/\/(mailto|tel|javascript|sms|ftp):/i.test(p.url),
     );
-    if (nonHttpPages.length > 0) {
+    if (bogusPages.length > 0) {
       console.log(
-        `🧹 Removing ${nonHttpPages.length} non-HTTP pages (mailto:, tel:, etc.)`,
+        `🧹 Removing ${bogusPages.length} bogus pages (mailto:, tel:, mangled URLs, etc.)`,
       );
       await cleanupRemovedPages(
         supabase,
         projectId,
-        nonHttpPages.map((p) => p.url),
+        bogusPages.map((p) => p.url),
       );
-      nonHttpPages.forEach((p) => existingUrlSet.delete(p.url));
+      bogusPages.forEach((p) => existingUrlSet.delete(p.url));
     }
 
     // STEP 2: Deduplicate results by URL (keep the first occurrence)
