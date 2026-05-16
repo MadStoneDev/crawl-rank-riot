@@ -135,8 +135,6 @@ export async function storeScanResults(
       hreflang_tags: result.hreflang_tags || null,
       canonical_is_self: result.canonical_is_self ?? null,
       url_issues: result.url_issues || null,
-      content_hash: result.content_hash || null,
-      readability_score: result.readability_score ?? null,
       crawl_priority: result.depth === 0 ? 10 : Math.max(1, 10 - result.depth),
       updated_at: new Date().toISOString(),
     }));
