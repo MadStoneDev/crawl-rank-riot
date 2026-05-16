@@ -14,6 +14,7 @@ import { AuditAnalyzer } from "../services/audit-analyzer";
 import { storeAuditResults } from "../services/audit-database";
 import { analyzeSiteLevelData } from "../services/site-analyzer";
 import { detectSiteLevelIssues } from "../services/site-issue-detector";
+import { computeNextScanAt } from "../utils/scheduler";
 
 const router = Router();
 
@@ -580,6 +581,23 @@ async function processSEOScanInBackground(
       scanRecord?.started_at || completedAt,
       completedAt,
     );
+
+    // Recalculate next_scan_at based on project's scan_frequency
+    const { data: projectData } = await supabase
+      .from("projects")
+      .select("scan_frequency")
+      .eq("id", projectId)
+      .single();
+
+    if (projectData?.scan_frequency) {
+      const nextScanAt = computeNextScanAt(new Date(), projectData.scan_frequency);
+      if (nextScanAt) {
+        await supabase
+          .from("projects")
+          .update({ next_scan_at: nextScanAt.toISOString() })
+          .eq("id", projectId);
+      }
+    }
 
     console.log(
       `SEO scan completed for project ${projectId}, scan ${scanId}, ${totalIssues} issues found (${siteIssuesFound} site-level), ${backlinksFound} backlinks discovered`,

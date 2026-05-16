@@ -2,6 +2,26 @@ import { WebCrawler } from "../services/crawler";
 import { storeScanResults } from "../services/database";
 import { getSupabaseServiceClient } from "../services/database/client";
 
+export function computeNextScanAt(
+  fromDate: Date,
+  frequency: string,
+): Date | null {
+  const next = new Date(fromDate);
+  switch (frequency) {
+    case "daily":
+      next.setDate(next.getDate() + 1);
+      return next;
+    case "weekly":
+      next.setDate(next.getDate() + 7);
+      return next;
+    case "monthly":
+      next.setMonth(next.getMonth() + 1);
+      return next;
+    default:
+      return null;
+  }
+}
+
 export class CrawlScheduler {
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
@@ -12,15 +32,13 @@ export class CrawlScheduler {
     this.isRunning = true;
     console.log("Starting crawl scheduler...");
 
-    // Check every hour for projects that need recrawling
     this.intervalId = setInterval(
       () => {
         this.checkAndScheduleCrawls();
       },
       60 * 60 * 1000,
-    ); // 1 hour
+    );
 
-    // Run initial check
     this.checkAndScheduleCrawls();
   }
 
@@ -36,50 +54,30 @@ export class CrawlScheduler {
   private async checkAndScheduleCrawls(): Promise<void> {
     try {
       const supabase = getSupabaseServiceClient();
+      const now = new Date().toISOString();
 
-      // Find projects that need recrawling (weekly and monthly)
-      const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 7);
-
-      const monthAgo = new Date();
-      monthAgo.setDate(monthAgo.getDate() - 30);
-
-      const { data: weeklyProjects, error: weeklyError } = await supabase
+      const { data: projects, error } = await supabase
         .from("projects")
         .select("*")
-        .or(`last_scan_at.is.null,last_scan_at.lt.${weekAgo.toISOString()}`)
-        .eq("scan_frequency", "weekly");
+        .not("scan_frequency", "eq", "manual")
+        .not("scan_frequency", "is", null)
+        .is("deleted_at", null)
+        .lte("next_scan_at", now);
 
-      if (weeklyError) {
-        console.error("Error fetching weekly projects for scheduling:", weeklyError);
+      if (error) {
+        console.error("Error fetching projects for scheduling:", error);
+        return;
       }
 
-      const { data: monthlyProjects, error: monthlyError } = await supabase
-        .from("projects")
-        .select("*")
-        .or(`last_scan_at.is.null,last_scan_at.lt.${monthAgo.toISOString()}`)
-        .eq("scan_frequency", "monthly");
-
-      if (monthlyError) {
-        console.error("Error fetching monthly projects for scheduling:", monthlyError);
-      }
-
-      const projects = [
-        ...(weeklyProjects || []),
-        ...(monthlyProjects || []),
-      ];
-
-      if (projects.length === 0) {
+      if (!projects || projects.length === 0) {
         console.log("No projects need recrawling at this time");
         return;
       }
 
       console.log(`Found ${projects.length} projects that need recrawling`);
 
-      // Process each project (with some delay between them)
       for (const project of projects) {
         await this.crawlProject(project);
-        // Wait 30 seconds between projects to avoid overwhelming the server
         await this.delay(30000);
       }
     } catch (error) {
@@ -95,7 +93,6 @@ export class CrawlScheduler {
     try {
       const supabase = getSupabaseServiceClient();
 
-      // Create a new scan record
       const { data: scanData, error: scanError } = await supabase
         .from("scans")
         .insert({
@@ -119,13 +116,12 @@ export class CrawlScheduler {
 
       const scanId = scanData.id;
 
-      // Run the crawler with timeout proportional to maxPages
       const scheduledMaxPages = 500;
       const crawler = new WebCrawler(project.url, scanId, project.id);
       const results = await crawler.crawl(project.url, {
         maxDepth: 3,
         maxPages: scheduledMaxPages,
-        concurrentRequests: 2, // Lower concurrency for scheduled crawls
+        concurrentRequests: 2,
         timeout: Math.max(300_000, scheduledMaxPages * 2_000),
       });
 
@@ -133,21 +129,24 @@ export class CrawlScheduler {
         `Scheduled crawl completed for ${project.url}: ${results.length} pages`,
       );
 
-      // Store results
       await storeScanResults(project.id, scanId, results);
 
-      // Update project last_scan_at
+      const now = new Date();
+      const nextScanAt = computeNextScanAt(now, project.scan_frequency);
+
       await supabase
         .from("projects")
-        .update({ last_scan_at: new Date().toISOString() })
+        .update({
+          last_scan_at: now.toISOString(),
+          next_scan_at: nextScanAt ? nextScanAt.toISOString() : null,
+        })
         .eq("id", project.id);
 
-      // Mark scan as completed
       await supabase
         .from("scans")
         .update({
           status: "completed",
-          completed_at: new Date().toISOString(),
+          completed_at: now.toISOString(),
           pages_scanned: results.length,
         })
         .eq("id", scanId);
@@ -161,7 +160,6 @@ export class CrawlScheduler {
         error,
       );
 
-      // Mark scan as failed if we have scanId
       const supabase = getSupabaseServiceClient();
       await supabase
         .from("scans")
@@ -171,6 +169,18 @@ export class CrawlScheduler {
         })
         .eq("project_id", project.id)
         .eq("status", "in_progress");
+
+      // Still advance next_scan_at so we don't retry endlessly on failure
+      const nextScanAt = computeNextScanAt(
+        new Date(),
+        project.scan_frequency,
+      );
+      if (nextScanAt) {
+        await supabase
+          .from("projects")
+          .update({ next_scan_at: nextScanAt.toISOString() })
+          .eq("id", project.id);
+      }
     }
   }
 
@@ -179,5 +189,4 @@ export class CrawlScheduler {
   }
 }
 
-// Export singleton instance
 export const crawlScheduler = new CrawlScheduler();

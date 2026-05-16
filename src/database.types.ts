@@ -609,6 +609,7 @@ export type Database = {
           description: string | null
           scan_frequency: string | null
           last_scan_at: string | null
+          next_scan_at: string | null
           created_at: string | null
           updated_at: string | null
           settings: Json | null
@@ -624,6 +625,7 @@ export type Database = {
           description?: string | null
           scan_frequency?: string | null
           last_scan_at?: string | null
+          next_scan_at?: string | null
           created_at?: string | null
           updated_at?: string | null
           settings?: Json | null
@@ -639,6 +641,7 @@ export type Database = {
           description?: string | null
           scan_frequency?: string | null
           last_scan_at?: string | null
+          next_scan_at?: string | null
           created_at?: string | null
           updated_at?: string | null
           settings?: Json | null
