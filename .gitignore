@@ -5,3 +5,6 @@ logs/
 npm-debug.log*
 dist/
 .idea/
+
+# SupaTypes config (contains server credentials)
+.supatypes.json
