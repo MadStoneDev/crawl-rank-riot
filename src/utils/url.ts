@@ -368,10 +368,11 @@ export class UrlProcessor {
 
       const urlObj = new URL(normalizedUrl);
 
-      // Reject URLs where a non-HTTP protocol ended up in the hostname
-      // e.g. "https://mailto:hello@example.com" from malformed hrefs
-      if (isNonHttpUrl(urlObj.hostname) || urlObj.hostname.includes(":")) {
-        throw new Error(`Invalid hostname contains protocol: ${urlObj.hostname}`);
+      // Reject URLs with credentials — no legitimate crawlable page has
+      // username:password in the URL. This also catches the pattern where
+      // "mailto:hello@domain" gets parsed as username=mailto, password=hello.
+      if (urlObj.username || urlObj.password) {
+        throw new Error(`URL contains credentials: ${url}`);
       }
 
       // Apply www preference if detected and this is the same domain
