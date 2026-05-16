@@ -368,6 +368,12 @@ export class UrlProcessor {
 
       const urlObj = new URL(normalizedUrl);
 
+      // Reject URLs where a non-HTTP protocol ended up in the hostname
+      // e.g. "https://mailto:hello@example.com" from malformed hrefs
+      if (isNonHttpUrl(urlObj.hostname) || urlObj.hostname.includes(":")) {
+        throw new Error(`Invalid hostname contains protocol: ${urlObj.hostname}`);
+      }
+
       // Apply www preference if detected and this is the same domain
       if (
         this.preferredWwwFormat !== "unknown" &&
@@ -644,6 +650,11 @@ export class UrlProcessor {
 
       // Skip non-HTTP protocols and fragments
       if (trimmed === "#" || isNonHttpUrl(trimmed)) {
+        return null;
+      }
+
+      // Catch mangled URLs like "https://mailto:..." or "https://tel:..."
+      if (/^https?:\/\/(mailto|tel|javascript|sms|ftp):/i.test(trimmed)) {
         return null;
       }
 
