@@ -43,7 +43,7 @@ app.use("/api/scan", scanLimiter);
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(new Error("Not allowed by CORS"));
+      if (!origin) return callback(null, true);
 
       if (config.server.allowedOrigins.includes(origin)) {
         return callback(null, true);
