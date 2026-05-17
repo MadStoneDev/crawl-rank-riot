@@ -22,6 +22,8 @@ export function computeNextScanAt(
   }
 }
 
+const STALE_SCAN_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 export class CrawlScheduler {
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
@@ -34,11 +36,13 @@ export class CrawlScheduler {
 
     this.intervalId = setInterval(
       () => {
+        this.reapStaleScans();
         this.checkAndScheduleCrawls();
       },
       60 * 60 * 1000,
     );
 
+    this.reapStaleScans();
     this.checkAndScheduleCrawls();
   }
 
@@ -51,10 +55,62 @@ export class CrawlScheduler {
     console.log("Crawl scheduler stopped");
   }
 
+  private async reapStaleScans(): Promise<void> {
+    try {
+      const supabase = getSupabaseServiceClient();
+      const threshold = new Date(
+        Date.now() - STALE_SCAN_THRESHOLD_MS,
+      ).toISOString();
+
+      const { data: staleScans, error } = await supabase
+        .from("scans")
+        .select("id, project_id")
+        .eq("status", "in_progress")
+        .lt("last_progress_update", threshold);
+
+      if (error) {
+        console.error("Error checking for stale scans:", error);
+        return;
+      }
+
+      if (!staleScans || staleScans.length === 0) return;
+
+      console.log(
+        `Reaping ${staleScans.length} stale scans that have been in_progress for over 2 hours`,
+      );
+
+      for (const scan of staleScans) {
+        await supabase
+          .from("scans")
+          .update({
+            status: "failed",
+            completed_at: new Date().toISOString(),
+            summary_stats: {
+              error_message: "Scan timed out — no progress for over 2 hours",
+              failed_at: new Date().toISOString(),
+            },
+          })
+          .eq("id", scan.id);
+      }
+    } catch (error) {
+      console.error("Error reaping stale scans:", error);
+    }
+  }
+
   private async checkAndScheduleCrawls(): Promise<void> {
     try {
       const supabase = getSupabaseServiceClient();
       const now = new Date().toISOString();
+
+      // Get projects with in-progress scans so we can skip them
+      const { data: busyProjects } = await supabase
+        .from("scans")
+        .select("project_id")
+        .eq("status", "in_progress");
+
+      const busyProjectIds = new Set(
+        (busyProjects || []).map((s) => s.project_id),
+      );
 
       const { data: projects, error } = await supabase
         .from("projects")
@@ -69,14 +125,21 @@ export class CrawlScheduler {
         return;
       }
 
-      if (!projects || projects.length === 0) {
+      // Filter out projects that already have a scan running
+      const eligibleProjects = (projects || []).filter(
+        (p) => !busyProjectIds.has(p.id),
+      );
+
+      if (eligibleProjects.length === 0) {
         console.log("No projects need recrawling at this time");
         return;
       }
 
-      console.log(`Found ${projects.length} projects that need recrawling`);
+      console.log(
+        `Found ${eligibleProjects.length} projects that need recrawling`,
+      );
 
-      for (const project of projects) {
+      for (const project of eligibleProjects) {
         await this.crawlProject(project);
         await this.delay(30000);
       }
@@ -102,6 +165,7 @@ export class CrawlScheduler {
           pages_scanned: 0,
           links_scanned: 0,
           issues_found: 0,
+          last_progress_update: new Date().toISOString(),
         })
         .select()
         .single();
@@ -129,7 +193,9 @@ export class CrawlScheduler {
         `Scheduled crawl completed for ${project.url}: ${results.length} pages`,
       );
 
-      await storeScanResults(project.id, scanId, results);
+      await storeScanResults(project.id, scanId, results, {
+        crawlCompleted: crawler.crawlCompleted,
+      });
 
       const now = new Date();
       const nextScanAt = computeNextScanAt(now, project.scan_frequency);
@@ -166,6 +232,11 @@ export class CrawlScheduler {
         .update({
           status: "failed",
           completed_at: new Date().toISOString(),
+          summary_stats: {
+            error_message:
+              error instanceof Error ? error.message : "Unknown error",
+            failed_at: new Date().toISOString(),
+          },
         })
         .eq("project_id", project.id)
         .eq("status", "in_progress");

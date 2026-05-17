@@ -11,6 +11,7 @@ export async function storeScanResults(
   projectId: string,
   scanId: string,
   results: ScanResult[],
+  options: { crawlCompleted?: boolean } = {},
 ): Promise<void> {
   const supabase = getSupabaseServiceClient();
 
@@ -75,20 +76,28 @@ export async function storeScanResults(
     const currentScanUrls = new Set(deduplicatedResults.map((r) => r.url));
 
     // STEP 4: Identify pages to remove (exist in DB but not in current scan)
-    const urlsToRemove = Array.from(existingUrlSet).filter(
-      (url) => !currentScanUrls.has(url),
-    );
-
-    if (urlsToRemove.length > 0) {
-      console.log(
-        `🧹 Found ${urlsToRemove.length} pages to remove that are no longer accessible:`,
+    // Only remove pages if the crawl completed fully — partial crawls (timeout)
+    // would incorrectly delete pages that simply weren't reached
+    let urlsToRemove: string[] = [];
+    if (options.crawlCompleted) {
+      urlsToRemove = Array.from(existingUrlSet).filter(
+        (url) => !currentScanUrls.has(url),
       );
-      urlsToRemove.forEach((url) => console.log(`  - ${url}`));
 
-      // Remove old pages and their associated data
-      await cleanupRemovedPages(supabase, projectId, urlsToRemove);
+      if (urlsToRemove.length > 0) {
+        console.log(
+          `🧹 Found ${urlsToRemove.length} pages to remove that are no longer accessible:`,
+        );
+        urlsToRemove.forEach((url) => console.log(`  - ${url}`));
+
+        await cleanupRemovedPages(supabase, projectId, urlsToRemove);
+      } else {
+        console.log(`✅ No pages need to be removed`);
+      }
     } else {
-      console.log(`✅ No pages need to be removed`);
+      console.log(
+        `⏭️ Skipping page cleanup — crawl may not have completed fully`,
+      );
     }
 
     // STEP 5: Prepare pages for upsert

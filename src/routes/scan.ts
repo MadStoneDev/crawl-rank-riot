@@ -79,6 +79,25 @@ router.post(
         `SEO scan request received for Project ID: ${project_id}, URL: ${project.url}`,
       );
 
+      // Guard against concurrent scans for the same project
+      const { data: existingScans } = await supabase
+        .from("scans")
+        .select("id")
+        .eq("project_id", project_id)
+        .eq("status", "in_progress")
+        .limit(1);
+
+      if (existingScans && existingScans.length > 0) {
+        return next(
+          new AppError(
+            "A scan is already in progress for this project. Please wait for it to complete.",
+            "SCAN_IN_PROGRESS",
+            undefined,
+            409,
+          ),
+        );
+      }
+
       // Create a new scan record with SEO type
       const { data: scanData, error: scanError } = await supabase
         .from("scans")
@@ -107,12 +126,6 @@ router.post(
       }
 
       const scanId = scanData.id;
-
-      // Update project's last_scan_at timestamp
-      await supabase
-        .from("projects")
-        .update({ last_scan_at: new Date().toISOString() })
-        .eq("id", project_id);
 
       // SEO scans are more comprehensive — clamp values to safe ranges
       const maxPages = Math.max(1, Math.min(Number(options?.maxPages) || 500, 100000));
@@ -214,6 +227,25 @@ router.post(
         `Audit scan request received for Project ID: ${project_id}, URL: ${project.url}`,
       );
 
+      // Guard against concurrent scans for the same project
+      const { data: existingScans } = await supabase
+        .from("scans")
+        .select("id")
+        .eq("project_id", project_id)
+        .eq("status", "in_progress")
+        .limit(1);
+
+      if (existingScans && existingScans.length > 0) {
+        return next(
+          new AppError(
+            "A scan is already in progress for this project. Please wait for it to complete.",
+            "SCAN_IN_PROGRESS",
+            undefined,
+            409,
+          ),
+        );
+      }
+
       // Create a new scan record with audit type
       const { data: scanData, error: scanError } = await supabase
         .from("scans")
@@ -242,12 +274,6 @@ router.post(
       }
 
       const scanId = scanData.id;
-
-      // Update project's last_scan_at timestamp
-      await supabase
-        .from("projects")
-        .update({ last_scan_at: new Date().toISOString() })
-        .eq("id", project_id);
 
       // Audit scans can be shallower — clamp values to safe ranges
       const auditMaxPages = Math.max(1, Math.min(Number(options?.maxPages) || 50, 100000));
@@ -498,7 +524,9 @@ async function processSEOScanInBackground(
     );
 
     // Store SEO scan results
-    await storeScanResults(projectId, scanId, scanResults);
+    await storeScanResults(projectId, scanId, scanResults, {
+      crawlCompleted: crawler.crawlCompleted,
+    });
 
     // Run site-level analysis (llms.txt, robots.txt AI bots, sitemap validation)
     let siteLevelData;
@@ -582,22 +610,24 @@ async function processSEOScanInBackground(
       completedAt,
     );
 
-    // Recalculate next_scan_at based on project's scan_frequency
+    // Update project: last_scan_at and recalculate next_scan_at
     const { data: projectData } = await supabase
       .from("projects")
       .select("scan_frequency")
       .eq("id", projectId)
       .single();
 
+    const projectUpdate: any = { last_scan_at: completedAt };
     if (projectData?.scan_frequency) {
       const nextScanAt = computeNextScanAt(new Date(), projectData.scan_frequency);
       if (nextScanAt) {
-        await supabase
-          .from("projects")
-          .update({ next_scan_at: nextScanAt.toISOString() })
-          .eq("id", projectId);
+        projectUpdate.next_scan_at = nextScanAt.toISOString();
       }
     }
+    await supabase
+      .from("projects")
+      .update(projectUpdate)
+      .eq("id", projectId);
 
     console.log(
       `SEO scan completed for project ${projectId}, scan ${scanId}, ${totalIssues} issues found (${siteIssuesFound} site-level), ${backlinksFound} backlinks discovered`,
@@ -755,6 +785,12 @@ async function processAuditScanInBackground(
       scanRecord?.started_at || completedAt,
       completedAt,
     );
+
+    // Update project last_scan_at on completion
+    await supabase
+      .from("projects")
+      .update({ last_scan_at: completedAt })
+      .eq("id", projectId);
 
     console.log(
       `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100, ${issuesFound} issues found, ${backlinksFound} backlinks discovered`,

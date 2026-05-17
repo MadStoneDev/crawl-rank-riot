@@ -17,6 +17,7 @@ export class WebCrawler {
   private processing = new Set<string>();
   private maxConcurrentRequests: number = 3;
   private crawlMode: "seo" | "audit" = "seo";
+  public crawlCompleted = false;
 
   private scanId: string | null = null;
   private projectId: string | null = null;
@@ -187,22 +188,9 @@ export class WebCrawler {
       await supabase
         .from("scans")
         .update({
-          status: "completed",
-          completed_at: new Date().toISOString(),
           pages_scanned: this.results.length,
           links_scanned: totalLinksScanned,
           last_progress_update: new Date().toISOString(),
-          summary_stats: {
-            current_progress: 100,
-            estimated_total: this.results.length,
-            queue_size: 0,
-            processing_count: 0,
-            final_stats: {
-              total_pages: this.results.length,
-              total_links: totalLinksScanned,
-              completion_time: new Date().toISOString(),
-            },
-          },
         })
         .eq("id", this.scanId);
 
@@ -310,10 +298,13 @@ export class WebCrawler {
     // Log why the loop exited
     const elapsed = Date.now() - startTime;
     if (this.queue.length === 0) {
+      this.crawlCompleted = true;
       console.log(`✅ Crawl finished: queue empty after ${Math.round(elapsed / 1000)}s`);
     } else if (this.results.length >= maxPages) {
+      this.crawlCompleted = true;
       console.log(`✅ Crawl finished: reached maxPages limit (${maxPages}) after ${Math.round(elapsed / 1000)}s, ${this.queue.length} URLs remaining in queue`);
     } else {
+      this.crawlCompleted = false;
       console.log(`⚠️ Crawl stopped: timeout reached (${Math.round(elapsed / 1000)}s / ${Math.round(timeout / 1000)}s), ${this.results.length}/${maxPages} pages scanned, ${this.queue.length} URLs remaining in queue`);
     }
 
