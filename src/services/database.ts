@@ -219,20 +219,12 @@ export async function storeScanResults(
     // STEP 8: Build links array FIRST (before clearing old ones)
     const allLinks: any[] = [];
 
-    console.log(`🔍 urlToPageId has ${urlToPageId.size} entries, deduplicatedResults has ${deduplicatedResults.length} results`);
-    if (deduplicatedResults.length > 0) {
-      console.log(`🔍 First result URL: "${deduplicatedResults[0].url}"`);
-      console.log(`🔍 First few map keys: ${Array.from(urlToPageId.keys()).slice(0, 4).map(k => `"${k}"`).join(", ")}`);
-    }
-
-    let sourceMatchCount = 0;
     for (const result of deduplicatedResults) {
       const sourcePageId = urlToPageId.get(result.url);
       if (!sourcePageId) {
-        console.log(`No page ID found for URL: "${result.url}"`);
+        console.log(`No page ID found for URL: ${result.url}`);
         continue;
       }
-      sourceMatchCount++;
 
       // Internal links
       for (const link of result.internal_links) {
@@ -302,7 +294,7 @@ export async function storeScanResults(
       }
     }
     const dedupedLinks = Array.from(linkDedupeMap.values());
-    console.log(`🔍 Source matches: ${sourceMatchCount}/${deduplicatedResults.length}, links built: ${allLinks.length}, after dedup: ${dedupedLinks.length}`);
+    console.log(`🔗 Links built: ${allLinks.length}, after dedup: ${dedupedLinks.length}`);
 
     // STEP 9: Only clear and re-insert links if we have new ones to store
     // This prevents data loss if something fails during processing
@@ -318,24 +310,16 @@ export async function storeScanResults(
         console.error("Error clearing existing links:", deleteLinksError);
       }
 
-      let insertedCount = 0;
-      let insertErrors = 0;
       for (let i = 0; i < dedupedLinks.length; i += batchSize) {
         const batch = dedupedLinks.slice(i, i + batchSize);
-        const { data: insertedData, error: linksError } = await supabase
+        const { error: linksError } = await supabase
           .from("page_links")
-          .insert(batch)
-          .select("id");
+          .insert(batch);
 
         if (linksError) {
-          insertErrors++;
           console.error(`Error inserting links batch ${Math.floor(i / batchSize) + 1}:`, JSON.stringify(linksError));
-        } else {
-          insertedCount += insertedData?.length || 0;
         }
       }
-
-      console.log(`🔗 Insert results: ${insertedCount} confirmed, ${insertErrors} batches failed`);
     } else {
       console.log(`⚠️ No links built from scan results — keeping existing links intact`);
     }
