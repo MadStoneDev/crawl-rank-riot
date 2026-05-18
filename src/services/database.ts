@@ -203,8 +203,20 @@ export async function storeScanResults(
       throw fetchError;
     }
 
-    // Create URL to ID mapping
-    const urlToPageId = new Map(allPages?.map((p) => [p.url, p.id]) || []);
+    // Create URL to ID mapping (case-insensitive, with trailing slash variants)
+    const urlToPageId = new Map<string, string>();
+    for (const p of allPages || []) {
+      urlToPageId.set(p.url, p.id);
+      urlToPageId.set(p.url.toLowerCase(), p.id);
+      // Also map with/without trailing slash
+      if (p.url.endsWith("/")) {
+        urlToPageId.set(p.url.slice(0, -1), p.id);
+        urlToPageId.set(p.url.slice(0, -1).toLowerCase(), p.id);
+      } else {
+        urlToPageId.set(p.url + "/", p.id);
+        urlToPageId.set((p.url + "/").toLowerCase(), p.id);
+      }
+    }
 
     // STEP 8: Clear existing links for this project to avoid duplicates
     console.log("🧹 Clearing existing links for project...");
@@ -232,7 +244,8 @@ export async function storeScanResults(
       for (const link of result.internal_links) {
         // Skip non-HTTP URLs that may have slipped through extraction
         if (!/^https?:\/\//i.test(link.url)) continue;
-        const destinationPageId = urlToPageId.get(link.url);
+        const destinationPageId = urlToPageId.get(link.url)
+          || urlToPageId.get(link.url.toLowerCase());
 
         // Look up the destination page's status if it was crawled
         let httpStatus: number | null = null;
