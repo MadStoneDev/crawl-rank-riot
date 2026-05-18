@@ -574,39 +574,48 @@ async function processSEOScanInBackground(
     // Check for backlinks from external pages
     const backlinksFound = await checkAndStoreBacklinks(projectId, url);
 
-    // Update scan as completed
+    // Update scan as completed — merge into existing summary_stats to preserve progress data
     const supabase = getSupabaseServiceClient();
     const completedAt = new Date().toISOString();
     const totalIssues = issuesFound + siteIssuesFound;
+
+    const totalLinksScanned = scanResults.reduce(
+      (total, page) => total + page.internal_links.length + page.external_links.length,
+      0,
+    );
+
+    const { data: existingScan } = await supabase
+      .from("scans")
+      .select("started_at, summary_stats")
+      .eq("id", scanId)
+      .single();
+
+    const mergedStats = {
+      ...(typeof existingScan?.summary_stats === "object" && existingScan.summary_stats !== null
+        ? existingScan.summary_stats as Record<string, unknown>
+        : {}),
+      ...(siteLevelData && { site_level_data: siteLevelData }),
+    };
+
     await supabase
       .from("scans")
       .update({
         status: "completed",
         completed_at: completedAt,
         pages_scanned: scanResults.length,
+        links_scanned: totalLinksScanned,
         issues_found: totalIssues,
-        ...(siteLevelData && {
-          summary_stats: JSON.parse(JSON.stringify({
-            site_level_data: siteLevelData,
-          })),
-        }),
+        summary_stats: JSON.parse(JSON.stringify(mergedStats)),
       })
       .eq("id", scanId);
 
     // Create a snapshot for historical trends
-    // Fetch the scan to get started_at
-    const { data: scanRecord } = await supabase
-      .from("scans")
-      .select("started_at")
-      .eq("id", scanId)
-      .single();
-
     await createScanSnapshot(
       projectId,
       scanId,
       scanResults.length,
       totalIssues,
-      scanRecord?.started_at || completedAt,
+      existingScan?.started_at || completedAt,
       completedAt,
     );
 
@@ -640,24 +649,28 @@ async function processSEOScanInBackground(
         : String(error);
     console.error(`Error in SEO scan process for scan ${scanId}:`, errorMessage, error);
 
-    try {
-      const supabase = getSupabaseServiceClient();
-      await supabase
-        .from("scans")
-        .update({
-          status: "failed",
-          completed_at: new Date().toISOString(),
-          summary_stats: {
-            error_message: errorMessage,
-            failed_at: new Date().toISOString(),
-          },
-        })
-        .eq("id", scanId);
-    } catch (dbError) {
-      console.error(
-        `Failed to update scan ${scanId} status to failed:`,
-        dbError,
-      );
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const supabase = getSupabaseServiceClient();
+        await supabase
+          .from("scans")
+          .update({
+            status: "failed",
+            completed_at: new Date().toISOString(),
+            summary_stats: {
+              error_message: errorMessage,
+              failed_at: new Date().toISOString(),
+            },
+          })
+          .eq("id", scanId);
+        break;
+      } catch (dbError) {
+        console.error(
+          `Failed to update scan ${scanId} status to failed (attempt ${attempt + 1}/3):`,
+          dbError,
+        );
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
     }
   }
 }
@@ -680,6 +693,11 @@ async function processAuditScanInBackground(
     console.log(
       `Audit crawl completed for ${url}, found ${scanResults.length} pages`,
     );
+
+    // Store crawled page/link data (audit scans benefit from this too)
+    await storeScanResults(projectId, scanId, scanResults, {
+      crawlCompleted: crawler.crawlCompleted,
+    });
 
     // Run audit analysis
     const analyzer = new AuditAnalyzer(scanResults, url);
@@ -752,75 +770,107 @@ async function processAuditScanInBackground(
     // Check for backlinks from external pages
     const backlinksFound = await checkAndStoreBacklinks(projectId, url);
 
-    // Update scan as completed
+    // Update scan as completed — merge into existing summary_stats
     const supabase = getSupabaseServiceClient();
     const completedAt = new Date().toISOString();
     const totalIssues = issuesFound + siteIssuesFound;
+
+    const totalLinksScanned = scanResults.reduce(
+      (total, page) => total + page.internal_links.length + page.external_links.length,
+      0,
+    );
+
+    const { data: auditScanRecord } = await supabase
+      .from("scans")
+      .select("started_at, summary_stats")
+      .eq("id", scanId)
+      .single();
+
+    const auditMergedStats = {
+      ...(typeof auditScanRecord?.summary_stats === "object" && auditScanRecord.summary_stats !== null
+        ? auditScanRecord.summary_stats as Record<string, unknown>
+        : {}),
+      overall_score: overallScore,
+      recommendations_count: recommendations.length,
+      issues_found: totalIssues,
+      backlinks_found: backlinksFound,
+      ...(siteLevelData && { site_level_data: siteLevelData }),
+    };
+
     await supabase
       .from("scans")
       .update({
         status: "completed",
         completed_at: completedAt,
         pages_scanned: scanResults.length,
+        links_scanned: totalLinksScanned,
         issues_found: totalIssues,
-        summary_stats: JSON.parse(JSON.stringify({
-          overall_score: overallScore,
-          recommendations_count: recommendations.length,
-          issues_found: totalIssues,
-          backlinks_found: backlinksFound,
-          ...(siteLevelData && { site_level_data: siteLevelData }),
-        })),
+        summary_stats: JSON.parse(JSON.stringify(auditMergedStats)),
       })
       .eq("id", scanId);
 
     // Create a snapshot for historical trends
-    // Fetch the scan to get started_at
-    const { data: scanRecord } = await supabase
-      .from("scans")
-      .select("started_at")
-      .eq("id", scanId)
-      .single();
-
     await createScanSnapshot(
       projectId,
       scanId,
       scanResults.length,
-      issuesFound,
-      scanRecord?.started_at || completedAt,
+      totalIssues,
+      auditScanRecord?.started_at || completedAt,
       completedAt,
     );
 
-    // Update project last_scan_at on completion
+    // Update project: last_scan_at and recalculate next_scan_at
+    const { data: auditProjectData } = await supabase
+      .from("projects")
+      .select("scan_frequency")
+      .eq("id", projectId)
+      .single();
+
+    const auditProjectUpdate: any = { last_scan_at: completedAt };
+    if (auditProjectData?.scan_frequency) {
+      const nextScanAt = computeNextScanAt(new Date(), auditProjectData.scan_frequency);
+      if (nextScanAt) {
+        auditProjectUpdate.next_scan_at = nextScanAt.toISOString();
+      }
+    }
     await supabase
       .from("projects")
-      .update({ last_scan_at: completedAt })
+      .update(auditProjectUpdate)
       .eq("id", projectId);
 
     console.log(
       `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100, ${issuesFound} issues found, ${backlinksFound} backlinks discovered`,
     );
   } catch (error) {
-    console.error(`Error in audit scan process for scan ${scanId}:`, error);
+    const errorMessage = error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null
+        ? JSON.stringify(error)
+        : String(error);
+    console.error(`Error in audit scan process for scan ${scanId}:`, errorMessage, error);
 
-    try {
-      const supabase = getSupabaseServiceClient();
-      await supabase
-        .from("scans")
-        .update({
-          status: "failed",
-          completed_at: new Date().toISOString(),
-          summary_stats: {
-            error_message:
-              error instanceof Error ? error.message : "Unknown error",
-            failed_at: new Date().toISOString(),
-          },
-        })
-        .eq("id", scanId);
-    } catch (dbError) {
-      console.error(
-        `Failed to update scan ${scanId} status to failed:`,
-        dbError,
-      );
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const supabase = getSupabaseServiceClient();
+        await supabase
+          .from("scans")
+          .update({
+            status: "failed",
+            completed_at: new Date().toISOString(),
+            summary_stats: {
+              error_message: errorMessage,
+              failed_at: new Date().toISOString(),
+            },
+          })
+          .eq("id", scanId);
+        break;
+      } catch (dbError) {
+        console.error(
+          `Failed to update scan ${scanId} status to failed (attempt ${attempt + 1}/3):`,
+          dbError,
+        );
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
     }
   }
 }

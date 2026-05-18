@@ -301,8 +301,8 @@ export class WebCrawler {
       this.crawlCompleted = true;
       console.log(`✅ Crawl finished: queue empty after ${Math.round(elapsed / 1000)}s`);
     } else if (this.results.length >= maxPages) {
-      this.crawlCompleted = true;
-      console.log(`✅ Crawl finished: reached maxPages limit (${maxPages}) after ${Math.round(elapsed / 1000)}s, ${this.queue.length} URLs remaining in queue`);
+      this.crawlCompleted = false;
+      console.log(`⚠️ Crawl stopped: reached maxPages limit (${maxPages}) after ${Math.round(elapsed / 1000)}s, ${this.queue.length} URLs remaining in queue`);
     } else {
       this.crawlCompleted = false;
       console.log(`⚠️ Crawl stopped: timeout reached (${Math.round(elapsed / 1000)}s / ${Math.round(timeout / 1000)}s), ${this.results.length}/${maxPages} pages scanned, ${this.queue.length} URLs remaining in queue`);

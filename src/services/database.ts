@@ -142,6 +142,8 @@ export async function storeScanResults(
       hreflang_tags: result.hreflang_tags || null,
       canonical_is_self: result.canonical_is_self ?? null,
       url_issues: result.url_issues || null,
+      content_hash: result.content_hash || null,
+      readability_score: result.readability_score ?? null,
       crawl_priority: result.depth === 0 ? 10 : Math.max(1, 10 - result.depth),
       updated_at: new Date().toISOString(),
     }));
@@ -324,11 +326,22 @@ export async function storeScanResults(
       console.log(`⚠️ No links built from scan results — keeping existing links intact`);
     }
 
-    // STEP 10: Update scan summary with cleanup info
+    // STEP 10: Merge cleanup info into existing summary_stats (preserve progress data)
+    const { data: currentScan } = await supabase
+      .from("scans")
+      .select("summary_stats")
+      .eq("id", scanId)
+      .single();
+
+    const existingStats = typeof currentScan?.summary_stats === "object" && currentScan.summary_stats !== null
+      ? currentScan.summary_stats as Record<string, unknown>
+      : {};
+
     const { error: scanUpdateError } = await supabase
       .from("scans")
       .update({
         summary_stats: {
+          ...existingStats,
           pages_found: totalUpserted,
           pages_removed: urlsToRemove.length,
           links_created: dedupedLinks.length,
