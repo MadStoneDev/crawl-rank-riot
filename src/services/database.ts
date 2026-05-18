@@ -292,12 +292,22 @@ export async function storeScanResults(
       }
     }
 
-    console.log(`🔍 Source matches: ${sourceMatchCount}/${deduplicatedResults.length}, total links built: ${allLinks.length}`);
+    // Deduplicate links by (source_page_id, destination_url) — pages often link
+    // to the same URL multiple times (nav, footer, body) but the DB has a unique constraint
+    const linkDedupeMap = new Map<string, any>();
+    for (const link of allLinks) {
+      const key = `${link.source_page_id}|${link.destination_url}`;
+      if (!linkDedupeMap.has(key)) {
+        linkDedupeMap.set(key, link);
+      }
+    }
+    const dedupedLinks = Array.from(linkDedupeMap.values());
+    console.log(`🔍 Source matches: ${sourceMatchCount}/${deduplicatedResults.length}, links built: ${allLinks.length}, after dedup: ${dedupedLinks.length}`);
 
     // STEP 9: Only clear and re-insert links if we have new ones to store
     // This prevents data loss if something fails during processing
-    if (allLinks.length > 0) {
-      console.log(`🔗 Replacing links: clearing old, inserting ${allLinks.length} new...`);
+    if (dedupedLinks.length > 0) {
+      console.log(`🔗 Replacing links: clearing old, inserting ${dedupedLinks.length} new...`);
 
       const { error: deleteLinksError } = await supabase
         .from("page_links")
@@ -310,8 +320,8 @@ export async function storeScanResults(
 
       let insertedCount = 0;
       let insertErrors = 0;
-      for (let i = 0; i < allLinks.length; i += batchSize) {
-        const batch = allLinks.slice(i, i + batchSize);
+      for (let i = 0; i < dedupedLinks.length; i += batchSize) {
+        const batch = dedupedLinks.slice(i, i + batchSize);
         const { data: insertedData, error: linksError } = await supabase
           .from("page_links")
           .insert(batch)
@@ -326,13 +336,6 @@ export async function storeScanResults(
       }
 
       console.log(`🔗 Insert results: ${insertedCount} confirmed, ${insertErrors} batches failed`);
-
-      // Verify what's actually in the DB
-      const { count: verifyCount } = await supabase
-        .from("page_links")
-        .select("*", { count: "exact", head: true })
-        .eq("project_id", projectId);
-      console.log(`🔍 Verification: ${verifyCount} links in DB after insert`);
     } else {
       console.log(`⚠️ No links built from scan results — keeping existing links intact`);
     }
@@ -344,7 +347,7 @@ export async function storeScanResults(
         summary_stats: {
           pages_found: totalUpserted,
           pages_removed: urlsToRemove.length,
-          links_created: allLinks.length,
+          links_created: dedupedLinks.length,
           cleanup_performed: urlsToRemove.length > 0,
         },
       })
@@ -355,7 +358,7 @@ export async function storeScanResults(
     }
 
     console.log(
-      `✅ Successfully processed project ${projectId}: ${totalUpserted} pages upserted, ${urlsToRemove.length} pages removed, ${allLinks.length} links created`,
+      `✅ Successfully processed project ${projectId}: ${totalUpserted} pages upserted, ${urlsToRemove.length} pages removed, ${dedupedLinks.length} links created`,
     );
   } catch (error) {
     console.error("❌ Error storing scan results:", error);
