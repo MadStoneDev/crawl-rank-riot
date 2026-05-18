@@ -633,7 +633,12 @@ async function processSEOScanInBackground(
       `SEO scan completed for project ${projectId}, scan ${scanId}, ${totalIssues} issues found (${siteIssuesFound} site-level), ${backlinksFound} backlinks discovered`,
     );
   } catch (error) {
-    console.error(`Error in SEO scan process for scan ${scanId}:`, error);
+    const errorMessage = error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null
+        ? JSON.stringify(error)
+        : String(error);
+    console.error(`Error in SEO scan process for scan ${scanId}:`, errorMessage, error);
 
     try {
       const supabase = getSupabaseServiceClient();
@@ -643,8 +648,7 @@ async function processSEOScanInBackground(
           status: "failed",
           completed_at: new Date().toISOString(),
           summary_stats: {
-            error_message:
-              error instanceof Error ? error.message : "Unknown error",
+            error_message: errorMessage,
             failed_at: new Date().toISOString(),
           },
         })

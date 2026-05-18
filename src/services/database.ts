@@ -218,19 +218,7 @@ export async function storeScanResults(
       }
     }
 
-    // STEP 8: Clear existing links for this project to avoid duplicates
-    console.log("🧹 Clearing existing links for project...");
-    const { error: deleteLinksError } = await supabase
-      .from("page_links")
-      .delete()
-      .eq("project_id", projectId);
-
-    if (deleteLinksError) {
-      console.error("Error clearing existing links:", deleteLinksError);
-      // Continue without clearing - links might just duplicate
-    }
-
-    // STEP 9: Store links
+    // STEP 8: Build links array FIRST (before clearing old ones)
     const allLinks: any[] = [];
 
     for (const result of deduplicatedResults) {
@@ -252,20 +240,15 @@ export async function storeScanResults(
         let isBroken = false;
 
         if (destinationPageId) {
-          // Find the result for this destination URL to get its actual status
           const destResult = deduplicatedResults.find(r => r.url === link.url);
           if (destResult) {
             httpStatus = destResult.status;
-            // Only mark as broken if it returned a 4xx or 5xx error
             isBroken = destResult.status >= 400;
           } else {
-            // Page exists in DB but wasn't in this scan - assume it's fine
             httpStatus = 200;
             isBroken = false;
           }
         } else {
-          // Destination wasn't crawled (beyond depth limit, etc.)
-          // This is NOT broken - it's just uncrawled
           httpStatus = null;
           isBroken = false;
         }
@@ -297,15 +280,25 @@ export async function storeScanResults(
           link_type: "external",
           rel_attributes: link.rel_attributes,
           is_followed: !link.rel_attributes?.includes("nofollow"),
-          http_status: null, // Not checked
-          is_broken: false, // External links are not marked as broken unless verified
+          http_status: null,
+          is_broken: false,
         });
       }
     }
 
-    // STEP 10: Insert links in batches
+    // STEP 9: Only clear and re-insert links if we have new ones to store
+    // This prevents data loss if something fails during processing
     if (allLinks.length > 0) {
-      console.log(`🔗 Inserting ${allLinks.length} links...`);
+      console.log(`🔗 Replacing links: clearing old, inserting ${allLinks.length} new...`);
+
+      const { error: deleteLinksError } = await supabase
+        .from("page_links")
+        .delete()
+        .eq("project_id", projectId);
+
+      if (deleteLinksError) {
+        console.error("Error clearing existing links:", deleteLinksError);
+      }
 
       for (let i = 0; i < allLinks.length; i += batchSize) {
         const batch = allLinks.slice(i, i + batchSize);
@@ -315,12 +308,13 @@ export async function storeScanResults(
 
         if (linksError) {
           console.error("Error inserting links batch:", linksError);
-          // Don't throw - pages are more important than links
         }
       }
+    } else {
+      console.log(`⚠️ No links built from scan results — keeping existing links intact`);
     }
 
-    // STEP 11: Update scan summary with cleanup info
+    // STEP 10: Update scan summary with cleanup info
     const { error: scanUpdateError } = await supabase
       .from("scans")
       .update({
