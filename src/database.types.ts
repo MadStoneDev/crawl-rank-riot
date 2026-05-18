@@ -609,13 +609,13 @@ export type Database = {
           description: string | null
           scan_frequency: string | null
           last_scan_at: string | null
-          next_scan_at: string | null
           created_at: string | null
           updated_at: string | null
           settings: Json | null
           notification_email: string | null
           project_type: string | null
           deleted_at: string | null
+          next_scan_at: string | null
         }
         Insert: {
           id?: string
@@ -625,13 +625,13 @@ export type Database = {
           description?: string | null
           scan_frequency?: string | null
           last_scan_at?: string | null
-          next_scan_at?: string | null
           created_at?: string | null
           updated_at?: string | null
           settings?: Json | null
           notification_email?: string | null
           project_type?: string | null
           deleted_at?: string | null
+          next_scan_at?: string | null
         }
         Update: {
           id?: string
@@ -641,13 +641,13 @@ export type Database = {
           description?: string | null
           scan_frequency?: string | null
           last_scan_at?: string | null
-          next_scan_at?: string | null
           created_at?: string | null
           updated_at?: string | null
           settings?: Json | null
           notification_email?: string | null
           project_type?: string | null
           deleted_at?: string | null
+          next_scan_at?: string | null
         }
         Relationships: [
           {
@@ -992,3 +992,4 @@ export const Constants = {
     Enums: {},
   },
 } as const
+
