@@ -308,16 +308,31 @@ export async function storeScanResults(
         console.error("Error clearing existing links:", deleteLinksError);
       }
 
+      let insertedCount = 0;
+      let insertErrors = 0;
       for (let i = 0; i < allLinks.length; i += batchSize) {
         const batch = allLinks.slice(i, i + batchSize);
-        const { error: linksError } = await supabase
+        const { data: insertedData, error: linksError } = await supabase
           .from("page_links")
-          .insert(batch);
+          .insert(batch)
+          .select("id");
 
         if (linksError) {
-          console.error("Error inserting links batch:", linksError);
+          insertErrors++;
+          console.error(`Error inserting links batch ${Math.floor(i / batchSize) + 1}:`, JSON.stringify(linksError));
+        } else {
+          insertedCount += insertedData?.length || 0;
         }
       }
+
+      console.log(`🔗 Insert results: ${insertedCount} confirmed, ${insertErrors} batches failed`);
+
+      // Verify what's actually in the DB
+      const { count: verifyCount } = await supabase
+        .from("page_links")
+        .select("*", { count: "exact", head: true })
+        .eq("project_id", projectId);
+      console.log(`🔍 Verification: ${verifyCount} links in DB after insert`);
     } else {
       console.log(`⚠️ No links built from scan results — keeping existing links intact`);
     }
