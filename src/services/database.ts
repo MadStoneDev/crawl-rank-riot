@@ -219,12 +219,20 @@ export async function storeScanResults(
     // STEP 8: Build links array FIRST (before clearing old ones)
     const allLinks: any[] = [];
 
+    console.log(`🔍 urlToPageId has ${urlToPageId.size} entries, deduplicatedResults has ${deduplicatedResults.length} results`);
+    if (deduplicatedResults.length > 0) {
+      console.log(`🔍 First result URL: "${deduplicatedResults[0].url}"`);
+      console.log(`🔍 First few map keys: ${Array.from(urlToPageId.keys()).slice(0, 4).map(k => `"${k}"`).join(", ")}`);
+    }
+
+    let sourceMatchCount = 0;
     for (const result of deduplicatedResults) {
       const sourcePageId = urlToPageId.get(result.url);
       if (!sourcePageId) {
-        console.log(`No page ID found for URL: ${result.url}`);
+        console.log(`No page ID found for URL: "${result.url}"`);
         continue;
       }
+      sourceMatchCount++;
 
       // Internal links
       for (const link of result.internal_links) {
@@ -283,6 +291,8 @@ export async function storeScanResults(
         });
       }
     }
+
+    console.log(`🔍 Source matches: ${sourceMatchCount}/${deduplicatedResults.length}, total links built: ${allLinks.length}`);
 
     // STEP 9: Only clear and re-insert links if we have new ones to store
     // This prevents data loss if something fails during processing
