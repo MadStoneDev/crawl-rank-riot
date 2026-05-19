@@ -63,30 +63,38 @@ export async function detectAndStoreIssues(
     );
     allIssues.push(...crossPageIssues);
 
-    // Step 3c: Detect orphan pages (no internal inbound links except self)
-    const inboundCounts = new Map<string, number>();
-    for (const result of results) {
-      for (const link of result.internal_links) {
-        if (link.url !== result.url) {
-          inboundCounts.set(link.url, (inboundCounts.get(link.url) || 0) + 1);
+    // Step 3c: Detect orphan pages using page_links table (database source of truth)
+    const nonHomepageIds = results
+      .filter((r) => r.depth !== 0 && pageIdMap.has(r.url))
+      .map((r) => pageIdMap.get(r.url)!);
+
+    if (nonHomepageIds.length > 0) {
+      const { data: inboundLinks } = await supabase
+        .from("page_links")
+        .select("destination_page_id")
+        .eq("project_id", projectId)
+        .not("destination_page_id", "is", null)
+        .in("destination_page_id", nonHomepageIds);
+
+      const pagesWithInbound = new Set(
+        (inboundLinks || []).map((l) => l.destination_page_id),
+      );
+
+      for (const result of results) {
+        if (result.depth === 0) continue;
+        const pageId = pageIdMap.get(result.url);
+        if (!pageId) continue;
+        if (!pagesWithInbound.has(pageId)) {
+          allIssues.push({
+            project_id: projectId,
+            page_id: pageId,
+            scan_id: scanId,
+            issue_type: "orphan_page",
+            severity: "medium",
+            description: "Page has no internal links pointing to it (orphan page)",
+            details: { url: result.url, inbound_links: 0 },
+          });
         }
-      }
-    }
-    for (const result of results) {
-      if (result.depth === 0) continue;
-      const pageId = pageIdMap.get(result.url);
-      if (!pageId) continue;
-      const inbound = inboundCounts.get(result.url) || 0;
-      if (inbound === 0) {
-        allIssues.push({
-          project_id: projectId,
-          page_id: pageId,
-          scan_id: scanId,
-          issue_type: "orphan_page",
-          severity: "medium",
-          description: "Page has no internal links pointing to it (orphan page)",
-          details: { url: result.url, inbound_links: 0 },
-        });
       }
     }
 

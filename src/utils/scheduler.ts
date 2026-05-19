@@ -1,6 +1,7 @@
 import { WebCrawler } from "../services/crawler";
 import { storeScanResults } from "../services/database";
 import { getSupabaseServiceClient } from "../services/database/client";
+import { processAuditScan } from "../services/scan-runner";
 
 export function computeNextScanAt(
   fromDate: Date,
@@ -102,7 +103,6 @@ export class CrawlScheduler {
       const supabase = getSupabaseServiceClient();
       const now = new Date().toISOString();
 
-      // Get projects with in-progress scans so we can skip them
       const { data: busyProjects } = await supabase
         .from("scans")
         .select("project_id")
@@ -125,7 +125,6 @@ export class CrawlScheduler {
         return;
       }
 
-      // Filter out projects that already have a scan running
       const eligibleProjects = (projects || []).filter(
         (p) => !busyProjectIds.has(p.id),
       );
@@ -140,7 +139,11 @@ export class CrawlScheduler {
       );
 
       for (const project of eligibleProjects) {
-        await this.crawlProject(project);
+        if (project.project_type === "audit") {
+          await this.auditProject(project);
+        } else {
+          await this.crawlProject(project);
+        }
         await this.delay(30000);
       }
     } catch (error) {
@@ -150,7 +153,7 @@ export class CrawlScheduler {
 
   private async crawlProject(project: any): Promise<void> {
     console.log(
-      `Starting scheduled crawl for project: ${project.name} (${project.url})`,
+      `Starting scheduled SEO crawl for project: ${project.name} (${project.url})`,
     );
 
     try {
@@ -160,6 +163,7 @@ export class CrawlScheduler {
         .from("scans")
         .insert({
           project_id: project.id,
+          scan_type: "seo",
           status: "in_progress",
           started_at: new Date().toISOString(),
           pages_scanned: 0,
@@ -190,7 +194,7 @@ export class CrawlScheduler {
       });
 
       console.log(
-        `Scheduled crawl completed for ${project.url}: ${results.length} pages`,
+        `Scheduled SEO crawl completed for ${project.url}: ${results.length} pages`,
       );
 
       await storeScanResults(project.id, scanId, results, {
@@ -218,11 +222,11 @@ export class CrawlScheduler {
         .eq("id", scanId);
 
       console.log(
-        `Scheduled crawl successfully completed for project: ${project.name}`,
+        `Scheduled SEO crawl successfully completed for project: ${project.name}`,
       );
     } catch (error) {
       console.error(
-        `Error in scheduled crawl for project ${project.id}:`,
+        `Error in scheduled SEO crawl for project ${project.id}:`,
         error,
       );
 
@@ -241,7 +245,85 @@ export class CrawlScheduler {
         .eq("project_id", project.id)
         .eq("status", "in_progress");
 
-      // Still advance next_scan_at so we don't retry endlessly on failure
+      const nextScanAt = computeNextScanAt(
+        new Date(),
+        project.scan_frequency,
+      );
+      if (nextScanAt) {
+        await supabase
+          .from("projects")
+          .update({ next_scan_at: nextScanAt.toISOString() })
+          .eq("id", project.id);
+      }
+    }
+  }
+
+  private async auditProject(project: any): Promise<void> {
+    console.log(
+      `Starting scheduled audit scan for project: ${project.name} (${project.url})`,
+    );
+
+    try {
+      const supabase = getSupabaseServiceClient();
+
+      const { data: scanData, error: scanError } = await supabase
+        .from("scans")
+        .insert({
+          project_id: project.id,
+          scan_type: "audit",
+          status: "in_progress",
+          started_at: new Date().toISOString(),
+          pages_scanned: 0,
+          links_scanned: 0,
+          issues_found: 0,
+          last_progress_update: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (scanError) {
+        console.error(
+          `Failed to create audit scan record for project ${project.id}:`,
+          scanError,
+        );
+        return;
+      }
+
+      const scanId = scanData.id;
+      const auditMaxPages = 50;
+
+      await processAuditScan(project.url, {
+        maxDepth: 3,
+        maxPages: auditMaxPages,
+        concurrentRequests: 2,
+        timeout: Math.max(300_000, auditMaxPages * 2_000),
+        crawlMode: "audit" as const,
+      }, scanId, project.id);
+
+      console.log(
+        `Scheduled audit scan successfully completed for project: ${project.name}`,
+      );
+    } catch (error) {
+      console.error(
+        `Error in scheduled audit scan for project ${project.id}:`,
+        error,
+      );
+
+      const supabase = getSupabaseServiceClient();
+      await supabase
+        .from("scans")
+        .update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          summary_stats: {
+            error_message:
+              error instanceof Error ? error.message : "Unknown error",
+            failed_at: new Date().toISOString(),
+          },
+        })
+        .eq("project_id", project.id)
+        .eq("status", "in_progress");
+
       const nextScanAt = computeNextScanAt(
         new Date(),
         project.scan_frequency,

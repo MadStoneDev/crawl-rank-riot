@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { ScanResult } from "../types";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
-import { isJavaScriptHeavySite, getSharedBrowserPool } from "../utils/browser";
+import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders, detectPlatformFromHtml, platformNeedsHeadless } from "../utils/browser";
 import { Page } from "puppeteer";
 
 export class Scanner {
@@ -35,11 +35,29 @@ export class Scanner {
     // Try HTTP first for simple sites
     let result = await this.httpScan(url, depth);
 
-    // Use headless if the result looks suspicious
-    if (this.needsHeadlessVerification(result)) {
-      console.log(`🔍 Retrying with headless browser: ${url}`);
+    // Check if the HTTP response revealed a JS-heavy platform
+    const headerPlatform = (result as any)._detectedPlatform as string | undefined;
+    const htmlPlatform = result.scan_method === "http"
+      ? detectPlatformFromHtml((result as any)._rawHtml || "")
+      : null;
+    const detectedPlatform = headerPlatform || htmlPlatform;
+
+    if (detectedPlatform) {
+      console.log(`🔎 Detected platform: ${detectedPlatform} for ${url}`);
+    }
+
+    // Escalate to headless if platform needs it or heuristics flag it
+    if (
+      (detectedPlatform && platformNeedsHeadless(detectedPlatform)) ||
+      this.needsHeadlessVerification(result)
+    ) {
+      console.log(`🔍 Retrying with headless browser: ${url} (platform=${detectedPlatform || "heuristic"})`);
       result = await this.headlessScan(url, depth);
     }
+
+    // Clean up internal fields
+    delete (result as any)._detectedPlatform;
+    delete (result as any)._rawHtml;
 
     result.load_time_ms = Date.now() - startTime;
     return result;
@@ -683,29 +701,22 @@ export class Scanner {
   }
 
   private needsHeadlessVerification(result: ScanResult): boolean {
-    const paymentProviders = [
-      "American Express",
-      "Visa",
-      "MasterCard",
-      "PayPal",
-      "Apple Pay",
-      "Google Pay",
-      "Stripe",
-      "Shop Pay",
-      "Klarna",
-      "Afterpay",
-      "Sezzle",
-    ];
+    // No title or suspiciously short — likely JS-rendered
+    if (!result.title || result.title.length < 3) return true;
 
-    return (
-      !result.title ||
-      paymentProviders.some((provider) => result.title?.includes(provider)) ||
-      result.title.length < 3 ||
-      (result.content_type?.includes("text/html") &&
-        result.content_length < 1000) ||
-      (result.h1s.length === 0 && result.h2s.length === 0) ||
-      result.internal_links.length < 2
-    );
+    // Almost no text content — page body is probably rendered by JS
+    if (result.content_type?.includes("text/html") && result.content_length < 500) return true;
+
+    // No headings at all — unusual for a real page, likely JS-rendered
+    if (result.h1s.length === 0 && result.h2s.length === 0) return true;
+
+    // Very few internal links on a page that should have nav/footer
+    if (result.internal_links.length < 2) return true;
+
+    // Word count is suspiciously low for an HTML page
+    if (result.word_count !== undefined && result.word_count < 10) return true;
+
+    return false;
   }
 
   private async httpScan(url: string, depth: number): Promise<ScanResult> {
@@ -787,6 +798,12 @@ export class Scanner {
         // Capture security headers
         result.security_headers = this.extractSecurityHeadersFromFetch(response.headers);
 
+        // Detect platform from response headers
+        const headerPlatform = detectPlatformFromHeaders(response.headers);
+        if (headerPlatform) {
+          (result as any)._detectedPlatform = headerPlatform;
+        }
+
         // Check X-Robots-Tag header for noindex/nofollow
         const xRobotsTag = response.headers.get("x-robots-tag") || "";
         if (xRobotsTag.toLowerCase().includes("noindex")) {
@@ -820,6 +837,8 @@ export class Scanner {
 
         await this.processHtml(result, html, urlProcessor);
         result.scan_method = "http";
+        // Attach raw HTML temporarily for platform detection in scan()
+        (result as any)._rawHtml = html;
 
         // Success - exit retry loop
         return result;
@@ -860,7 +879,7 @@ export class Scanner {
 
     // Extract headings using regex
     const extractHeadings = (tag: string) => {
-      const regex = new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`, "gi");
+      const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi");
       const headings = [];
       let match;
       while ((match = regex.exec(html)) !== null) {
@@ -1070,7 +1089,7 @@ export class Scanner {
     result: ScanResult,
     urlProcessor: UrlProcessor,
   ): void {
-    const linkRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi;
+    const linkRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
     let match;
 
     while ((match = linkRegex.exec(html)) !== null) {
