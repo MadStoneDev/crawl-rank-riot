@@ -46,13 +46,32 @@ export class Scanner {
       console.log(`🔎 Detected platform: ${detectedPlatform} for ${url}`);
     }
 
-    // Escalate to headless if platform needs it or heuristics flag it
-    if (
-      (detectedPlatform && platformNeedsHeadless(detectedPlatform)) ||
-      this.needsHeadlessVerification(result)
-    ) {
-      console.log(`🔍 Retrying with headless browser: ${url} (platform=${detectedPlatform || "heuristic"})`);
-      result = await this.headlessScan(url, depth);
+    // Escalate to headless only when HTTP results are genuinely inadequate.
+    // Platform detection alone is not enough — if HTTP got good data, keep it.
+    const httpResultsArePoor = this.needsHeadlessVerification(result);
+
+    if (httpResultsArePoor) {
+      const reason = detectedPlatform
+        ? `platform=${detectedPlatform}`
+        : "heuristic";
+      console.log(`🔍 Retrying with headless browser: ${url} (${reason})`);
+      const httpResult = result;
+      const headlessResult = await this.headlessScan(url, depth);
+
+      // Only use headless results if they're actually better than HTTP
+      const headlessIsUsable =
+        headlessResult.status >= 200 &&
+        headlessResult.status < 400 &&
+        (headlessResult.title || "").length > 0;
+
+      if (headlessIsUsable) {
+        result = headlessResult;
+      } else {
+        console.log(`⚠️ Headless produced worse results for ${url} (status=${headlessResult.status}, title="${headlessResult.title || ""}"), keeping HTTP results`);
+        result = httpResult;
+      }
+    } else if (detectedPlatform && platformNeedsHeadless(detectedPlatform)) {
+      console.log(`ℹ️ Platform ${detectedPlatform} detected for ${url}, but HTTP scan got good results — skipping headless`);
     }
 
     // Clean up internal fields
