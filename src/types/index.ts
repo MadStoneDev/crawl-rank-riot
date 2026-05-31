@@ -104,6 +104,9 @@ export interface ScanResult {
   canonical_is_self?: boolean;
   url_issues?: string[];
 
+  // Form detection
+  has_contact_form?: boolean;
+
   // Content fingerprint for duplicate detection
   content_hash?: string;
 

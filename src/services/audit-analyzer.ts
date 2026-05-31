@@ -274,27 +274,14 @@ export class AuditAnalyzer {
       }
     }
 
-    // Check for contact form even if no /contact page — look for <form> with <textarea>
-    // or type="email" combined with message/contact/inquiry keywords
-    const hasContactForm = this.scanResults.some((r) => {
-      const content = JSON.stringify(r).toLowerCase();
-      const hasForm = content.includes("<form");
-      const hasTextarea = content.includes("<textarea");
-      const hasEmailInput = content.includes('type="email"') || content.includes("type='email'");
-      const hasContactKeywords =
-        content.includes("contact") ||
-        content.includes("message") ||
-        content.includes("inquiry") ||
-        content.includes("get in touch");
-      return (hasForm && hasTextarea) || (hasEmailInput && hasContactKeywords);
-    });
-
-    if (hasContactForm && missingPages.includes("contact")) {
-      // Remove contact from missing, add note
-      const index = missingPages.indexOf("contact");
-      missingPages.splice(index, 1);
-      foundPages.push("contact (form found on another page)");
-      score += 10; // Add back some of the penalty
+    if (missingPages.includes("contact")) {
+      const contactMatch = this.detectContactPageSmart();
+      if (contactMatch) {
+        const index = missingPages.indexOf("contact");
+        missingPages.splice(index, 1);
+        foundPages.push(`contact (${contactMatch})`);
+        score += 15;
+      }
     }
 
     return {
@@ -304,6 +291,48 @@ export class AuditAnalyzer {
       missingPages,
       siteType,
     };
+  }
+
+  private detectContactPageSmart(): string | null {
+    const contactAnchorPatterns = /\b(contact|get in touch|reach out|reach us|send.{0,5}message|talk to us|write to us|enquir|inquir|let'?s talk|let'?s chat|book a call|schedule a call)\b/i;
+    const contactHeadingPatterns = /\b(contact|get in touch|reach out|send.{0,5}message|talk to us|write to us|enquir|inquir|drop.{0,5}(a )?line|let'?s (talk|chat|connect))\b/i;
+
+    // 1. Check nav link anchor text across all pages for contact-related labels
+    for (const r of this.scanResults) {
+      for (const link of r.internal_links) {
+        if (contactAnchorPatterns.test(link.anchor_text)) {
+          const path = new URL(link.url).pathname;
+          return `nav link "${link.anchor_text}" → ${path}`;
+        }
+      }
+    }
+
+    // 2. Check headings on crawled pages
+    for (const r of this.scanResults) {
+      const allHeadings = [...r.h1s, ...r.h2s];
+      if (allHeadings.some((h) => contactHeadingPatterns.test(h))) {
+        const path = new URL(r.url).pathname;
+        return `heading match on ${path}`;
+      }
+    }
+
+    // 3. Check has_contact_form flag set by the scanner
+    for (const r of this.scanResults) {
+      if (r.has_contact_form) {
+        const path = new URL(r.url).pathname;
+        return `form detected on ${path}`;
+      }
+    }
+
+    // 4. Check structured data for ContactPage schema
+    for (const r of this.scanResults) {
+      if (r.schema_types?.some((t) => /contactpage/i.test(t))) {
+        const path = new URL(r.url).pathname;
+        return `ContactPage schema on ${path}`;
+      }
+    }
+
+    return null;
   }
 
   /**

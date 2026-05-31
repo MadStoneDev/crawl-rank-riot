@@ -294,6 +294,19 @@ export class Scanner {
     result.heading_hierarchy_valid = hierarchyResult.valid;
     result.heading_hierarchy_issues = hierarchyResult.issues;
 
+    // Detect contact forms
+    result.has_contact_form = await page.evaluate(() => {
+      const forms = document.querySelectorAll("form");
+      for (const form of forms) {
+        const hasEmailInput = !!form.querySelector('input[type="email"], input[name*="email"], input[autocomplete="email"]');
+        const hasTextarea = !!form.querySelector("textarea");
+        const hasPhoneInput = !!form.querySelector('input[type="tel"], input[name*="phone"]');
+        const hasNameInput = !!form.querySelector('input[name*="name"], input[autocomplete="name"]');
+        if (hasEmailInput && (hasTextarea || hasPhoneInput || hasNameInput)) return true;
+      }
+      return false;
+    });
+
     // Mark as headless scan
     result.scan_method = "headless";
   }
@@ -1059,6 +1072,9 @@ export class Scanner {
     result.heading_hierarchy_valid = hierarchyResult.valid;
     result.heading_hierarchy_issues = hierarchyResult.issues;
 
+    // Detect contact forms
+    result.has_contact_form = this.detectContactForm(html);
+
     // Fetch image file sizes (background, non-blocking)
     await this.fetchImageFileSizes(result.images);
   }
@@ -1222,6 +1238,20 @@ export class Scanner {
     return robotsMatch
       ? robotsMatch[1].toLowerCase().includes("nofollow")
       : false;
+  }
+
+  private detectContactForm(html: string): boolean {
+    const formRegex = /<form[\s\S]*?<\/form>/gi;
+    let match;
+    while ((match = formRegex.exec(html)) !== null) {
+      const form = match[0].toLowerCase();
+      const hasEmailInput = /type=["']email["']|name=["'][^"']*email[^"']*["']|autocomplete=["']email["']/.test(form);
+      const hasTextarea = /<textarea/.test(form);
+      const hasPhoneInput = /type=["']tel["']|name=["'][^"']*phone[^"']*["']/.test(form);
+      const hasNameInput = /name=["'][^"']*name[^"']*["']|autocomplete=["']name["']/.test(form);
+      if (hasEmailInput && (hasTextarea || hasPhoneInput || hasNameInput)) return true;
+    }
+    return false;
   }
 
   private createBaseScanResult(url: string, depth: number): ScanResult {
