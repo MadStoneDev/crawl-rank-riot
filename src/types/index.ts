@@ -107,6 +107,37 @@ export interface ScanResult {
   // Form detection
   has_contact_form?: boolean;
 
+  // Core Web Vitals proxies
+  cls_risk_images?: number;
+  lcp_candidate?: { type: string; element: string; size_bytes?: number };
+
+  // Accessibility
+  accessibility?: {
+    html_lang?: string;
+    form_labels_missing: number;
+    aria_landmarks: string[];
+    has_skip_nav: boolean;
+    tabindex_misuse: number;
+  };
+
+  // Privacy & compliance
+  has_cookie_consent?: boolean;
+
+  // Resource hints
+  resource_hints?: {
+    preconnect: string[];
+    preload: string[];
+    prefetch: string[];
+    dns_prefetch: string[];
+  };
+
+  // JS rendering dependency (set when HTTP→headless escalation occurs)
+  js_rendering_gap?: {
+    http_word_count: number;
+    headless_word_count: number;
+    delta_percent: number;
+  };
+
   // Content fingerprint for duplicate detection
   content_hash?: string;
 

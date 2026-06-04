@@ -65,6 +65,16 @@ export class Scanner {
         (headlessResult.title || "").length > 0;
 
       if (headlessIsUsable) {
+        const httpWc = httpResult.word_count || 0;
+        const headlessWc = headlessResult.word_count || 0;
+        const delta = headlessWc > 0 ? Math.round(((headlessWc - httpWc) / headlessWc) * 100) : 0;
+        if (delta > 20) {
+          headlessResult.js_rendering_gap = {
+            http_word_count: httpWc,
+            headless_word_count: headlessWc,
+            delta_percent: delta,
+          };
+        }
         result = headlessResult;
       } else {
         console.log(`⚠️ Headless produced worse results for ${url} (status=${headlessResult.status}, title="${headlessResult.title || ""}"), keeping HTTP results`);
@@ -305,6 +315,93 @@ export class Scanner {
         if (hasEmailInput && (hasTextarea || hasPhoneInput || hasNameInput)) return true;
       }
       return false;
+    });
+
+    // CLS risk: images without explicit width/height attributes
+    result.cls_risk_images = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll("img")).filter(img =>
+        !img.getAttribute("width") || !img.getAttribute("height")
+      ).length;
+    });
+
+    // LCP candidate: largest visible image or hero text
+    result.lcp_candidate = await page.evaluate(() => {
+      let largest = { type: "text", element: "", area: 0 };
+      document.querySelectorAll("img").forEach(img => {
+        const area = img.naturalWidth * img.naturalHeight;
+        if (area > largest.area) {
+          largest = { type: "image", element: img.src, area };
+        }
+      });
+      document.querySelectorAll("h1, [class*='hero']").forEach(el => {
+        const rect = el.getBoundingClientRect();
+        const area = rect.width * rect.height;
+        if (area > largest.area) {
+          largest = { type: "text", element: (el.textContent || "").slice(0, 100), area };
+        }
+      });
+      return largest.area > 0 ? { type: largest.type, element: largest.element } : undefined;
+    });
+
+    // Accessibility checks
+    result.accessibility = await page.evaluate(() => {
+      const inputs = document.querySelectorAll("input, select, textarea");
+      let missingLabels = 0;
+      inputs.forEach(input => {
+        const el = input as HTMLInputElement;
+        if (el.type === "hidden" || el.type === "submit" || el.type === "button") return;
+        const id = el.id;
+        const hasLabel = (id && document.querySelector(`label[for="${id}"]`)) ||
+                         el.closest("label") ||
+                         el.getAttribute("aria-label") ||
+                         el.getAttribute("aria-labelledby");
+        if (!hasLabel) missingLabels++;
+      });
+
+      const landmarks = new Set<string>();
+      document.querySelectorAll('nav, main, header, footer, aside, [role="navigation"], [role="main"], [role="banner"], [role="contentinfo"], [role="complementary"]')
+        .forEach(el => landmarks.add(el.tagName.toLowerCase() === "div" ? (el.getAttribute("role") || "") : el.tagName.toLowerCase()));
+
+      const hasSkipNav = Array.from(document.querySelectorAll('a[href^="#"]')).some(a => {
+        const text = (a.textContent || "").toLowerCase();
+        const rect = (a as HTMLElement).getBoundingClientRect();
+        return (text.includes("skip") || text.includes("jump to")) && rect.top < 100;
+      });
+
+      const tabindexMisuse = Array.from(document.querySelectorAll("[tabindex]"))
+        .filter(el => parseInt(el.getAttribute("tabindex") || "0") > 0).length;
+
+      return {
+        html_lang: document.documentElement.lang || undefined,
+        form_labels_missing: missingLabels,
+        aria_landmarks: [...landmarks],
+        has_skip_nav: hasSkipNav,
+        tabindex_misuse: tabindexMisuse,
+      };
+    });
+
+    // Cookie consent detection
+    result.has_cookie_consent = await page.evaluate(() => {
+      const selectors = [
+        '[class*="cookie"]', '[id*="cookie"]',
+        '[class*="consent"]', '[id*="consent"]',
+        '[class*="gdpr"]', '[id*="gdpr"]',
+        '[class*="CookieBot"]', '[id*="onetrust"]',
+        '[class*="cc-banner"]', '[class*="cookie-banner"]',
+      ];
+      return selectors.some(s => document.querySelector(s) !== null);
+    });
+
+    // Resource hints
+    result.resource_hints = await page.evaluate(() => {
+      const get = (rel: string) => Array.from(document.querySelectorAll(`link[rel="${rel}"]`))
+        .map(l => (l as HTMLLinkElement).href).filter(Boolean);
+      return {
+        preconnect: get("preconnect"),
+        preload: get("preload"),
+        prefetch: get("prefetch"),
+        dns_prefetch: get("dns-prefetch"),
+      };
     });
 
     // Mark as headless scan
@@ -1074,6 +1171,57 @@ export class Scanner {
 
     // Detect contact forms
     result.has_contact_form = this.detectContactForm(html);
+
+    // CLS risk: images without explicit width/height
+    result.cls_risk_images = (() => {
+      const imgRegex = /<img\s[^>]*>/gi;
+      let count = 0;
+      let m;
+      while ((m = imgRegex.exec(html)) !== null) {
+        const tag = m[0];
+        if (!(/width=["']?\d/.test(tag) && /height=["']?\d/.test(tag))) count++;
+      }
+      return count;
+    })();
+
+    // Accessibility (limited via regex)
+    result.accessibility = {
+      html_lang: (html.match(/<html[^>]*\slang=["']([^"']+)["']/i) || [])[1] || undefined,
+      form_labels_missing: 0,
+      aria_landmarks: (() => {
+        const landmarks = new Set<string>();
+        if (/<nav[\s>]/i.test(html)) landmarks.add("nav");
+        if (/<main[\s>]/i.test(html)) landmarks.add("main");
+        if (/<header[\s>]/i.test(html)) landmarks.add("header");
+        if (/<footer[\s>]/i.test(html)) landmarks.add("footer");
+        if (/<aside[\s>]/i.test(html)) landmarks.add("aside");
+        return [...landmarks];
+      })(),
+      has_skip_nav: /href=["']#[^"']*["'][^>]*>[^<]*(skip|jump to)/i.test(html),
+      tabindex_misuse: 0,
+    };
+
+    // Cookie consent detection
+    result.has_cookie_consent = /cookie[-_]?(banner|consent|notice|policy|popup)|gdpr|onetrust|cookiebot|cc-banner/i.test(html);
+
+    // Resource hints
+    result.resource_hints = (() => {
+      const extract = (rel: string) => {
+        const re = new RegExp(`<link[^>]*rel=["']${rel}["'][^>]*href=["']([^"']+)["']`, "gi");
+        const reAlt = new RegExp(`<link[^>]*href=["']([^"']+)["'][^>]*rel=["']${rel}["']`, "gi");
+        const urls: string[] = [];
+        let m;
+        while ((m = re.exec(html)) !== null) urls.push(m[1]);
+        while ((m = reAlt.exec(html)) !== null) urls.push(m[1]);
+        return urls;
+      };
+      return {
+        preconnect: extract("preconnect"),
+        preload: extract("preload"),
+        prefetch: extract("prefetch"),
+        dns_prefetch: extract("dns-prefetch"),
+      };
+    })();
 
     // Fetch image file sizes (background, non-blocking)
     await this.fetchImageFileSizes(result.images);

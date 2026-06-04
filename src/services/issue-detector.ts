@@ -919,6 +919,94 @@ function analyzePageIssues(
     );
   }
 
+  // ── NEW: CLS / ACCESSIBILITY / RESOURCE HINTS / JS RENDERING ────────
+
+  if (result.cls_risk_images && result.cls_risk_images > 3) {
+    addIssue(
+      "missing_image_dimensions",
+      "medium",
+      `${result.cls_risk_images} images lack explicit width/height attributes — causes Cumulative Layout Shift`,
+      { url: result.url, count: result.cls_risk_images },
+    );
+  }
+
+  const isHomepage = (() => {
+    try { return new URL(result.url).pathname.replace(/\/+$/, "") === ""; } catch { return false; }
+  })();
+
+  if (result.accessibility) {
+    if (!result.accessibility.html_lang && isHomepage) {
+      addIssue(
+        "missing_html_lang",
+        "medium",
+        "Missing lang attribute on <html> tag — hurts accessibility and SEO",
+        { url: result.url },
+      );
+    }
+
+    if (result.accessibility.form_labels_missing > 0) {
+      addIssue(
+        "missing_form_labels",
+        "medium",
+        `${result.accessibility.form_labels_missing} form input(s) missing associated labels`,
+        { url: result.url, count: result.accessibility.form_labels_missing },
+      );
+    }
+
+    if (isHomepage && result.accessibility.aria_landmarks.length < 2) {
+      addIssue(
+        "no_aria_landmarks",
+        "low",
+        `Homepage has only ${result.accessibility.aria_landmarks.length} ARIA landmark(s) — should have at least nav, main, header, footer`,
+        { url: result.url, landmarks: result.accessibility.aria_landmarks },
+      );
+    }
+
+    if (isHomepage && !result.accessibility.has_skip_nav) {
+      addIssue(
+        "missing_skip_nav",
+        "low",
+        "No skip navigation link found — keyboard users cannot bypass repetitive navigation",
+        { url: result.url },
+      );
+    }
+
+    if (result.accessibility.tabindex_misuse > 0) {
+      addIssue(
+        "tabindex_misuse",
+        "low",
+        `${result.accessibility.tabindex_misuse} element(s) have positive tabindex values — disrupts natural tab order`,
+        { url: result.url, count: result.accessibility.tabindex_misuse },
+      );
+    }
+  }
+
+  if (result.js_rendering_gap && result.js_rendering_gap.delta_percent > 50) {
+    addIssue(
+      "js_rendering_dependency",
+      "high",
+      `${result.js_rendering_gap.delta_percent}% of content is only visible with JavaScript (${result.js_rendering_gap.http_word_count} → ${result.js_rendering_gap.headless_word_count} words)`,
+      {
+        url: result.url,
+        http_word_count: result.js_rendering_gap.http_word_count,
+        headless_word_count: result.js_rendering_gap.headless_word_count,
+        delta_percent: result.js_rendering_gap.delta_percent,
+      },
+    );
+  }
+
+  if (isHomepage && result.resource_hints) {
+    const hasHints = result.resource_hints.preconnect.length > 0 || result.resource_hints.preload.length > 0;
+    if (!hasHints && result.external_links.length > 3) {
+      addIssue(
+        "no_resource_hints",
+        "low",
+        "No preconnect or preload resource hints found despite multiple external resources",
+        { url: result.url, external_link_count: result.external_links.length },
+      );
+    }
+  }
+
   return issues;
 }
 

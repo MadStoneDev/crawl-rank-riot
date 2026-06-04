@@ -237,6 +237,14 @@ export class AuditAnalyzer {
       portfolio: ["portfolio", "work", "projects", "case-studies"],
       archive: ["archive", "archives"],
       categories: ["categories", "topics", "tags"],
+      privacy: [
+        "privacy", "privacy-policy", "privacypolicy", "data-privacy",
+        "privacy-statement", "policies/privacy-policy", "policies/privacy",
+      ],
+      terms: [
+        "terms", "terms-of-service", "terms-and-conditions", "tos",
+        "terms-of-use", "termsofservice", "policies/terms-of-service",
+      ],
     };
 
     for (const expected of expectedPages) {
@@ -274,13 +282,30 @@ export class AuditAnalyzer {
       }
     }
 
-    if (missingPages.includes("contact")) {
-      const contactMatch = this.detectContactPageSmart();
-      if (contactMatch) {
-        const index = missingPages.indexOf("contact");
+    const smartDetections: Record<string, { anchor: RegExp; heading: RegExp; schema?: RegExp }> = {
+      contact: {
+        anchor: /\b(contact|get in touch|reach out|reach us|send.{0,5}message|talk to us|write to us|enquir|inquir|let'?s talk|let'?s chat|book a call|schedule a call)\b/i,
+        heading: /\b(contact|get in touch|reach out|send.{0,5}message|talk to us|write to us|enquir|inquir|drop.{0,5}(a )?line|let'?s (talk|chat|connect))\b/i,
+        schema: /contactpage/i,
+      },
+      privacy: {
+        anchor: /\b(privacy|privacy policy|data privacy|data protection)\b/i,
+        heading: /\b(privacy|data (privacy|protection)|personal (data|information))\b/i,
+      },
+      terms: {
+        anchor: /\b(terms|terms of (service|use)|terms (and|&) conditions|legal)\b/i,
+        heading: /\b(terms of (service|use)|terms (and|&) conditions|legal (notice|terms))\b/i,
+      },
+    };
+
+    for (const [pageType, patterns] of Object.entries(smartDetections)) {
+      if (!missingPages.includes(pageType)) continue;
+      const match = this.detectPageSmart(patterns.anchor, patterns.heading, patterns.schema);
+      if (match) {
+        const index = missingPages.indexOf(pageType);
         missingPages.splice(index, 1);
-        foundPages.push(`contact (${contactMatch})`);
-        score += 15;
+        foundPages.push(`${pageType} (${match})`);
+        score += ["about", "contact"].includes(pageType) ? 15 : 8;
       }
     }
 
@@ -293,42 +318,30 @@ export class AuditAnalyzer {
     };
   }
 
-  private detectContactPageSmart(): string | null {
-    const contactAnchorPatterns = /\b(contact|get in touch|reach out|reach us|send.{0,5}message|talk to us|write to us|enquir|inquir|let'?s talk|let'?s chat|book a call|schedule a call)\b/i;
-    const contactHeadingPatterns = /\b(contact|get in touch|reach out|send.{0,5}message|talk to us|write to us|enquir|inquir|drop.{0,5}(a )?line|let'?s (talk|chat|connect))\b/i;
-
-    // 1. Check nav link anchor text across all pages for contact-related labels
+  private detectPageSmart(anchorPattern: RegExp, headingPattern: RegExp, schemaPattern?: RegExp): string | null {
     for (const r of this.scanResults) {
       for (const link of r.internal_links) {
-        if (contactAnchorPatterns.test(link.anchor_text)) {
+        if (anchorPattern.test(link.anchor_text)) {
           const path = new URL(link.url).pathname;
           return `nav link "${link.anchor_text}" → ${path}`;
         }
       }
     }
 
-    // 2. Check headings on crawled pages
     for (const r of this.scanResults) {
       const allHeadings = [...r.h1s, ...r.h2s];
-      if (allHeadings.some((h) => contactHeadingPatterns.test(h))) {
+      if (allHeadings.some((h) => headingPattern.test(h))) {
         const path = new URL(r.url).pathname;
         return `heading match on ${path}`;
       }
     }
 
-    // 3. Check has_contact_form flag set by the scanner
-    for (const r of this.scanResults) {
-      if (r.has_contact_form) {
-        const path = new URL(r.url).pathname;
-        return `form detected on ${path}`;
-      }
-    }
-
-    // 4. Check structured data for ContactPage schema
-    for (const r of this.scanResults) {
-      if (r.schema_types?.some((t) => /contactpage/i.test(t))) {
-        const path = new URL(r.url).pathname;
-        return `ContactPage schema on ${path}`;
+    if (schemaPattern) {
+      for (const r of this.scanResults) {
+        if (r.schema_types?.some((t) => schemaPattern.test(t))) {
+          const path = new URL(r.url).pathname;
+          return `schema match on ${path}`;
+        }
       }
     }
 
@@ -383,7 +396,7 @@ export class AuditAnalyzer {
    * Get expected pages - IMPROVED VERSION
    */
   private getExpectedPages(siteType: string): string[] {
-    const basePages = ["about", "contact"];
+    const basePages = ["about", "contact", "privacy", "terms"];
 
     const typeSpecific: Record<string, string[]> = {
       ecommerce: ["products", "cart", "shipping", "returns"],
@@ -546,6 +559,31 @@ export class AuditAnalyzer {
         url: r.url,
         loadTime: r.load_time_ms || 0,
       }));
+
+    // CLS risk: images without explicit dimensions
+    const totalClsRisk = this.scanResults.reduce((sum, r) => sum + (r.cls_risk_images || 0), 0);
+    if (totalClsRisk > 5) {
+      score -= 10;
+      findings.push(`${totalClsRisk} images lack explicit width/height attributes (CLS risk)`);
+    } else if (totalClsRisk > 0) {
+      findings.push(`${totalClsRisk} images without explicit dimensions (minor CLS risk)`);
+    }
+
+    // Resource hints
+    const hasAnyHints = this.scanResults.some(r =>
+      r.resource_hints && (r.resource_hints.preconnect.length > 0 || r.resource_hints.preload.length > 0)
+    );
+    if (!hasAnyHints) {
+      score -= 5;
+      findings.push("No resource hints (preconnect/preload) found — add hints for third-party origins");
+    }
+
+    // JS rendering dependency
+    const jsGapPages = this.scanResults.filter(r => r.js_rendering_gap && r.js_rendering_gap.delta_percent > 50);
+    if (jsGapPages.length > 0) {
+      score -= 10;
+      findings.push(`${jsGapPages.length} page(s) have critical JS rendering dependency — content invisible without JavaScript`);
+    }
 
     return {
       score: Math.max(0, score),
@@ -745,6 +783,37 @@ export class AuditAnalyzer {
       findings.push("sitemap.xml found");
     }
 
+    // Accessibility checks
+    const homepage = this.scanResults.find(r => new URL(r.url).pathname === "/" || new URL(r.url).pathname === "");
+    const hasHtmlLang = this.scanResults.some(r => r.accessibility?.html_lang);
+    if (!hasHtmlLang) {
+      score -= 10;
+      findings.push("Missing lang attribute on <html> — hurts accessibility and SEO");
+    }
+
+    const totalMissingLabels = this.scanResults.reduce((sum, r) => sum + (r.accessibility?.form_labels_missing || 0), 0);
+    if (totalMissingLabels > 0) {
+      score -= 5;
+      findings.push(`${totalMissingLabels} form input(s) missing associated labels`);
+    }
+
+    if (homepage?.accessibility) {
+      if (homepage.accessibility.aria_landmarks.length < 2) {
+        score -= 5;
+        findings.push("Homepage has insufficient ARIA landmarks (nav, main, header, footer)");
+      }
+      if (!homepage.accessibility.has_skip_nav) {
+        score -= 3;
+        findings.push("No skip navigation link found");
+      }
+    }
+
+    // Cookie consent
+    const hasCookieConsent = this.scanResults.some(r => r.has_cookie_consent);
+    if (!hasCookieConsent) {
+      findings.push("No cookie consent mechanism detected");
+    }
+
     return {
       score: Math.max(0, score),
       usesHttps,
@@ -859,6 +928,101 @@ export class AuditAnalyzer {
         description: "Copyright year is outdated. Update to current year.",
         impact: "Shows site is actively maintained",
         effort: "low",
+      });
+    }
+
+    // CLS risk recommendations
+    const totalClsRisk = this.scanResults.reduce((sum, r) => sum + (r.cls_risk_images || 0), 0);
+    if (totalClsRisk > 5) {
+      recommendations.push({
+        type: "important",
+        category: "performance",
+        title: "Add Width/Height to Images",
+        description: `${totalClsRisk} images lack explicit width/height attributes, causing Cumulative Layout Shift (CLS).`,
+        impact: "Reduces layout shift and improves Core Web Vitals",
+        effort: "low",
+      });
+    }
+
+    // Accessibility recommendations
+    if (analysis.modernStandards.findings.some(f => f.includes("Missing lang"))) {
+      recommendations.push({
+        type: "important",
+        category: "standards",
+        title: "Add HTML lang Attribute",
+        description: "The <html> tag is missing a lang attribute. This hurts accessibility and SEO.",
+        impact: "Screen readers and search engines use this to determine page language",
+        effort: "low",
+      });
+    }
+
+    if (analysis.modernStandards.findings.some(f => f.includes("form input"))) {
+      recommendations.push({
+        type: "important",
+        category: "standards",
+        title: "Add Labels to Form Inputs",
+        description: "Some form inputs are missing associated labels, making them inaccessible.",
+        impact: "Required for screen reader users and improves UX",
+        effort: "low",
+      });
+    }
+
+    // Resource hints recommendations
+    if (analysis.performance.findings.some(f => f.includes("No resource hints"))) {
+      recommendations.push({
+        type: "nice-to-have",
+        category: "performance",
+        title: "Add Resource Hints",
+        description: "No preconnect or preload hints found. Add hints for critical third-party origins.",
+        impact: "Reduces connection time to external resources",
+        effort: "low",
+      });
+    }
+
+    // JS rendering dependency recommendations
+    if (analysis.performance.findings.some(f => f.includes("JS rendering dependency"))) {
+      recommendations.push({
+        type: "important",
+        category: "performance",
+        title: "Reduce JavaScript Rendering Dependency",
+        description: "Some pages are mostly invisible without JavaScript. Search engines may not index this content.",
+        impact: "Content visibility for crawlers that don't execute JavaScript",
+        effort: "high",
+      });
+    }
+
+    // Cookie consent recommendation
+    if (analysis.modernStandards.findings.some(f => f.includes("cookie consent"))) {
+      recommendations.push({
+        type: "important",
+        category: "standards",
+        title: "Add Cookie Consent Mechanism",
+        description: "No cookie consent banner detected. Required for GDPR/CCPA compliance.",
+        impact: "Legal compliance and user trust",
+        effort: "medium",
+      });
+    }
+
+    // Privacy/Terms recommendations
+    if (analysis.completeness.missingPages.includes("privacy")) {
+      recommendations.push({
+        type: "important",
+        category: "completeness",
+        title: "Add Privacy Policy Page",
+        description: "No privacy policy page found. Required for legal compliance and user trust.",
+        impact: "Legal requirement for most jurisdictions",
+        effort: "medium",
+      });
+    }
+
+    if (analysis.completeness.missingPages.includes("terms")) {
+      recommendations.push({
+        type: "important",
+        category: "completeness",
+        title: "Add Terms of Service Page",
+        description: "No terms of service page found. Important for legal protection.",
+        impact: "Protects your business legally",
+        effort: "medium",
       });
     }
 
