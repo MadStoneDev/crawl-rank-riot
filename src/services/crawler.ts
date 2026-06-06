@@ -72,6 +72,14 @@ export class WebCrawler {
       }
 
       this.visited.add(item.url);
+
+      // Skip pages blocked by bot protection — don't overwrite real data with challenge page content
+      const isBlocked = result.errors?.some(e => e.includes("Blocked by bot protection"));
+      if (isBlocked) {
+        console.log(`🛡️ Skipping blocked page (bot protection): ${item.url}`);
+        return;
+      }
+
       this.results.push(result);
 
       console.log(

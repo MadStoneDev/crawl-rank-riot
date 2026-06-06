@@ -48,12 +48,15 @@ export class Scanner {
 
     // Escalate to headless only when HTTP results are genuinely inadequate.
     // Platform detection alone is not enough — if HTTP got good data, keep it.
-    const httpResultsArePoor = this.needsHeadlessVerification(result);
+    const isBotChallenge = !!(result as any)._isBotChallenge;
+    const httpResultsArePoor = isBotChallenge || this.needsHeadlessVerification(result);
 
     if (httpResultsArePoor) {
-      const reason = detectedPlatform
-        ? `platform=${detectedPlatform}`
-        : "heuristic";
+      const reason = isBotChallenge
+        ? "bot-challenge"
+        : detectedPlatform
+          ? `platform=${detectedPlatform}`
+          : "heuristic";
       console.log(`🔍 Retrying with headless browser: ${url} (${reason})`);
       const httpResult = result;
       const headlessResult = await this.headlessScan(url, depth);
@@ -87,6 +90,7 @@ export class Scanner {
     // Clean up internal fields
     delete (result as any)._detectedPlatform;
     delete (result as any)._rawHtml;
+    delete (result as any)._isBotChallenge;
 
     result.load_time_ms = Date.now() - startTime;
     return result;
@@ -144,6 +148,30 @@ export class Scanner {
       // Wait for dynamic content to load
       console.log("⏳ Waiting for dynamic content...");
       await this.waitForDynamicContent(page);
+
+      // Check for bot challenge pages (Cloudflare, etc.) and wait for resolution
+      const challengeTitle = await page.title();
+      if (this.isBotChallengePage(challengeTitle)) {
+        console.log(`🛡️ Bot challenge detected for ${url}, waiting for auto-resolution...`);
+        try {
+          await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15000 });
+          await this.waitForDynamicContent(page);
+          result.url = urlProcessor.normalize(page.url());
+        } catch {
+          // Challenge didn't auto-resolve via navigation — check if content changed in-place
+          await this.delay(5000);
+        }
+        const postChallengeTitle = await page.title();
+        if (this.isBotChallengePage(postChallengeTitle)) {
+          console.log(`🚫 Bot challenge still present for ${url} after waiting — marking as blocked`);
+          result.errors = [...(result.errors || []), "Blocked by bot protection (Cloudflare or similar)"];
+          result.title = undefined;
+          result.word_count = 0;
+          result.content_length = 0;
+          return result;
+        }
+        console.log(`✅ Bot challenge resolved for ${url}`);
+      }
 
       // Extract all data from the page
       await this.extractPageData(page, result, urlProcessor);
@@ -832,7 +860,47 @@ export class Scanner {
     }
   }
 
+  private isBotChallengePage(title?: string, html?: string): boolean {
+    if (title) {
+      const t = title.toLowerCase().trim();
+      const challengeTitles = [
+        "one moment, please",
+        "just a moment",
+        "attention required",
+        "access denied",
+        "please wait",
+        "checking your browser",
+        "verify you are human",
+        "security check",
+        "ddos protection",
+      ];
+      if (challengeTitles.some(ct => t.startsWith(ct) || t.includes(ct))) {
+        return true;
+      }
+    }
+    if (html) {
+      const challengeMarkers = [
+        "cf-browser-verification",
+        "challenge-platform",
+        "cf-turnstile",
+        "__cf_chl_opt",
+        "cf-challenge-running",
+        "cdn-cgi/challenge-platform",
+        "managed-challenge",
+        "ray ID",
+      ];
+      const lower = html.toLowerCase();
+      if (challengeMarkers.some(m => lower.includes(m))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private needsHeadlessVerification(result: ScanResult): boolean {
+    // Bot challenge detected — always escalate
+    if (this.isBotChallengePage(result.title)) return true;
+
     // No title or suspiciously short — likely JS-rendered
     if (!result.title || result.title.length < 3) return true;
 
@@ -971,6 +1039,10 @@ export class Scanner {
         result.scan_method = "http";
         // Attach raw HTML temporarily for platform detection in scan()
         (result as any)._rawHtml = html;
+        // Flag bot challenge pages for headless escalation
+        if (this.isBotChallengePage(result.title, html)) {
+          (result as any)._isBotChallenge = true;
+        }
 
         // Success - exit retry loop
         return result;
