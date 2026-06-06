@@ -48,13 +48,18 @@ export class Scanner {
 
     // Escalate to headless only when HTTP results are genuinely inadequate.
     // Platform detection alone is not enough — if HTTP got good data, keep it.
+    // Never escalate bot challenges to headless — if HTTP got blocked, headless will too.
     const isBotChallenge = !!(result as any)._isBotChallenge;
-    const httpResultsArePoor = isBotChallenge || this.needsHeadlessVerification(result);
+    const httpResultsArePoor = !isBotChallenge && this.needsHeadlessVerification(result);
 
-    if (httpResultsArePoor) {
-      const reason = isBotChallenge
-        ? "bot-challenge"
-        : detectedPlatform
+    if (isBotChallenge) {
+      console.log(`🛡️ Bot challenge detected via HTTP for ${url} — skipping headless (will be blocked too)`);
+      result.errors = [...(result.errors || []), "Blocked by bot protection (Cloudflare or similar)"];
+      result.title = undefined;
+      result.word_count = 0;
+      result.content_length = 0;
+    } else if (httpResultsArePoor) {
+      const reason = detectedPlatform
           ? `platform=${detectedPlatform}`
           : "heuristic";
       console.log(`🔍 Retrying with headless browser: ${url} (${reason})`);
@@ -149,21 +154,14 @@ export class Scanner {
       console.log("⏳ Waiting for dynamic content...");
       await this.waitForDynamicContent(page);
 
-      // Check for bot challenge pages (Cloudflare, etc.) and wait for resolution
+      // Check for bot challenge pages (Cloudflare, etc.) — quick check, don't wait long
       const challengeTitle = await page.title();
       if (this.isBotChallengePage(challengeTitle)) {
-        console.log(`🛡️ Bot challenge detected for ${url}, waiting for auto-resolution...`);
-        try {
-          await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15000 });
-          await this.waitForDynamicContent(page);
-          result.url = urlProcessor.normalize(page.url());
-        } catch {
-          // Challenge didn't auto-resolve via navigation — check if content changed in-place
-          await this.delay(5000);
-        }
+        console.log(`🛡️ Bot challenge detected for ${url}, brief wait for auto-resolution...`);
+        await this.delay(3000);
         const postChallengeTitle = await page.title();
         if (this.isBotChallengePage(postChallengeTitle)) {
-          console.log(`🚫 Bot challenge still present for ${url} after waiting — marking as blocked`);
+          console.log(`🚫 Bot challenge still present for ${url} — marking as blocked`);
           result.errors = [...(result.errors || []), "Blocked by bot protection (Cloudflare or similar)"];
           result.title = undefined;
           result.word_count = 0;
@@ -898,23 +896,11 @@ export class Scanner {
   }
 
   private needsHeadlessVerification(result: ScanResult): boolean {
-    // Bot challenge detected — always escalate
-    if (this.isBotChallengePage(result.title)) return true;
-
-    // No title or suspiciously short — likely JS-rendered
+    // No title at all — likely JS-rendered SPA
     if (!result.title || result.title.length < 3) return true;
 
     // Almost no text content — page body is probably rendered by JS
-    if (result.content_type?.includes("text/html") && result.content_length < 500) return true;
-
-    // No headings at all — unusual for a real page, likely JS-rendered
-    if (result.h1s.length === 0 && result.h2s.length === 0) return true;
-
-    // Very few internal links on a page that should have nav/footer
-    if (result.internal_links.length < 2) return true;
-
-    // Word count is suspiciously low for an HTML page
-    if (result.word_count !== undefined && result.word_count < 10) return true;
+    if (result.content_type?.includes("text/html") && result.content_length < 500 && result.word_count < 5) return true;
 
     return false;
   }

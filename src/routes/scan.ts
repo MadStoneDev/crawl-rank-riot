@@ -399,39 +399,38 @@ async function processSEOScanInBackground(
   scanId: string,
   projectId: string,
 ): Promise<void> {
-  try {
-    console.log(`Starting background SEO crawl for ${url}`);
+  const crawler = new WebCrawler(url, scanId, projectId);
+  const logger = crawler.logger!;
 
-    const crawler = new WebCrawler(url, scanId, projectId);
+  try {
     const scanResults = await crawler.crawl(url, options);
 
-    console.log(
-      `SEO crawl completed for ${url}, found ${scanResults.length} pages`,
-    );
-
     // Store SEO scan results
+    logger.info("store", `Storing ${scanResults.length} pages in database...`);
     await storeScanResults(projectId, scanId, scanResults, {
       crawlCompleted: crawler.crawlCompleted,
     });
+    logger.info("store", `Pages stored successfully (crawlCompleted=${crawler.crawlCompleted})`);
 
     // Run site-level analysis (llms.txt, robots.txt AI bots, sitemap validation)
     let siteLevelData;
     try {
-      console.log(`Running site-level analysis for ${url}...`);
+      logger.info("analysis", "Running site-level analysis (robots.txt, sitemap, llms.txt)...");
       siteLevelData = await analyzeSiteLevelData(url, scanResults);
-      console.log(
-        `Site-level analysis complete: llms.txt=${siteLevelData.llms_txt?.exists}, robots.txt=${siteLevelData.robots_txt?.exists}, sitemap=${siteLevelData.sitemap_validation?.found}`,
-      );
+      logger.info("analysis", `Site-level analysis complete: llms.txt=${siteLevelData.llms_txt?.exists}, robots.txt=${siteLevelData.robots_txt?.exists}, sitemap=${siteLevelData.sitemap_validation?.found}`);
     } catch (error) {
-      console.error("Site-level analysis failed (non-critical):", error);
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error("analysis", `Site-level analysis failed: ${msg}`);
     }
 
     // Detect and store issues
+    logger.info("analysis", "Detecting SEO issues...");
     const issuesFound = await detectAndStoreIssues(
       scanResults,
       projectId,
       scanId,
     );
+    logger.info("analysis", `Found ${issuesFound} page-level issues`);
 
     // Detect site-level issues (llms.txt, robots.txt, sitemap)
     let siteIssuesFound = 0;
@@ -452,13 +451,17 @@ async function processSEOScanInBackground(
           scanId,
           homepagePage?.id || null,
         );
+        logger.info("analysis", `Found ${siteIssuesFound} site-level issues`);
       } catch (error) {
-        console.error("Site-level issue detection failed (non-critical):", error);
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error("analysis", `Site-level issue detection failed: ${msg}`);
       }
     }
 
     // Check for backlinks from external pages
+    logger.info("analysis", "Checking for backlinks...");
     const backlinksFound = await checkAndStoreBacklinks(projectId, url);
+    logger.info("analysis", `Discovered ${backlinksFound} backlinks`);
 
     // Update scan as completed — merge into existing summary_stats to preserve progress data
     const supabase = getSupabaseServiceClient();
@@ -524,16 +527,16 @@ async function processSEOScanInBackground(
       .update(projectUpdate)
       .eq("id", projectId);
 
-    console.log(
-      `SEO scan completed for project ${projectId}, scan ${scanId}, ${totalIssues} issues found (${siteIssuesFound} site-level), ${backlinksFound} backlinks discovered`,
-    );
+    logger.info("complete", `Scan finished: ${scanResults.length} pages, ${totalLinksScanned} links, ${totalIssues} issues, ${backlinksFound} backlinks`);
+    await logger.close();
   } catch (error) {
     const errorMessage = error instanceof Error
       ? error.message
       : typeof error === "object" && error !== null
         ? JSON.stringify(error)
         : String(error);
-    console.error(`Error in SEO scan process for scan ${scanId}:`, errorMessage, error);
+    logger.error("complete", `Scan failed: ${errorMessage}`);
+    await logger.close();
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {

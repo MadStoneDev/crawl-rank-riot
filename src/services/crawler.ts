@@ -3,6 +3,7 @@ import { UrlProcessor } from "../utils/url";
 import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
 import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser";
+import { ScanLogger } from "./scan-logger";
 
 const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -23,12 +24,16 @@ export class WebCrawler {
   private projectId: string | null = null;
   private lastProgressUpdate: number = 0;
   private progressUpdateInterval: number = 1000;
+  public logger: ScanLogger | null = null;
 
   constructor(baseUrl: string, scanId?: string, projectId?: string) {
     this.scanner = new Scanner();
     this.urlProcessor = new UrlProcessor(baseUrl);
     this.scanId = scanId || null;
     this.projectId = projectId || null;
+    if (scanId) {
+      this.logger = new ScanLogger(scanId);
+    }
   }
 
   private static readonly MAX_RETRIES = 2;
@@ -50,10 +55,10 @@ export class WebCrawler {
         return;
       }
 
-      console.log(`🔍 Scanning (depth ${item.depth}): ${item.url}`);
-
       const needsHeadless =
         forceHeadless || isJavaScriptHeavySite(item.url);
+
+      this.logger?.info("crawl", `Scanning ${item.url}`, { depth: item.depth, method: needsHeadless ? "headless" : "http" });
 
       const result = await this.scanner.scan(
         item.url,
@@ -65,10 +70,11 @@ export class WebCrawler {
       if (result.status >= 500) {
         const retries = item.retries || 0;
         if (retries < WebCrawler.MAX_RETRIES) {
-          console.log(`⚠️ Got ${result.status} for ${item.url}, will retry (${retries + 1}/${WebCrawler.MAX_RETRIES})`);
+          this.logger?.warn("crawl", `Got ${result.status} for ${item.url}, retrying (${retries + 1}/${WebCrawler.MAX_RETRIES})`, { url: item.url, status: result.status });
           this.queue.push({ url: item.url, depth: item.depth, retries: retries + 1 });
           return;
         }
+        this.logger?.error("crawl", `Got ${result.status} for ${item.url} after ${WebCrawler.MAX_RETRIES} retries, giving up`, { url: item.url, status: result.status });
       }
 
       this.visited.add(item.url);
@@ -76,17 +82,23 @@ export class WebCrawler {
       // Skip pages blocked by bot protection — don't overwrite real data with challenge page content
       const isBlocked = result.errors?.some(e => e.includes("Blocked by bot protection"));
       if (isBlocked) {
-        console.log(`🛡️ Skipping blocked page (bot protection): ${item.url}`);
+        this.logger?.warn("crawl", `Blocked by bot protection: ${item.url}`, { url: item.url });
+        await this.updateScanProgress();
         return;
       }
 
       this.results.push(result);
 
-      console.log(
-        `✅ Scanned: ${result.title || "No title"} (${
-          result.internal_links.length
-        } internal links found)`,
-      );
+      this.logger?.info("crawl", `Scanned: ${result.title || "No title"} (${result.status}) — ${result.internal_links.length} internal links, ${result.word_count || 0} words`, {
+        url: item.url,
+        status: result.status,
+        title: result.title || null,
+        word_count: result.word_count || 0,
+        internal_links: result.internal_links.length,
+        external_links: result.external_links.length,
+        method: result.scan_method || "unknown",
+        load_time_ms: result.load_time_ms,
+      });
 
       await this.updateScanProgress();
 
@@ -95,16 +107,19 @@ export class WebCrawler {
           result.internal_links,
           item.depth + 1,
         );
-        console.log(`🔗 Added ${newLinks} new URLs to queue from ${item.url}`);
+        if (newLinks > 0) {
+          this.logger?.info("crawl", `Queued ${newLinks} new URLs from ${item.url}`, { url: item.url, new_links: newLinks });
+        }
       }
 
       const delay = needsHeadless ? 2000 : 500;
       await this.delay(delay);
     } catch (error) {
-      console.error(`❌ Error processing ${item.url}:`, error);
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger?.error("crawl", `Error processing ${item.url}: ${msg}`, { url: item.url, error: msg });
       const retries = item.retries || 0;
       if (retries < WebCrawler.MAX_RETRIES) {
-        console.log(`🔄 Re-queuing ${item.url} for retry (${retries + 1}/${WebCrawler.MAX_RETRIES})`);
+        this.logger?.info("crawl", `Re-queuing ${item.url} for retry (${retries + 1}/${WebCrawler.MAX_RETRIES})`);
         this.queue.push({ url: item.url, depth: item.depth, retries: retries + 1 });
       } else {
         this.visited.add(item.url);
@@ -139,14 +154,15 @@ export class WebCrawler {
         0,
       );
 
-      // Calculate estimated completion percentage
+      // Calculate estimated completion percentage based on pages processed (visited), not just successful results
+      const pagesProcessed = this.visited.size;
       const estimatedTotalPages = Math.max(
-        this.results.length * 1.5,
-        this.queue.length + this.results.length,
+        pagesProcessed * 1.5,
+        this.queue.length + pagesProcessed,
       );
       const progressPercentage = Math.min(
         95,
-        Math.round((this.results.length / estimatedTotalPages) * 100),
+        Math.round((pagesProcessed / Math.max(1, estimatedTotalPages)) * 100),
       );
 
       await supabase
@@ -227,10 +243,10 @@ export class WebCrawler {
     // Default timeout scales with maxPages: ~2s per page, min 5 minutes
     const timeout = options.timeout ?? Math.max(300_000, maxPages * 2_000);
 
-    console.log(`🚀 Starting crawl of ${seedUrl}`);
-    console.log(
-      `📊 Options: maxDepth=${maxDepth}, maxPages=${maxPages}, concurrent=${concurrentRequests}, timeout=${Math.round(timeout / 1000)}s`,
-    );
+    this.logger?.info("init", `Starting crawl of ${seedUrl}`, {
+      maxDepth, maxPages, concurrentRequests, timeout: Math.round(timeout / 1000),
+      forceHeadless, checkSitemaps, crawlMode,
+    });
 
     // Initialize
     this.visited.clear();
@@ -243,12 +259,14 @@ export class WebCrawler {
     // Validate and clean the seed URL
     const cleanSeedUrl = this.urlProcessor.validateAndClean(seedUrl);
     if (!cleanSeedUrl) {
+      this.logger?.error("init", `Invalid seed URL: ${seedUrl}`);
       throw new Error(`Invalid seed URL: ${seedUrl}`);
     }
 
     // STEP 1: Detect preferred www format by checking redirects
     await this.urlProcessor.detectPreferredWwwFormat();
-    console.log(`🌐 Base domain: ${this.urlProcessor.getBaseDomain()}`);
+    const baseDomain = this.urlProcessor.getBaseDomain();
+    this.logger?.info("init", `Base domain resolved: ${baseDomain}`);
 
     // Add seed URL (will be normalized with correct www preference)
     const normalizedSeedUrl = this.urlProcessor.normalize(cleanSeedUrl);
@@ -257,7 +275,9 @@ export class WebCrawler {
 
     // Check for sitemaps first if enabled
     if (checkSitemaps) {
+      this.logger?.info("sitemap", "Checking for sitemaps...");
       await this.processSitemaps(normalizedSeedUrl, maxDepth);
+      this.logger?.info("sitemap", `Sitemap processing complete, ${this.queue.length} URLs queued`);
     }
 
     const startTime = Date.now();
@@ -305,21 +325,28 @@ export class WebCrawler {
 
     // Log why the loop exited
     const elapsed = Date.now() - startTime;
+    const blocked = this.visited.size - this.results.length;
     if (this.queue.length === 0) {
       this.crawlCompleted = true;
-      console.log(`✅ Crawl finished: queue empty after ${Math.round(elapsed / 1000)}s`);
+      this.logger?.info("crawl", `Crawl finished: queue empty after ${Math.round(elapsed / 1000)}s`, {
+        pages_found: this.results.length, pages_blocked: blocked, elapsed_s: Math.round(elapsed / 1000),
+      });
     } else if (this.results.length >= maxPages) {
       this.crawlCompleted = false;
-      console.log(`⚠️ Crawl stopped: reached maxPages limit (${maxPages}) after ${Math.round(elapsed / 1000)}s, ${this.queue.length} URLs remaining in queue`);
+      this.logger?.warn("crawl", `Crawl stopped: reached maxPages limit (${maxPages})`, {
+        pages_found: this.results.length, queue_remaining: this.queue.length, elapsed_s: Math.round(elapsed / 1000),
+      });
     } else {
       this.crawlCompleted = false;
-      console.log(`⚠️ Crawl stopped: timeout reached (${Math.round(elapsed / 1000)}s / ${Math.round(timeout / 1000)}s), ${this.results.length}/${maxPages} pages scanned, ${this.queue.length} URLs remaining in queue`);
+      this.logger?.warn("crawl", `Crawl stopped: timeout reached (${Math.round(timeout / 1000)}s)`, {
+        pages_found: this.results.length, queue_remaining: this.queue.length, elapsed_s: Math.round(elapsed / 1000),
+      });
     }
 
     await this.finalProgressUpdate();
     await closeSharedBrowserPool();
 
-    console.log(`✅ Crawl completed: ${this.results.length} pages found`);
+    this.logger?.info("complete", `Crawl complete: ${this.results.length} pages found, ${blocked} blocked, ${Math.round(elapsed / 1000)}s elapsed`);
     return this.results;
   }
 
