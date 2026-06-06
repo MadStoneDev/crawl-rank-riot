@@ -1035,7 +1035,6 @@ export class Scanner {
         // Success - exit retry loop
         return result;
       } catch (error) {
-        clearTimeout(timeoutId);
         lastError = error instanceof Error ? error : new Error(String(error));
 
         // Retry on network errors
