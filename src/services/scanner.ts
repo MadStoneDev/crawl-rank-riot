@@ -793,19 +793,22 @@ export class Scanner {
               const data = JSON.parse(script.textContent || "");
               structuredData.push(data);
 
-              // Extract schema types
+              // Extract schema types (flatten arrays since @type can be ["Type1", "Type2"])
               if (data["@type"]) {
-                schemaTypes.push(data["@type"]);
+                const types = Array.isArray(data["@type"]) ? data["@type"] : [data["@type"]];
+                schemaTypes.push(...types.filter((t: any) => typeof t === 'string'));
               }
               if (data["@graph"] && Array.isArray(data["@graph"])) {
                 for (const item of data["@graph"]) {
                   if (item["@type"]) {
-                    schemaTypes.push(item["@type"]);
+                    const types = Array.isArray(item["@type"]) ? item["@type"] : [item["@type"]];
+                    schemaTypes.push(...types.filter((t: any) => typeof t === 'string'));
                   }
                 }
               }
               if (Array.isArray(data) && data.length > 0 && data[0]["@type"]) {
-                schemaTypes.push(data[0]["@type"]);
+                const types = Array.isArray(data[0]["@type"]) ? data[0]["@type"] : [data[0]["@type"]];
+                schemaTypes.push(...types.filter((t: any) => typeof t === 'string'));
               }
             } catch (e) {
               // Invalid JSON, skip
@@ -1096,17 +1099,20 @@ export class Scanner {
         const data = JSON.parse(jsonLdMatch[1].trim());
         result.structured_data.push(data);
         if (data["@type"]) {
-          result.schema_types.push(data["@type"]);
+          const types = Array.isArray(data["@type"]) ? data["@type"] : [data["@type"]];
+          result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
         }
         if (data["@graph"] && Array.isArray(data["@graph"])) {
           for (const item of data["@graph"]) {
             if (item["@type"]) {
-              result.schema_types.push(item["@type"]);
+              const types = Array.isArray(item["@type"]) ? item["@type"] : [item["@type"]];
+              result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
             }
           }
         }
         if (Array.isArray(data) && data.length > 0 && data[0]["@type"]) {
-          result.schema_types.push(data[0]["@type"]);
+          const types = Array.isArray(data[0]["@type"]) ? data[0]["@type"] : [data[0]["@type"]];
+          result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
         }
       } catch (e) {
         // Invalid JSON-LD, skip
