@@ -916,7 +916,7 @@ export class Scanner {
       try {
         // Create abort controller for timeout
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 45000); // 45 second timeout (covers headers + body)
 
         // Track redirect chain by following redirects manually
         const redirectChain: string[] = [];
@@ -967,9 +967,8 @@ export class Scanner {
 
         result.first_byte_time_ms = Date.now() - fetchStart;
 
-        clearTimeout(timeoutId);
-
         if (!response) {
+          clearTimeout(timeoutId);
           throw new Error("No response received");
         }
 
@@ -1009,16 +1008,19 @@ export class Scanner {
 
         // Retry on 5xx errors (server errors are often transient)
         if (response.status >= 500 && attempt < maxRetries) {
+          clearTimeout(timeoutId);
           console.log(`⚠️ Got ${response.status} for ${url}, retrying (attempt ${attempt}/${maxRetries})...`);
           await this.delay(1000 * attempt); // Exponential backoff
           continue;
         }
 
         if (!result.content_type.includes("text/html")) {
+          clearTimeout(timeoutId);
           return result;
         }
 
         const html = await response.text();
+        clearTimeout(timeoutId);
         result.size_bytes = new TextEncoder().encode(html).length;
 
         await this.processHtml(result, html, urlProcessor);
@@ -1033,6 +1035,7 @@ export class Scanner {
         // Success - exit retry loop
         return result;
       } catch (error) {
+        clearTimeout(timeoutId);
         lastError = error instanceof Error ? error : new Error(String(error));
 
         // Retry on network errors

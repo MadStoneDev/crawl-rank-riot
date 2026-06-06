@@ -66,15 +66,15 @@ export class WebCrawler {
         needsHeadless,
       );
 
-      // Treat 5xx as transient — re-queue for retry
-      if (result.status >= 500) {
+      // Treat 5xx and status 0 (connection failure) as transient — re-queue for retry
+      if (result.status >= 500 || result.status === 0) {
         const retries = item.retries || 0;
         if (retries < WebCrawler.MAX_RETRIES) {
-          this.logger?.warn("crawl", `Got ${result.status} for ${item.url}, retrying (${retries + 1}/${WebCrawler.MAX_RETRIES})`, { url: item.url, status: result.status });
+          this.logger?.warn("crawl", `Got ${result.status === 0 ? "connection failure" : `status ${result.status}`} for ${item.url}, retrying (${retries + 1}/${WebCrawler.MAX_RETRIES})`, { url: item.url, status: result.status, errors: result.errors });
           this.queue.push({ url: item.url, depth: item.depth, retries: retries + 1 });
           return;
         }
-        this.logger?.error("crawl", `Got ${result.status} for ${item.url} after ${WebCrawler.MAX_RETRIES} retries, giving up`, { url: item.url, status: result.status });
+        this.logger?.error("crawl", `Failed to reach ${item.url} after ${WebCrawler.MAX_RETRIES} retries (status=${result.status})`, { url: item.url, status: result.status, errors: result.errors });
       }
 
       this.visited.add(item.url);
@@ -83,6 +83,13 @@ export class WebCrawler {
       const isBlocked = result.errors?.some(e => e.includes("Blocked by bot protection"));
       if (isBlocked) {
         this.logger?.warn("crawl", `Blocked by bot protection: ${item.url}`, { url: item.url });
+        await this.updateScanProgress();
+        return;
+      }
+
+      // Skip pages that completely failed to load (status 0 = no response at all)
+      if (result.status === 0) {
+        this.logger?.error("crawl", `Skipping unreachable page: ${item.url}`, { url: item.url, errors: result.errors });
         await this.updateScanProgress();
         return;
       }
