@@ -63,7 +63,8 @@ router.get("/debug/fetch", async (req, res) => {
       detail: `status=${resp.status}, headers=${headerTime}ms, body=${body.length} bytes, title=${(body.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || "").slice(0, 100)}`,
     });
   } catch (e: any) {
-    steps.push({ step: "fetch", ok: false, ms: 0, detail: e.message });
+    const cause = e.cause ? `${e.cause.code || e.cause.name || ""} ${e.cause.message || ""}`.trim() : null;
+    steps.push({ step: "fetch", ok: false, ms: 0, detail: cause || e.message });
   }
 
   res.json({ url, steps });

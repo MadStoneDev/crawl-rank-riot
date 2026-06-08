@@ -1036,10 +1036,15 @@ export class Scanner {
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+        // Node fetch wraps the real error in .cause
+        const rootCause = (lastError as any).cause;
+        const detail = rootCause
+          ? `${rootCause.code || rootCause.name || ""} ${rootCause.message || ""}`.trim()
+          : lastError.message;
 
         // Retry on network errors
         if (attempt < maxRetries) {
-          console.log(`⚠️ Network error for ${url}, retrying (attempt ${attempt}/${maxRetries})...`);
+          console.log(`⚠️ Network error for ${url} (${detail}), retrying (attempt ${attempt}/${maxRetries})...`);
           await this.delay(1000 * attempt); // Exponential backoff
           continue;
         }
@@ -1047,7 +1052,11 @@ export class Scanner {
     }
 
     // All retries failed
-    result.errors = [`HTTP scan failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`];
+    const rootCause = (lastError as any)?.cause;
+    const detail = rootCause
+      ? `${rootCause.code || rootCause.name || ""} ${rootCause.message || ""}`.trim()
+      : lastError?.message || "Unknown error";
+    result.errors = [`HTTP scan failed after ${maxRetries} attempts: ${detail}`];
     return result;
   }
 
