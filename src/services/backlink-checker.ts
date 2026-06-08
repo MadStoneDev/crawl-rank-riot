@@ -1,4 +1,5 @@
 import { getSupabaseServiceClient } from "./database/client";
+import { proxyFetch } from "../utils/proxy";
 
 interface ExternalLink {
   source_page_id: string;
@@ -186,7 +187,7 @@ async function fetchAndFindBacklinks(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000); // 10s timeout
 
-    const response = await fetch(externalUrl, {
+    const response = await proxyFetch(externalUrl, {
       signal: controller.signal,
       headers: {
         "User-Agent":

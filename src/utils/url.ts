@@ -1,5 +1,6 @@
 import { promises as dns } from "dns";
 import { isIPv4, isIPv6 } from "net";
+import { proxyFetch } from "./proxy";
 
 /**
  * Check if an IP address belongs to a private/reserved range.
@@ -256,7 +257,7 @@ export class UrlProcessor {
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     try {
-      const response = await fetch(url, {
+      const response = await proxyFetch(url, {
         method: "HEAD", // Use HEAD to avoid downloading content
         redirect: "follow",
         signal: controller.signal,

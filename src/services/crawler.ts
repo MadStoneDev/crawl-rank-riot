@@ -4,6 +4,7 @@ import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
 import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser";
 import { ScanLogger } from "./scan-logger";
+import { proxyFetch, isProxyConfigured } from "../utils/proxy";
 
 const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -250,8 +251,9 @@ export class WebCrawler {
     // Default timeout scales with maxPages: ~2s per page, min 5 minutes
     const timeout = options.timeout ?? Math.max(300_000, maxPages * 2_000);
 
-    this.logger?.info("init", `Starting crawl of ${seedUrl}`, {
-      maxDepth, maxPages, concurrentRequests, timeout: Math.round(timeout / 1000),
+    const usingProxy = isProxyConfigured();
+    this.logger?.info("init", `Starting crawl of ${seedUrl}${usingProxy ? " (via proxy)" : ""}`, {
+      maxDepth, maxPages, concurrentRequests, timeout: Math.round(timeout / 1000), proxy: usingProxy,
       forceHeadless, checkSitemaps, crawlMode,
     });
 
@@ -458,7 +460,7 @@ export class WebCrawler {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-        const response = await fetch(sitemapUrl, {
+        const response = await proxyFetch(sitemapUrl, {
           headers: {
             "User-Agent": BROWSER_USER_AGENT,
             "Accept": "text/xml,application/xml,text/html,*/*;q=0.8",
@@ -504,7 +506,7 @@ export class WebCrawler {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-        const response = await fetch(sitemapUrl, {
+        const response = await proxyFetch(sitemapUrl, {
           signal: controller.signal,
         });
 

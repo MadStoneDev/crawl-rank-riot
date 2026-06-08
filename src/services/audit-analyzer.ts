@@ -9,6 +9,7 @@
   ModernStandardsAnalysis,
   ModernizationAnalysis,
 } from "../types";
+import { proxyFetch } from "../utils/proxy";
 
 export class AuditAnalyzer {
   private scanResults: ScanResult[];
@@ -744,7 +745,7 @@ export class AuditAnalyzer {
       const robotsUrl = `${baseUrlObj.protocol}//${baseUrlObj.host}/robots.txt`;
       const controller1 = new AbortController();
       const timeout1 = setTimeout(() => controller1.abort(), 8000);
-      const robotsResp = await fetch(robotsUrl, {
+      const robotsResp = await proxyFetch(robotsUrl, {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
         signal: controller1.signal,
       });
@@ -766,7 +767,7 @@ export class AuditAnalyzer {
       const sitemapUrl = `${baseUrlObj.protocol}//${baseUrlObj.host}/sitemap.xml`;
       const controller2 = new AbortController();
       const timeout2 = setTimeout(() => controller2.abort(), 8000);
-      const sitemapResp = await fetch(sitemapUrl, {
+      const sitemapResp = await proxyFetch(sitemapUrl, {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
         signal: controller2.signal,
       });

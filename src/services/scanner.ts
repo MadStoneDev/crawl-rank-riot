@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { ScanResult } from "../types";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
 import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders, detectPlatformFromHtml, platformNeedsHeadless } from "../utils/browser";
+import { proxyFetch, getProxyCredentials } from "../utils/proxy";
 import { Page } from "puppeteer";
 
 export class Scanner {
@@ -115,6 +116,12 @@ export class Scanner {
       // Set realistic viewport and user agent
       await page.setUserAgent(this.userAgent);
       await page.setViewport({ width: 1280, height: 800 });
+
+      // Authenticate with proxy if configured
+      const proxyCreds = getProxyCredentials();
+      if (proxyCreds) {
+        await page.authenticate(proxyCreds);
+      }
 
       // Block unnecessary resources to speed up loading
       await page.setRequestInterception(true);
@@ -936,7 +943,7 @@ export class Scanner {
           }
           seenUrls.add(currentUrl);
 
-          response = await fetch(currentUrl, {
+          response = await proxyFetch(currentUrl, {
             headers: {
               "User-Agent": this.userAgent,
               Accept:
@@ -1775,7 +1782,7 @@ export class Scanner {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
-        const resp = await fetch(img.src, {
+        const resp = await proxyFetch(img.src, {
           method: "HEAD",
           signal: controller.signal,
           headers: {

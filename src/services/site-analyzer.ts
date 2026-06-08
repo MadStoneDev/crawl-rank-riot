@@ -1,5 +1,6 @@
 import { SiteLevelData, ScanResult } from "../types";
 import { isPublicUrl } from "../utils/url";
+import { proxyFetch } from "../utils/proxy";
 
 const AI_BOT_USER_AGENTS = [
   "GPTBot",
@@ -65,7 +66,7 @@ async function fetchLlmsTxt(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    const response = await fetch(`${origin}/llms.txt`, {
+    const response = await proxyFetch(`${origin}/llms.txt`, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
       signal: controller.signal,
       redirect: "follow",
@@ -127,7 +128,7 @@ async function fetchAndParseRobotsTxt(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-    const response = await fetch(`${origin}/robots.txt`, {
+    const response = await proxyFetch(`${origin}/robots.txt`, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
       signal: controller.signal,
       redirect: "follow",
@@ -256,7 +257,7 @@ async function validateSitemap(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-    const response = await fetch(sitemapUrl, {
+    const response = await proxyFetch(sitemapUrl, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
       signal: controller.signal,
       redirect: "follow",
@@ -288,7 +289,7 @@ async function validateSitemap(
           const subController = new AbortController();
           const subTimeout = setTimeout(() => subController.abort(), 10000);
 
-          const subResponse = await fetch(subUrl, {
+          const subResponse = await proxyFetch(subUrl, {
             headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
             signal: subController.signal,
             redirect: "follow",

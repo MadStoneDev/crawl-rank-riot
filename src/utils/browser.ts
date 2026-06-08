@@ -1,4 +1,5 @@
 import puppeteer, { Browser } from "puppeteer";
+import { getPuppeteerProxyArgs } from "./proxy";
 
 const JS_HEAVY_DOMAINS = [
   "shopify.com",
@@ -180,7 +181,7 @@ export class BrowserPool {
 
     this.launching = puppeteer.launch({
       headless: true,
-      args: BROWSER_LAUNCH_ARGS,
+      args: [...BROWSER_LAUNCH_ARGS, ...getPuppeteerProxyArgs()],
     });
 
     try {
