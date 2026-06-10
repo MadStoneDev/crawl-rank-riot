@@ -144,12 +144,24 @@ export class UrlProcessor {
     return urlObj.toString();
   }
 
+  private wwwFormatLocked = false;
+
+  /**
+   * Force the www format from per-project settings, disabling auto-detection
+   */
+  setPreferredWwwFormat(format: "www" | "non-www"): void {
+    this.preferredWwwFormat = format;
+    this.wwwFormatLocked = true;
+    console.log(`🔒 www format set from project settings: ${format}`);
+  }
+
   /**
    * Detect the preferred www format by checking redirects and analyzing links
    */
   async detectPreferredWwwFormat(
     scanResults?: Array<{ internal_links: Array<{ url: string }> }>,
   ): Promise<void> {
+    if (this.wwwFormatLocked) return;
     console.log("🔍 Detecting preferred www format...");
 
     // Method 1: Check redirect behavior

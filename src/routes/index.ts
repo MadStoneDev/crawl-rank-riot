@@ -1,6 +1,7 @@
 ﻿import { Router } from "express";
 import scanRouter from "./scan"; // Make sure this path is correct
 import { authMiddleware } from "../middleware/auth";
+import { isPublicUrl } from "../utils/url";
 
 const router = Router();
 
@@ -13,11 +14,22 @@ router.get("/health", (req, res) => {
   });
 });
 
-// Connectivity diagnostic (no auth — admin use only, no sensitive data returned)
+// Connectivity diagnostic — requires DEBUG_FETCH_TOKEN; disabled when the env var is unset
 router.get("/debug/fetch", async (req, res) => {
+  const debugToken = process.env.DEBUG_FETCH_TOKEN;
+  if (!debugToken || req.headers["x-debug-token"] !== debugToken) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+
   const url = req.query.url as string;
   if (!url) {
     res.status(400).json({ error: "url query param required" });
+    return;
+  }
+
+  if (!(await isPublicUrl(url))) {
+    res.status(400).json({ error: "URL does not resolve to a public address" });
     return;
   }
 

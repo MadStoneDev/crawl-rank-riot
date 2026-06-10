@@ -14,10 +14,16 @@ import { proxyFetch } from "../utils/proxy";
 export class AuditAnalyzer {
   private scanResults: ScanResult[];
   private baseUrl: string;
+  private customPagePaths: Record<string, string>;
 
-  constructor(scanResults: ScanResult[], baseUrl: string) {
+  constructor(
+    scanResults: ScanResult[],
+    baseUrl: string,
+    customPagePaths: Record<string, string> = {},
+  ) {
     this.scanResults = scanResults;
     this.baseUrl = baseUrl;
+    this.customPagePaths = customPagePaths;
   }
 
   /**
@@ -247,6 +253,14 @@ export class AuditAnalyzer {
         "terms-of-use", "termsofservice", "policies/terms-of-service",
       ],
     };
+
+    // Project settings can pin a key page to a custom path (e.g. contact at
+    // /launch-your-vision) — that path becomes the highest-priority alias
+    for (const [key, customPath] of Object.entries(this.customPagePaths)) {
+      const alias = customPath.replace(/^\/+/, "").toLowerCase();
+      if (!alias) continue;
+      pageAliases[key] = [alias, ...(pageAliases[key] || [key])];
+    }
 
     for (const expected of expectedPages) {
       const aliases = pageAliases[expected] || [expected];

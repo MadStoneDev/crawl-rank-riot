@@ -138,7 +138,7 @@ export async function processAuditScan(
       crawlCompleted: crawler.crawlCompleted,
     });
 
-    const analyzer = new AuditAnalyzer(scanResults, url);
+    const analyzer = new AuditAnalyzer(scanResults, url, options?.keyPages || {});
     const { analysis, recommendations, overallScore } =
       await analyzer.analyze();
 

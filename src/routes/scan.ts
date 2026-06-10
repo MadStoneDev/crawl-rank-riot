@@ -15,6 +15,7 @@ import { storeAuditResults } from "../services/audit-database";
 import { analyzeSiteLevelData } from "../services/site-analyzer";
 import { detectSiteLevelIssues } from "../services/site-issue-detector";
 import { computeNextScanAt } from "../utils/scheduler";
+import { parseProjectSettings } from "../utils/project-settings";
 import { processAuditScan, createScanSnapshot as createScanSnapshotShared } from "../services/scan-runner";
 
 const router = Router();
@@ -48,7 +49,7 @@ router.post(
 
       const { data: ownedProject, error: ownerError } = await supabase
         .from("projects")
-        .select("id, url, user_id")
+        .select("id, url, user_id, settings")
         .eq("id", project_id)
         .single();
 
@@ -128,6 +129,9 @@ router.post(
 
       const scanId = scanData.id;
 
+      // Per-project advanced configuration (custom sitemaps, exclusions, etc.)
+      const projectSettings = parseProjectSettings(project.settings, project.url);
+
       // SEO scans are more comprehensive — clamp values to safe ranges
       const maxPages = Math.max(1, Math.min(Number(options?.maxPages) || 500, 100000));
       // Timeout scales with maxPages: ~2s per page, min 5 minutes, max 6 hours
@@ -139,6 +143,7 @@ router.post(
         timeout: Math.max(300_000, Math.min(Number(options?.timeout) || defaultTimeout, 21_600_000)),
         checkSitemaps: options?.checkSitemaps !== false,
         crawlMode: "seo" as const,
+        ...projectSettings.crawlOverrides,
       };
 
       // Return early response to client
@@ -196,7 +201,7 @@ router.post(
 
       const { data: ownedProject, error: ownerError } = await supabase
         .from("projects")
-        .select("id, url, user_id")
+        .select("id, url, user_id, settings")
         .eq("id", project_id)
         .single();
 
@@ -276,6 +281,9 @@ router.post(
 
       const scanId = scanData.id;
 
+      // Per-project advanced configuration (custom sitemaps, key pages, etc.)
+      const projectSettings = parseProjectSettings(project.settings, project.url);
+
       // Audit scans can be shallower — clamp values to safe ranges
       const auditMaxPages = Math.max(1, Math.min(Number(options?.maxPages) || 50, 100000));
       const auditDefaultTimeout = Math.max(300_000, auditMaxPages * 2_000);
@@ -286,6 +294,9 @@ router.post(
         timeout: Math.max(300_000, Math.min(Number(options?.timeout) || auditDefaultTimeout, 21_600_000)),
         checkSitemaps: options?.checkSitemaps !== false,
         crawlMode: "audit" as const,
+        ...projectSettings.crawlOverrides,
+        // Custom key page paths feed the audit completeness analyzer
+        keyPages: projectSettings.keyPages,
       };
 
       // Return early response to client

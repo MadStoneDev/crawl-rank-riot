@@ -18,6 +18,10 @@ export interface CrawlOptions {
   useHeadlessBrowser?: boolean;
   forceHeadless?: boolean;
   crawlMode?: "seo" | "audit";
+  /** Per-project overrides from projects.settings */
+  customSitemapPaths?: string[];
+  seedPaths?: string[];
+  wwwPreference?: "www" | "non-www";
 }
 
 export interface ScanResult {

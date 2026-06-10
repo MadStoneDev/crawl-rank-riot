@@ -1,5 +1,5 @@
 import { Scanner } from "./scanner";
-import { UrlProcessor } from "../utils/url";
+import { UrlProcessor, isPublicUrl } from "../utils/url";
 import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
 import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser";
@@ -67,10 +67,15 @@ export class WebCrawler {
         needsHeadless,
       );
 
-      // Treat 5xx and status 0 (connection failure) as transient — re-queue for retry
-      if (result.status >= 500 || result.status === 0) {
+      // Treat 5xx, 429 (rate limited) and status 0 (connection failure) as transient — re-queue for retry
+      if (result.status >= 500 || result.status === 429 || result.status === 0) {
         const retries = item.retries || 0;
         if (retries < WebCrawler.MAX_RETRIES) {
+          // Back off exponentially when the host is rate limiting or overloaded,
+          // holding this concurrency slot so the host gets breathing room
+          if (result.status === 429 || result.status === 503) {
+            await this.delay(2000 * Math.pow(2, retries));
+          }
           this.logger?.warn("crawl", `Got ${result.status === 0 ? "connection failure" : `status ${result.status}`} for ${item.url}, retrying (${retries + 1}/${WebCrawler.MAX_RETRIES})`, { url: item.url, status: result.status, errors: result.errors });
           this.queue.push({ url: item.url, depth: item.depth, retries: retries + 1 });
           return;
@@ -246,6 +251,9 @@ export class WebCrawler {
       checkSitemaps = true,
       forceHeadless = false,
       crawlMode = "seo",
+      customSitemapPaths = [],
+      seedPaths = [],
+      wwwPreference,
     } = options;
     this.crawlMode = crawlMode;
     // Default timeout scales with maxPages: ~2s per page, min 5 minutes
@@ -272,8 +280,12 @@ export class WebCrawler {
       throw new Error(`Invalid seed URL: ${seedUrl}`);
     }
 
-    // STEP 1: Detect preferred www format by checking redirects
-    await this.urlProcessor.detectPreferredWwwFormat();
+    // STEP 1: Resolve preferred www format — project setting wins over detection
+    if (wwwPreference) {
+      this.urlProcessor.setPreferredWwwFormat(wwwPreference);
+    } else {
+      await this.urlProcessor.detectPreferredWwwFormat();
+    }
     const baseDomain = this.urlProcessor.getBaseDomain();
     this.logger?.info("init", `Base domain resolved: ${baseDomain}`);
 
@@ -282,10 +294,26 @@ export class WebCrawler {
     this.queue.push({ url: normalizedSeedUrl, depth: 0 });
     this.queued.add(normalizedSeedUrl);
 
+    // Seed user-specified important pages so they're crawled even if unlinked
+    for (const seedPath of seedPaths) {
+      try {
+        const seedUrl = this.urlProcessor.normalize(
+          new URL(seedPath, normalizedSeedUrl).toString(),
+        );
+        if (!this.queued.has(seedUrl)) {
+          this.queue.push({ url: seedUrl, depth: 1 });
+          this.queued.add(seedUrl);
+          this.logger?.info("init", `Seeded important page: ${seedUrl}`);
+        }
+      } catch {
+        this.logger?.warn("init", `Ignoring invalid seed path: ${seedPath}`);
+      }
+    }
+
     // Check for sitemaps first if enabled
     if (checkSitemaps) {
       this.logger?.info("sitemap", "Checking for sitemaps...");
-      await this.processSitemaps(normalizedSeedUrl, maxDepth);
+      await this.processSitemaps(normalizedSeedUrl, maxDepth, customSitemapPaths);
       this.logger?.info("sitemap", `Sitemap processing complete, ${this.queue.length} URLs queued`);
     }
 
@@ -443,10 +471,22 @@ export class WebCrawler {
   private async processSitemaps(
     baseUrl: string,
     maxDepth: number,
+    customSitemapPaths: string[] = [],
   ): Promise<void> {
     console.log("🗺️ Checking for sitemaps...");
 
+    // User-specified sitemaps (from project settings) are checked first;
+    // they may be site-relative paths or full URLs
+    const customUrls = customSitemapPaths.map((path) => {
+      try {
+        return new URL(path, `${baseUrl}/`).toString();
+      } catch {
+        return null;
+      }
+    }).filter((url): url is string => url !== null);
+
     const sitemapUrls = [
+      ...customUrls,
       `${baseUrl}/sitemap.xml`,
       `${baseUrl}/sitemap_index.xml`,
       `${baseUrl}/product-sitemap.xml`,
@@ -456,6 +496,8 @@ export class WebCrawler {
 
     for (const sitemapUrl of sitemapUrls) {
       try {
+        if (!(await this.isSafeSitemapUrl(sitemapUrl))) continue;
+
         // Create abort controller for timeout
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -495,6 +537,28 @@ export class WebCrawler {
     }
   }
 
+  /**
+   * Sitemap URLs can come from user settings, robots.txt, or nested sitemap
+   * indexes — none of which are trusted. Same-host URLs are fine (the page
+   * scanner already validates the project host); anything cross-origin must
+   * resolve to a public address so the crawler can't be used to probe
+   * internal networks.
+   */
+  private async isSafeSitemapUrl(url: string): Promise<boolean> {
+    try {
+      const target = new URL(url);
+      const base = new URL(this.urlProcessor.getBaseUrl());
+      if (this.urlProcessor.isInternal(url) || target.hostname === base.hostname) {
+        return true;
+      }
+      if (await isPublicUrl(url)) return true;
+      this.logger?.warn("sitemap", `Skipping sitemap on non-public host: ${url}`);
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   private async processSingleSitemap(
     sitemapUrl: string,
     maxDepth: number,
@@ -502,6 +566,8 @@ export class WebCrawler {
   ): Promise<void> {
     try {
       if (!content) {
+        if (!(await this.isSafeSitemapUrl(sitemapUrl))) return;
+
         // Create abort controller for timeout
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);

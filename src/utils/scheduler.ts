@@ -1,4 +1,5 @@
 import { WebCrawler } from "../services/crawler";
+import { parseProjectSettings } from "./project-settings";
 import { storeScanResults } from "../services/database";
 import { getSupabaseServiceClient } from "../services/database/client";
 import { processAuditScan } from "../services/scan-runner";
@@ -191,6 +192,7 @@ export class CrawlScheduler {
         maxPages: scheduledMaxPages,
         concurrentRequests: 2,
         timeout: Math.max(300_000, scheduledMaxPages * 2_000),
+        ...parseProjectSettings(project.settings, project.url).crawlOverrides,
       });
 
       console.log(
@@ -291,6 +293,7 @@ export class CrawlScheduler {
 
       const scanId = scanData.id;
       const auditMaxPages = 50;
+      const projectSettings = parseProjectSettings(project.settings, project.url);
 
       await processAuditScan(project.url, {
         maxDepth: 3,
@@ -298,6 +301,8 @@ export class CrawlScheduler {
         concurrentRequests: 2,
         timeout: Math.max(300_000, auditMaxPages * 2_000),
         crawlMode: "audit" as const,
+        ...projectSettings.crawlOverrides,
+        keyPages: projectSettings.keyPages,
       }, scanId, project.id);
 
       console.log(

@@ -29,7 +29,8 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.5.1",
     "puppeteer": "^24.9.0",
-    "supatypes": "^1.2.0"
+    "supatypes": "^1.2.0",
+    "undici": "^8.4.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.13",
