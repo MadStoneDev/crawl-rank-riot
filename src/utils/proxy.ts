@@ -17,8 +17,20 @@ function getProxyAgent(): ProxyAgent | null {
   return proxyAgent;
 }
 
-export function proxyFetch(url: string | URL, init?: RequestInit): Promise<Response> {
-  const agent = getProxyAgent();
+/**
+ * Fetch that only routes through the configured proxy when asked to — keeping
+ * residential-proxy bandwidth (and cost) for the requests that actually need
+ * it. By default requests go direct (free); pass { useProxy: true } to route a
+ * specific request through the proxy, or set PROXY_ALWAYS=true to force every
+ * request through it (e.g. if the server's own IP is globally blocked).
+ */
+export function proxyFetch(
+  url: string | URL,
+  init?: RequestInit,
+  opts?: { useProxy?: boolean },
+): Promise<Response> {
+  const alwaysProxy = process.env.PROXY_ALWAYS === "true";
+  const agent = opts?.useProxy || alwaysProxy ? getProxyAgent() : null;
   if (agent) {
     return fetch(url, { ...init, dispatcher: agent } as any);
   }

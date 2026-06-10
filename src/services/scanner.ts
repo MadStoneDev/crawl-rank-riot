@@ -2,12 +2,12 @@ import { createHash } from "crypto";
 import { ScanResult } from "../types";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
 import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders, detectPlatformFromHtml, platformNeedsHeadless } from "../utils/browser";
-import { proxyFetch, getProxyCredentials } from "../utils/proxy";
+import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
+import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
 
 export class Scanner {
-  private userAgent =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+  private userAgent = USER_AGENT;
 
   async scan(
     url: string,
@@ -36,6 +36,24 @@ export class Scanner {
     // Try HTTP first for simple sites
     let result = await this.httpScan(url, depth);
 
+    // If the direct request was blocked by bot protection and a proxy is
+    // available, retry just this request through the proxy. Done as a fallback
+    // (not for every request) so residential-proxy bandwidth is only spent on
+    // sites that actually block us. PROXY_ALWAYS already routed the first try
+    // through the proxy, so there's nothing more to fall back to.
+    if (
+      (result as any)._isBotChallenge &&
+      isProxyConfigured() &&
+      process.env.PROXY_ALWAYS !== "true"
+    ) {
+      console.log(`🛡️ Direct request blocked for ${url} — retrying via proxy`);
+      const proxied = await this.httpScan(url, depth, true);
+      if (!(proxied as any)._isBotChallenge) {
+        console.log(`✅ Proxy bypassed bot protection for ${url}`);
+        result = proxied;
+      }
+    }
+
     // Check if the HTTP response revealed a JS-heavy platform
     const headerPlatform = (result as any)._detectedPlatform as string | undefined;
     const htmlPlatform = result.scan_method === "http"
@@ -55,7 +73,11 @@ export class Scanner {
 
     if (isBotChallenge) {
       console.log(`🛡️ Bot challenge detected via HTTP for ${url} — skipping headless (will be blocked too)`);
-      result.errors = [...(result.errors || []), "Blocked by bot protection (Cloudflare or similar)"];
+      const blockedIp = (result as any)._challengeIp;
+      const blockedMsg = blockedIp
+        ? `Blocked by bot protection / WAF challenge page (blocked IP ${blockedIp})`
+        : "Blocked by bot protection / WAF challenge page";
+      result.errors = [...(result.errors || []), blockedMsg];
       result.title = undefined;
       result.word_count = 0;
       result.content_length = 0;
@@ -97,6 +119,7 @@ export class Scanner {
     delete (result as any)._detectedPlatform;
     delete (result as any)._rawHtml;
     delete (result as any)._isBotChallenge;
+    delete (result as any)._challengeIp;
 
     result.load_time_ms = Date.now() - startTime;
     return result;
@@ -161,15 +184,18 @@ export class Scanner {
       console.log("⏳ Waiting for dynamic content...");
       await this.waitForDynamicContent(page);
 
-      // Check for bot challenge pages (Cloudflare, etc.) — quick check, don't wait long
+      // Check for bot challenge pages (Cloudflare, SiteGround, etc.) — these
+      // often have no title and just a meta-refresh, so inspect HTML too
       const challengeTitle = await page.title();
-      if (this.isBotChallengePage(challengeTitle)) {
+      const challengeHtml = await page.content().catch(() => "");
+      if (this.isBotChallengePage(challengeTitle, challengeHtml)) {
         console.log(`🛡️ Bot challenge detected for ${url}, brief wait for auto-resolution...`);
         await this.delay(3000);
         const postChallengeTitle = await page.title();
-        if (this.isBotChallengePage(postChallengeTitle)) {
+        const postChallengeHtml = await page.content().catch(() => "");
+        if (this.isBotChallengePage(postChallengeTitle, postChallengeHtml)) {
           console.log(`🚫 Bot challenge still present for ${url} — marking as blocked`);
-          result.errors = [...(result.errors || []), "Blocked by bot protection (Cloudflare or similar)"];
+          result.errors = [...(result.errors || []), "Blocked by bot protection / WAF challenge page"];
           result.title = undefined;
           result.word_count = 0;
           result.content_length = 0;
@@ -885,6 +911,7 @@ export class Scanner {
     }
     if (html) {
       const challengeMarkers = [
+        // Cloudflare
         "cf-browser-verification",
         "challenge-platform",
         "cf-turnstile",
@@ -893,9 +920,26 @@ export class Scanner {
         "cdn-cgi/challenge-platform",
         "managed-challenge",
         "ray ID",
+        // SiteGround
+        "/.well-known/sgcaptcha",
+        "sgcaptcha",
+        // Sucuri / Imperva (Incapsula) / Distil
+        "sucuri_cloudproxy",
+        "_incapsula_resource",
+        "incident_id",
+        "distil_r_captcha",
       ];
       const lower = html.toLowerCase();
       if (challengeMarkers.some(m => lower.includes(m))) {
+        return true;
+      }
+      // Tiny page that's just a meta-refresh into a captcha/challenge endpoint
+      // (SiteGround returns this with a 202) — no real content, never a page
+      if (
+        html.length < 1500 &&
+        /http-equiv=["']?refresh/i.test(html) &&
+        /captcha|challenge|\.well-known/i.test(html)
+      ) {
         return true;
       }
     }
@@ -912,7 +956,11 @@ export class Scanner {
     return false;
   }
 
-  private async httpScan(url: string, depth: number): Promise<ScanResult> {
+  private async httpScan(
+    url: string,
+    depth: number,
+    useProxy: boolean = false,
+  ): Promise<ScanResult> {
     const urlProcessor = new UrlProcessor(url);
     const result = this.createBaseScanResult(url, depth);
 
@@ -954,7 +1002,7 @@ export class Scanner {
             },
             redirect: "manual",
             signal: controller.signal,
-          });
+          }, { useProxy });
 
           if (response.status >= 300 && response.status < 400) {
             const location = response.headers.get("location");
@@ -1037,6 +1085,10 @@ export class Scanner {
         // Flag bot challenge pages for headless escalation
         if (this.isBotChallengePage(result.title, html)) {
           (result as any)._isBotChallenge = true;
+          // SiteGround's challenge embeds the blocked IP (ipc:1.2.3.4) — capture
+          // it so we can tell the customer exactly which IP to allowlist
+          const ipMatch = html.match(/ipc:(\d{1,3}(?:\.\d{1,3}){3})/i);
+          if (ipMatch) (result as any)._challengeIp = ipMatch[1];
         }
 
         // Success - exit retry loop
@@ -1786,7 +1838,7 @@ export class Scanner {
           method: "HEAD",
           signal: controller.signal,
           headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": this.userAgent,
           },
         });
         clearTimeout(timeout);

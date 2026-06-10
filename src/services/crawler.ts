@@ -5,9 +5,9 @@ import { getSupabaseServiceClient } from "./database/client";
 import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser";
 import { ScanLogger } from "./scan-logger";
 import { proxyFetch, isProxyConfigured } from "../utils/proxy";
+import { USER_AGENT } from "../config/identity";
 
-const BROWSER_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const BROWSER_USER_AGENT = USER_AGENT;
 
 export class WebCrawler {
   private scanner: Scanner;

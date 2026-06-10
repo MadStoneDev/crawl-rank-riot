@@ -10,6 +10,7 @@
   ModernizationAnalysis,
 } from "../types";
 import { proxyFetch } from "../utils/proxy";
+import { USER_AGENT } from "../config/identity";
 
 export class AuditAnalyzer {
   private scanResults: ScanResult[];
@@ -760,7 +761,7 @@ export class AuditAnalyzer {
       const controller1 = new AbortController();
       const timeout1 = setTimeout(() => controller1.abort(), 8000);
       const robotsResp = await proxyFetch(robotsUrl, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        headers: { "User-Agent": USER_AGENT },
         signal: controller1.signal,
       });
       clearTimeout(timeout1);
@@ -782,7 +783,7 @@ export class AuditAnalyzer {
       const controller2 = new AbortController();
       const timeout2 = setTimeout(() => controller2.abort(), 8000);
       const sitemapResp = await proxyFetch(sitemapUrl, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        headers: { "User-Agent": USER_AGENT },
         signal: controller2.signal,
       });
       clearTimeout(timeout2);

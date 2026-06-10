@@ -1,6 +1,7 @@
 import { SiteLevelData, ScanResult } from "../types";
 import { isPublicUrl } from "../utils/url";
 import { proxyFetch } from "../utils/proxy";
+import { USER_AGENT } from "../config/identity";
 
 const AI_BOT_USER_AGENTS = [
   "GPTBot",
@@ -23,13 +24,14 @@ const AI_BOT_USER_AGENTS = [
 export async function analyzeSiteLevelData(
   baseUrl: string,
   crawledResults: ScanResult[],
+  options?: { sitemapPath?: string },
 ): Promise<SiteLevelData> {
   const origin = new URL(baseUrl).origin;
 
   const [llmsTxt, robotsTxt, sitemapValidation] = await Promise.allSettled([
     fetchLlmsTxt(origin),
     fetchAndParseRobotsTxt(origin),
-    validateSitemap(origin, crawledResults),
+    validateSitemap(origin, crawledResults, options?.sitemapPath),
   ]);
 
   return {
@@ -67,7 +69,7 @@ async function fetchLlmsTxt(
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await proxyFetch(`${origin}/llms.txt`, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
+      headers: { "User-Agent": USER_AGENT },
       signal: controller.signal,
       redirect: "follow",
     });
@@ -129,7 +131,7 @@ async function fetchAndParseRobotsTxt(
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await proxyFetch(`${origin}/robots.txt`, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
+      headers: { "User-Agent": USER_AGENT },
       signal: controller.signal,
       redirect: "follow",
     });
@@ -242,6 +244,7 @@ async function fetchAndParseRobotsTxt(
 async function validateSitemap(
   origin: string,
   crawledResults: ScanResult[],
+  customSitemapPath?: string,
 ): Promise<NonNullable<SiteLevelData["sitemap_validation"]>> {
   const result: NonNullable<SiteLevelData["sitemap_validation"]> = {
     found: false,
@@ -253,12 +256,21 @@ async function validateSitemap(
   };
 
   try {
-    const sitemapUrl = `${origin}/sitemap.xml`;
+    // Honour the project's custom sitemap path (relative or absolute);
+    // fall back to the conventional /sitemap.xml
+    let sitemapUrl = `${origin}/sitemap.xml`;
+    if (customSitemapPath) {
+      try {
+        sitemapUrl = new URL(customSitemapPath, `${origin}/`).toString();
+      } catch {
+        // keep the default on a malformed custom path
+      }
+    }
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const response = await proxyFetch(sitemapUrl, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
+      headers: { "User-Agent": USER_AGENT },
       signal: controller.signal,
       redirect: "follow",
     });
@@ -290,7 +302,7 @@ async function validateSitemap(
           const subTimeout = setTimeout(() => subController.abort(), 10000);
 
           const subResponse = await proxyFetch(subUrl, {
-            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" },
+            headers: { "User-Agent": USER_AGENT },
             signal: subController.signal,
             redirect: "follow",
           });

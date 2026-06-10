@@ -16,6 +16,7 @@ import { analyzeSiteLevelData } from "../services/site-analyzer";
 import { detectSiteLevelIssues } from "../services/site-issue-detector";
 import { computeNextScanAt } from "../utils/scheduler";
 import { parseProjectSettings } from "../utils/project-settings";
+import { detectBotBlock } from "../utils/bot-block";
 import { processAuditScan, createScanSnapshot as createScanSnapshotShared } from "../services/scan-runner";
 
 const router = Router();
@@ -427,7 +428,9 @@ async function processSEOScanInBackground(
     let siteLevelData;
     try {
       logger.info("analysis", "Running site-level analysis (robots.txt, sitemap, llms.txt)...");
-      siteLevelData = await analyzeSiteLevelData(url, scanResults);
+      siteLevelData = await analyzeSiteLevelData(url, scanResults, {
+        sitemapPath: options?.customSitemapPaths?.[0],
+      });
       logger.info("analysis", `Site-level analysis complete: llms.txt=${siteLevelData.llms_txt?.exists}, robots.txt=${siteLevelData.robots_txt?.exists}, sitemap=${siteLevelData.sitemap_validation?.found}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -490,11 +493,17 @@ async function processSEOScanInBackground(
       .eq("id", scanId)
       .single();
 
+    const botProtection = detectBotBlock(scanResults);
+    if (botProtection) {
+      logger.warn("complete", `Scan blocked by bot protection — ${botProtection.blocked_pages}/${botProtection.total_pages} pages challenged. Customer should allowlist ${botProtection.egress_ip || "our crawler"}.`);
+    }
+
     const mergedStats = {
       ...(typeof existingScan?.summary_stats === "object" && existingScan.summary_stats !== null
         ? existingScan.summary_stats as Record<string, unknown>
         : {}),
       ...(siteLevelData && { site_level_data: siteLevelData }),
+      ...(botProtection && { bot_protection: botProtection }),
     };
 
     await supabase

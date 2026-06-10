@@ -8,6 +8,7 @@ import { storeAuditResults } from "./audit-database";
 import { analyzeSiteLevelData } from "./site-analyzer";
 import { detectSiteLevelIssues } from "./site-issue-detector";
 import { computeNextScanAt } from "../utils/scheduler";
+import { detectBotBlock } from "../utils/bot-block";
 
 export async function createScanSnapshot(
   projectId: string,
@@ -163,7 +164,9 @@ export async function processAuditScan(
 
     let siteLevelData;
     try {
-      siteLevelData = await analyzeSiteLevelData(url, scanResults);
+      siteLevelData = await analyzeSiteLevelData(url, scanResults, {
+        sitemapPath: options?.customSitemapPaths?.[0],
+      });
       console.log(
         `Audit site-level analysis complete: robots.txt=${siteLevelData.robots_txt?.exists}, sitemap=${siteLevelData.sitemap_validation?.found}`,
       );
@@ -217,6 +220,8 @@ export async function processAuditScan(
       .eq("id", scanId)
       .single();
 
+    const botProtection = detectBotBlock(scanResults);
+
     const auditMergedStats = {
       ...(typeof auditScanRecord?.summary_stats === "object" && auditScanRecord.summary_stats !== null
         ? auditScanRecord.summary_stats as Record<string, unknown>
@@ -226,6 +231,7 @@ export async function processAuditScan(
       issues_found: totalIssues,
       backlinks_found: backlinksFound,
       ...(siteLevelData && { site_level_data: siteLevelData }),
+      ...(botProtection && { bot_protection: botProtection }),
     };
 
     await supabase
