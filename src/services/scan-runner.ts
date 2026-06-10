@@ -220,7 +220,12 @@ export async function processAuditScan(
       .eq("id", scanId)
       .single();
 
-    const botProtection = detectBotBlock(scanResults);
+    const botProtection = detectBotBlock({
+      pagesScanned: scanResults.length,
+      blockedCount: crawler.botBlockedCount,
+      homepageBlocked: crawler.botBlockedHomepage,
+      sampleError: crawler.botBlockSampleError,
+    });
 
     const auditMergedStats = {
       ...(typeof auditScanRecord?.summary_stats === "object" && auditScanRecord.summary_stats !== null

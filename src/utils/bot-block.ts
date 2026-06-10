@@ -1,4 +1,3 @@
-import { ScanResult } from "../types";
 import { getUserAgent, getEgressIp } from "../config/identity";
 
 // Shape written into scans.summary_stats.bot_protection and read by the
@@ -11,52 +10,46 @@ export interface BotProtectionInfo {
   egress_ip: string | null;
 }
 
-const BLOCK_MARKER = "Blocked by bot protection";
-
-function isBlocked(result: ScanResult): boolean {
-  return (result.errors || []).some((e) => e.includes(BLOCK_MARKER));
+export interface BotBlockSignal {
+  /** Pages scanned successfully (already excludes blocked pages) */
+  pagesScanned: number;
+  /** Pages dropped because they were a bot-protection challenge */
+  blockedCount: number;
+  /** Whether the homepage / seed URL itself was blocked */
+  homepageBlocked: boolean;
+  /** A sample "Blocked by bot protection ... (blocked IP x)" error, if any */
+  sampleError?: string;
 }
 
 /**
- * Decide whether a scan was effectively blocked by a host firewall / WAF.
- * Returns the signal to store, or null when the scan ran normally.
+ * Decide whether a scan was effectively blocked by a host firewall / WAF, and
+ * build the signal to store. Returns null when the scan ran normally.
  *
- * Treated as blocked when the homepage itself was challenged, or when at least
- * half of the crawled pages were — either way the results are unusable and the
- * customer needs to allowlist us.
+ * Note: blocked pages are dropped from the crawl results, so this works off the
+ * crawler's separate block counters rather than the scan results.
+ *
+ * Treated as blocked when the homepage itself was challenged, or when blocked
+ * pages were at least half of everything we attempted.
  */
-export function detectBotBlock(
-  scanResults: ScanResult[],
-): BotProtectionInfo | null {
-  if (scanResults.length === 0) return null;
+export function detectBotBlock(signal: BotBlockSignal): BotProtectionInfo | null {
+  const { pagesScanned, blockedCount, homepageBlocked, sampleError } = signal;
+  if (blockedCount === 0) return null;
 
-  const homepage =
-    scanResults.find((r) => r.depth === 0) || scanResults[0];
-  const blockedPages = scanResults.filter(isBlocked).length;
-  const homepageBlocked = isBlocked(homepage);
-
-  if (!homepageBlocked && blockedPages / scanResults.length < 0.5) {
+  const attempted = pagesScanned + blockedCount;
+  if (!homepageBlocked && blockedCount / attempted < 0.5) {
     return null;
   }
 
-  // Prefer an IP recovered from the challenge page itself (the most accurate),
-  // falling back to the configured egress IP
+  // Prefer the IP embedded in the challenge (most accurate), else the
+  // configured egress IP
   let egressIp: string | null = getEgressIp();
-  for (const r of scanResults) {
-    for (const e of r.errors || []) {
-      const m = e.match(/blocked IP (\d{1,3}(?:\.\d{1,3}){3})/i);
-      if (m) {
-        egressIp = m[1];
-        break;
-      }
-    }
-    if (egressIp && egressIp !== getEgressIp()) break;
-  }
+  const ipMatch = sampleError?.match(/blocked IP (\d{1,3}(?:\.\d{1,3}){3})/i);
+  if (ipMatch) egressIp = ipMatch[1];
 
   return {
     blocked: true,
-    blocked_pages: blockedPages,
-    total_pages: scanResults.length,
+    blocked_pages: blockedCount,
+    total_pages: attempted,
     user_agent: getUserAgent(),
     egress_ip: egressIp,
   };

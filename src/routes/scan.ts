@@ -493,7 +493,12 @@ async function processSEOScanInBackground(
       .eq("id", scanId)
       .single();
 
-    const botProtection = detectBotBlock(scanResults);
+    const botProtection = detectBotBlock({
+      pagesScanned: scanResults.length,
+      blockedCount: crawler.botBlockedCount,
+      homepageBlocked: crawler.botBlockedHomepage,
+      sampleError: crawler.botBlockSampleError,
+    });
     if (botProtection) {
       logger.warn("complete", `Scan blocked by bot protection — ${botProtection.blocked_pages}/${botProtection.total_pages} pages challenged. Customer should allowlist ${botProtection.egress_ip || "our crawler"}.`);
     }

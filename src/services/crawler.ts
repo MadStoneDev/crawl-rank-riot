@@ -20,6 +20,11 @@ export class WebCrawler {
   private maxConcurrentRequests: number = 3;
   private crawlMode: "seo" | "audit" = "seo";
   public crawlCompleted = false;
+  // Bot-protection tracking — blocked pages are dropped from results, so these
+  // counters are the only signal that the crawl was challenged
+  public botBlockedCount = 0;
+  public botBlockedHomepage = false;
+  public botBlockSampleError: string | undefined;
 
   private scanId: string | null = null;
   private projectId: string | null = null;
@@ -88,6 +93,15 @@ export class WebCrawler {
       // Skip pages blocked by bot protection — don't overwrite real data with challenge page content
       const isBlocked = result.errors?.some(e => e.includes("Blocked by bot protection"));
       if (isBlocked) {
+        // Track separately: blocked pages are excluded from results, so this
+        // is the only record that the crawl hit bot protection
+        this.botBlockedCount++;
+        if (item.depth === 0) this.botBlockedHomepage = true;
+        if (!this.botBlockSampleError) {
+          this.botBlockSampleError = (result.errors || []).find(e =>
+            e.includes("Blocked by bot protection"),
+          );
+        }
         this.logger?.warn("crawl", `Blocked by bot protection: ${item.url}`, { url: item.url });
         await this.updateScanProgress();
         return;
