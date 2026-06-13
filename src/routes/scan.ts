@@ -17,6 +17,7 @@ import { detectSiteLevelIssues } from "../services/site-issue-detector";
 import { computeNextScanAt } from "../utils/scheduler";
 import { parseProjectSettings } from "../utils/project-settings";
 import { detectBotBlock } from "../utils/bot-block";
+import { computeSeoScore } from "../utils/seo-score";
 import { processAuditScan, createScanSnapshot as createScanSnapshotShared } from "../services/scan-runner";
 
 const router = Router();
@@ -503,12 +504,19 @@ async function processSEOScanInBackground(
       logger.warn("complete", `Scan blocked by bot protection — ${botProtection.blocked_pages}/${botProtection.total_pages} pages challenged. Customer should allowlist ${botProtection.egress_ip || "our crawler"}.`);
     }
 
+    // Canonical SEO score, persisted so the dashboard and project page read one
+    // shared value. A blocked crawl never reached the content, so force 0.
+    const seoScore = botProtection
+      ? { technical: 0, content: 0, media: 0, aeo: 0, overall: 0 }
+      : computeSeoScore(scanResults);
+
     const mergedStats = {
       ...(typeof existingScan?.summary_stats === "object" && existingScan.summary_stats !== null
         ? existingScan.summary_stats as Record<string, unknown>
         : {}),
       ...(siteLevelData && { site_level_data: siteLevelData }),
       ...(botProtection && { bot_protection: botProtection }),
+      seo_score: seoScore,
     };
 
     await supabase
@@ -531,6 +539,7 @@ async function processSEOScanInBackground(
       totalIssues,
       existingScan?.started_at || completedAt,
       completedAt,
+      !!botProtection,
     );
 
     // Update project: last_scan_at and recalculate next_scan_at

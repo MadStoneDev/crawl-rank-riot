@@ -17,6 +17,7 @@ export async function createScanSnapshot(
   issuesFound: number,
   startedAt: string,
   completedAt: string,
+  blocked: boolean = false,
 ): Promise<void> {
   try {
     const supabase = getSupabaseServiceClient();
@@ -63,8 +64,11 @@ export async function createScanSnapshot(
       .eq("project_id", projectId)
       .like("url", "http%");
 
+    // A bot-blocked crawl never reached the site's content, so any score we
+    // could compute would be a flattering artifact of "100 minus penalties that
+    // never fired". Score it 0 rather than implying the site is healthy.
     let avgSeoScore = 0;
-    if (pagesWithData && pagesWithData.length > 0) {
+    if (!blocked && pagesWithData && pagesWithData.length > 0) {
       const scores = pagesWithData.map((page) => {
         let score = 100;
         if (!page.title) score -= 20;
@@ -143,14 +147,24 @@ export async function processAuditScan(
     const { analysis, recommendations, overallScore } =
       await analyzer.analyze();
 
+    // Detect a bot block up front so we can refuse to publish a flattering
+    // score for a crawl that never reached the site's real content.
+    const botProtection = detectBotBlock({
+      pagesScanned: scanResults.length,
+      blockedCount: crawler.botBlockedCount,
+      homepageBlocked: crawler.botBlockedHomepage,
+      sampleError: crawler.botBlockSampleError,
+    });
+    const effectiveOverallScore = botProtection ? 0 : overallScore;
+
     const auditData = {
       scan_id: scanId,
       project_id: projectId,
-      modernization_score: analysis.modernization.score,
-      performance_score: analysis.performance.score,
-      completeness_score: analysis.completeness.score,
+      modernization_score: botProtection ? 0 : analysis.modernization.score,
+      performance_score: botProtection ? 0 : analysis.performance.score,
+      completeness_score: botProtection ? 0 : analysis.completeness.score,
       conversion_score: 0,
-      overall_score: overallScore,
+      overall_score: effectiveOverallScore,
       tech_stack: analysis.techStack,
       design_analysis: analysis.design,
       missing_pages: analysis.completeness.missingPages,
@@ -220,18 +234,11 @@ export async function processAuditScan(
       .eq("id", scanId)
       .single();
 
-    const botProtection = detectBotBlock({
-      pagesScanned: scanResults.length,
-      blockedCount: crawler.botBlockedCount,
-      homepageBlocked: crawler.botBlockedHomepage,
-      sampleError: crawler.botBlockSampleError,
-    });
-
     const auditMergedStats = {
       ...(typeof auditScanRecord?.summary_stats === "object" && auditScanRecord.summary_stats !== null
         ? auditScanRecord.summary_stats as Record<string, unknown>
         : {}),
-      overall_score: overallScore,
+      overall_score: effectiveOverallScore,
       recommendations_count: recommendations.length,
       issues_found: totalIssues,
       backlinks_found: backlinksFound,
@@ -258,6 +265,7 @@ export async function processAuditScan(
       totalIssues,
       auditScanRecord?.started_at || completedAt,
       completedAt,
+      !!botProtection,
     );
 
     const { data: auditProjectData } = await supabase
@@ -279,7 +287,7 @@ export async function processAuditScan(
       .eq("id", projectId);
 
     console.log(
-      `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${overallScore}/100, ${issuesFound} issues found, ${backlinksFound} backlinks discovered`,
+      `Audit scan completed for project ${projectId}, scan ${scanId}, score: ${effectiveOverallScore}/100${botProtection ? " (forced to 0: crawl blocked by bot protection)" : ""}, ${issuesFound} issues found, ${backlinksFound} backlinks discovered`,
     );
   } catch (error) {
     const errorMessage = error instanceof Error

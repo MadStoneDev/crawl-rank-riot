@@ -1,6 +1,7 @@
 import { ScanResult } from "../types";
 import { Json } from "../database.types";
 import { getSupabaseServiceClient } from "./database/client";
+import { isUtilityPage } from "../utils/url";
 
 type IssueSeverity = "critical" | "high" | "medium" | "low";
 
@@ -453,7 +454,14 @@ function analyzePageIssues(
     }
   }
 
-  if (result.word_count < 300) {
+  // Thin content only matters for indexable content pages. Login/cart/account
+  // and other utility pages, and pages explicitly marked noindex, are expected
+  // to be sparse — flagging them is noise that erodes trust in the report.
+  if (
+    result.word_count < 300 &&
+    !result.has_robots_noindex &&
+    !isUtilityPage(result.url)
+  ) {
     addIssue(
       "thin_content",
       "medium",

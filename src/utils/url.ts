@@ -98,6 +98,19 @@ function isNonHttpUrl(url: string): boolean {
   return NON_HTTP_PROTOCOLS.some((p) => lower.startsWith(p));
 }
 
+// Login/auth/cart/account-style pages legitimately carry very little body text,
+// so content-volume heuristics (e.g. thin content) should not penalise them.
+const UTILITY_PAGE_PATTERN =
+  /\/(login|log-in|logout|log-out|signin|sign-in|signout|sign-out|register|signup|sign-up|account|my-account|password|forgot-password|reset-password|cart|basket|checkout|wishlist|auth|2fa|verify|verification)(\/|$|\?|#)/i;
+
+export function isUtilityPage(url: string): boolean {
+  try {
+    return UTILITY_PAGE_PATTERN.test(new URL(url).pathname);
+  } catch {
+    return UTILITY_PAGE_PATTERN.test(url);
+  }
+}
+
 export class UrlProcessor {
   private baseUrl: string;
   private baseDomain: string;
