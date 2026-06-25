@@ -125,6 +125,23 @@ export class AuditAnalyzer {
         shopifyConfidence += 3;
       }
 
+      // Strongest signal: the platform the scanner already detected from
+      // response headers + HTML (covers Shopify on custom domains, which the
+      // anchor-link heuristics above miss because asset URLs aren't captured).
+      const platform = (result.detected_platform || "").toLowerCase();
+      if (platform === "shopify") {
+        shopifyConfidence += 10;
+      } else if (platform === "wordpress") {
+        hasWordPress = true;
+        cms = "WordPress";
+      } else if (
+        platform &&
+        !cms &&
+        ["squarespace", "wix", "webflow", "ghost", "drupal", "joomla", "bigcommerce"].includes(platform)
+      ) {
+        cms = platform.charAt(0).toUpperCase() + platform.slice(1);
+      }
+
       // Detect CMS (WordPress) — check script/link paths only
       if (allSrcPaths.some((s) => s.includes("wp-content") || s.includes("wp-includes"))) {
         hasWordPress = true;
@@ -172,8 +189,10 @@ export class AuditAnalyzer {
       framework = "Vue.js";
     }
 
-    // Only set Shopify if no modern framework detected AND confidence is high
-    if (shopifyConfidence >= 10 && !framework) {
+    // Shopify is a CMS/platform and can coexist with a JS framework (e.g.
+    // Hydrogen), so set it whenever confidence is high — don't suppress it just
+    // because a framework was also detected.
+    if (shopifyConfidence >= 10) {
       hasShopify = true;
       cms = "Shopify";
     }
@@ -182,7 +201,7 @@ export class AuditAnalyzer {
     if (framework) {
       findings.push(`Modern framework detected: ${framework}`);
     }
-    if (cms && !framework) {
+    if (cms) {
       findings.push(`CMS detected: ${cms}`);
     }
     if (libraries.length > 0) {
@@ -730,10 +749,18 @@ export class AuditAnalyzer {
       findings.push("Site properly uses HTTPS");
     }
 
-    // Check for favicon
+    // Check for favicon. Primary signal is the favicon_url the scanner extracts
+    // from the page head; fall back to scanning the serialised result for a
+    // favicon reference (covers older shapes and /favicon.ico mentions).
     hasValidFavicon = this.scanResults.some((r) => {
-      const content = JSON.stringify(r);
-      return content.includes("favicon.ico") || content.includes('rel="icon"');
+      if (r.favicon_url) return true;
+      const content = JSON.stringify(r).toLowerCase();
+      return (
+        content.includes("favicon") ||
+        content.includes("apple-touch-icon") ||
+        content.includes('rel="icon"') ||
+        content.includes("rel='icon'")
+      );
     });
 
     if (!hasValidFavicon) {

@@ -150,6 +150,11 @@ export interface ScanResult {
 
   // Crawler metadata
   scan_method?: "http" | "headless";
+  // Platform/CMS detected from headers + HTML (e.g. "shopify", "wordpress").
+  // In-memory only (not a pages column); used by the audit tech-stack analysis.
+  detected_platform?: string | null;
+  // Favicon URL declared in the page head (<link rel="...icon...">), if any.
+  favicon_url?: string | null;
   scanned_at: string;
   errors?: string[];
   warnings?: string[];

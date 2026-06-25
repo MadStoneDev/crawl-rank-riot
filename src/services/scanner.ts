@@ -115,6 +115,11 @@ export class Scanner {
       console.log(`ℹ️ Platform ${detectedPlatform} detected for ${url}, but HTTP scan got good results — skipping headless`);
     }
 
+    // Persist the detected platform (the temp fields below are about to be
+    // cleared). The HTTP-derived detection covers Shopify/WordPress even when
+    // the final result came from the headless pass.
+    result.detected_platform = detectedPlatform || null;
+
     // Clean up internal fields
     delete (result as any)._detectedPlatform;
     delete (result as any)._rawHtml;
@@ -333,6 +338,15 @@ export class Scanner {
     // Check for viewport meta tag
     result.has_viewport_meta = await page.evaluate(() => {
       return !!document.querySelector('meta[name="viewport"]');
+    });
+
+    // Extract the declared favicon (covers Shopify, which links its icon from
+    // cdn.shopify.com rather than serving /favicon.ico at the root).
+    result.favicon_url = await page.evaluate(() => {
+      const link = document.querySelector(
+        'link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"], link[rel="mask-icon"]',
+      ) as HTMLLinkElement | null;
+      return link?.href || null;
     });
 
     // Check for mixed content (HTTPS page with HTTP resources)
@@ -1135,6 +1149,21 @@ export class Scanner {
     );
     if (metaMatch) {
       result.meta_description = metaMatch[1];
+    }
+
+    // Extract the declared favicon: any <link> whose rel contains "icon"
+    // (icon, shortcut icon, apple-touch-icon, mask-icon), in any attribute order.
+    const linkTagRegex = /<link\b[^>]*>/gi;
+    let linkTag: RegExpExecArray | null;
+    while ((linkTag = linkTagRegex.exec(html)) !== null) {
+      const tag = linkTag[0];
+      if (/rel=["'][^"']*icon[^"']*["']/i.test(tag)) {
+        const href = tag.match(/href=["']([^"']+)["']/i);
+        if (href) {
+          result.favicon_url = urlProcessor.resolve(result.url, href[1]) || href[1];
+          break;
+        }
+      }
     }
 
     // Extract headings using regex
