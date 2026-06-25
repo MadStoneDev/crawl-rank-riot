@@ -1,4 +1,5 @@
 import { ProxyAgent } from "undici";
+import { webBotAuthHeaders } from "./web-bot-auth";
 
 let proxyAgent: ProxyAgent | null = null;
 
@@ -24,17 +25,33 @@ function getProxyAgent(): ProxyAgent | null {
  * specific request through the proxy, or set PROXY_ALWAYS=true to force every
  * request through it (e.g. if the server's own IP is globally blocked).
  */
-export function proxyFetch(
+export async function proxyFetch(
   url: string | URL,
   init?: RequestInit,
   opts?: { useProxy?: boolean },
 ): Promise<Response> {
+  // Sign the request (Web Bot Auth) when configured, so verifiers can recognise
+  // us. No-op (returns null) when WEB_BOT_AUTH_PRIVATE_JWK is unset.
+  let finalInit = init;
+  try {
+    const sigHeaders = await webBotAuthHeaders(url);
+    if (sigHeaders) {
+      finalInit = {
+        ...init,
+        headers: { ...((init?.headers as Record<string, string>) || {}), ...sigHeaders },
+      };
+    }
+  } catch (err) {
+    // Never let a signing failure block the crawl — fall back to unsigned.
+    console.error("⚠️ Web Bot Auth signing failed, sending unsigned request:", err);
+  }
+
   const alwaysProxy = process.env.PROXY_ALWAYS === "true";
   const agent = opts?.useProxy || alwaysProxy ? getProxyAgent() : null;
   if (agent) {
-    return fetch(url, { ...init, dispatcher: agent } as any);
+    return fetch(url, { ...finalInit, dispatcher: agent } as any);
   }
-  return fetch(url, init);
+  return fetch(url, finalInit);
 }
 
 export function getPuppeteerProxyArgs(): string[] {
