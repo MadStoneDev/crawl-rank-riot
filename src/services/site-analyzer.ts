@@ -292,41 +292,84 @@ async function validateSitemap(
     }
 
     let sitemapUrls: string[] = [];
+    let hasLastmod = content.includes("<lastmod>");
 
     if (content.includes("<sitemapindex")) {
-      const subSitemapUrls = extractLocsFromXml(content);
+      // A sitemap index points to more sitemaps (posts, products, pages, ...),
+      // which may themselves be indexes. Traverse breadth-first, following
+      // nesting up to a depth and an overall fetch cap, deduping and guarding
+      // against loops.
+      const MAX_SUB_SITEMAPS = 50;
+      const MAX_DEPTH = 3;
+      const visited = new Set<string>([normalizeForComparison(sitemapUrl)]);
+      const queue = extractLocsFromXml(content).map((u) => ({ url: u, depth: 1 }));
+      let scanned = 0;
+      let capped = false;
 
-      for (const subUrl of subSitemapUrls.slice(0, 10)) {
+      while (queue.length > 0) {
+        if (scanned >= MAX_SUB_SITEMAPS) {
+          capped = true;
+          break;
+        }
+        const { url: subUrl, depth } = queue.shift()!;
+        const norm = normalizeForComparison(subUrl);
+        if (visited.has(norm)) continue;
+        visited.add(norm);
+
         try {
           const subController = new AbortController();
           const subTimeout = setTimeout(() => subController.abort(), 10000);
-
           const subResponse = await proxyFetch(subUrl, {
             headers: { "User-Agent": USER_AGENT },
             signal: subController.signal,
             redirect: "follow",
           });
-
           clearTimeout(subTimeout);
+          scanned++;
 
-          if (subResponse.ok) {
-            const subContent = await subResponse.text();
-            sitemapUrls.push(...extractLocsFromXml(subContent));
-          } else {
+          if (!subResponse.ok) {
             result.errors.push(
               `Sub-sitemap ${subUrl} returned HTTP ${subResponse.status}`,
             );
+            continue;
+          }
+
+          const subContent = await subResponse.text();
+          if (subContent.includes("<lastmod>")) hasLastmod = true;
+
+          if (subContent.includes("<sitemapindex")) {
+            // Nested index — follow its children unless we're at the depth limit.
+            if (depth < MAX_DEPTH) {
+              for (const childUrl of extractLocsFromXml(subContent)) {
+                queue.push({ url: childUrl, depth: depth + 1 });
+              }
+            } else {
+              result.errors.push(
+                `Sitemap nesting exceeds ${MAX_DEPTH} levels; ${subUrl} not fully traversed`,
+              );
+            }
+          } else {
+            sitemapUrls.push(...extractLocsFromXml(subContent));
           }
         } catch {
           result.errors.push(`Failed to fetch sub-sitemap: ${subUrl}`);
         }
       }
+
+      result.sub_sitemaps_scanned = scanned;
+      if (capped) {
+        result.errors.push(
+          `Sitemap index lists more than ${MAX_SUB_SITEMAPS} sub-sitemaps; only the first ${MAX_SUB_SITEMAPS} were scanned`,
+        );
+      }
+      // The same page URL can appear across multiple sub-sitemaps.
+      sitemapUrls = [...new Set(sitemapUrls)];
     } else {
       sitemapUrls = extractLocsFromXml(content);
     }
 
     result.url_count = sitemapUrls.length;
-    result.has_lastmod = content.includes("<lastmod>");
+    result.has_lastmod = hasLastmod;
     result.valid = sitemapUrls.length > 0 && result.errors.length === 0;
 
     if (sitemapUrls.length === 0) {

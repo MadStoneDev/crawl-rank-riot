@@ -179,6 +179,7 @@ export interface SiteLevelData {
     url?: string;
     valid: boolean;
     url_count?: number;
+    sub_sitemaps_scanned?: number;
     errors: string[];
     has_lastmod: boolean;
     urls_in_sitemap_not_crawled: string[];
