@@ -539,7 +539,7 @@ async function processSEOScanInBackground(
       totalIssues,
       existingScan?.started_at || completedAt,
       completedAt,
-      !!botProtection,
+      seoScore.overall,
     );
 
     // Update project: last_scan_at and recalculate next_scan_at

@@ -17,7 +17,11 @@ export async function createScanSnapshot(
   issuesFound: number,
   startedAt: string,
   completedAt: string,
-  blocked: boolean = false,
+  // The canonical overall score already computed at the call site (forced to 0
+  // on a bot-block). The trend snapshot MUST reuse this exact value so the
+  // history chart can never disagree with the headline score. Previously this
+  // function recomputed its own "100 minus penalties" average, which diverged.
+  overallScore: number,
 ): Promise<void> {
   try {
     const supabase = getSupabaseServiceClient();
@@ -58,28 +62,10 @@ export async function createScanSnapshot(
       .eq("project_id", projectId)
       .eq("is_broken", true);
 
-    const { data: pagesWithData } = await supabase
-      .from("pages")
-      .select("title, meta_description, h1s")
-      .eq("project_id", projectId)
-      .like("url", "http%");
-
-    // A bot-blocked crawl never reached the site's content, so any score we
-    // could compute would be a flattering artifact of "100 minus penalties that
-    // never fired". Score it 0 rather than implying the site is healthy.
-    let avgSeoScore = 0;
-    if (!blocked && pagesWithData && pagesWithData.length > 0) {
-      const scores = pagesWithData.map((page) => {
-        let score = 100;
-        if (!page.title) score -= 20;
-        if (!page.meta_description) score -= 15;
-        const h1Count = Array.isArray(page.h1s) ? page.h1s.length : 0;
-        if (h1Count === 0) score -= 15;
-        else if (h1Count > 1) score -= 5;
-        return Math.max(0, score);
-      });
-      avgSeoScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-    }
+    // Reuse the canonical score passed in from the call site. A bot-blocked
+    // crawl arrives here already forced to 0, so there is no separate blocked
+    // branch and no risk of a flattering recomputed number.
+    const avgSeoScore = Math.max(0, Math.min(100, Math.round(overallScore)));
 
     const snapshotData = {
       timestamp: new Date().toISOString(),
@@ -265,7 +251,7 @@ export async function processAuditScan(
       totalIssues,
       auditScanRecord?.started_at || completedAt,
       completedAt,
-      !!botProtection,
+      effectiveOverallScore,
     );
 
     const { data: auditProjectData } = await supabase
