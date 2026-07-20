@@ -14,8 +14,6 @@ export class Scanner {
     depth: number,
     forceHeadless: boolean = false,
   ): Promise<ScanResult> {
-    const startTime = Date.now();
-
     // SSRF protection: block requests to private/reserved IP ranges
     const isSafe = await isPublicUrl(url);
     if (!isSafe) {
@@ -28,9 +26,8 @@ export class Scanner {
     // For e-commerce and JS-heavy sites, use headless browser
     if (isJavaScriptHeavySite(url) || forceHeadless) {
       console.log(`🎭 Using headless browser for: ${url}`);
-      const result = await this.headlessScan(url, depth);
-      result.load_time_ms = Date.now() - startTime;
-      return result;
+      // headlessScan sets load_time_ms to the real navigation time.
+      return await this.headlessScan(url, depth);
     }
 
     // Try HTTP first for simple sites
@@ -126,7 +123,10 @@ export class Scanner {
     delete (result as any)._isBotChallenge;
     delete (result as any)._challengeIp;
 
-    result.load_time_ms = Date.now() - startTime;
+    // load_time_ms is set inside httpScan / headlessScan to the real document
+    // load time. scan() no longer overwrites it with whole-scan wall-clock,
+    // which previously also counted proxy retries, the HTTP->headless double
+    // fetch, image HEAD requests, and our own analysis.
     return result;
   }
 
@@ -170,6 +170,9 @@ export class Scanner {
         timeout: 60000,
       });
       result.first_byte_time_ms = Date.now() - navigateStart;
+      // Real load time: navigation through DOMContentLoaded. Excludes the
+      // dynamic-content wait and extraction below, which are our processing.
+      result.load_time_ms = Date.now() - navigateStart;
 
       result.status = response?.status() || 0;
       result.url = urlProcessor.normalize(page.url());
@@ -1085,11 +1088,16 @@ export class Scanner {
 
         if (!result.content_type.includes("text/html")) {
           clearTimeout(timeoutId);
+          result.load_time_ms = Date.now() - fetchStart;
           return result;
         }
 
         const html = await response.text();
         clearTimeout(timeoutId);
+        // Real load time: first byte through full body download. Everything
+        // after this (HTML parsing, image HEADs, readability) is our analysis
+        // and must not count toward the page's load time.
+        result.load_time_ms = Date.now() - fetchStart;
         result.size_bytes = new TextEncoder().encode(html).length;
 
         await this.processHtml(result, html, urlProcessor);
