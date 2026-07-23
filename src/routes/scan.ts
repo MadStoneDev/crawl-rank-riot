@@ -1,5 +1,4 @@
 import { AppError } from "../utils/error";
-import { WebCrawler } from "../services/crawler";
 import { getSupabaseServiceClient } from "../services/database/client";
 import { Router, Request, Response, NextFunction } from "express";
 import {
@@ -7,18 +6,8 @@ import {
   errorHandlerMiddleware,
 } from "../services/api/responses";
 import { AuthenticatedRequest } from "../middleware/auth";
-import { storeScanResults } from "../services/database";
-import { detectAndStoreIssues } from "../services/issue-detector";
-import { checkAndStoreBacklinks } from "../services/backlink-checker";
-import { AuditAnalyzer } from "../services/audit-analyzer";
-import { storeAuditResults } from "../services/audit-database";
-import { analyzeSiteLevelData } from "../services/site-analyzer";
-import { detectSiteLevelIssues } from "../services/site-issue-detector";
-import { computeNextScanAt } from "../utils/scheduler";
 import { parseProjectSettings } from "../utils/project-settings";
-import { detectBotBlock } from "../utils/bot-block";
-import { computeScoreReport } from "../scoring/score-report";
-import { processAuditScan, createScanSnapshot as createScanSnapshotShared } from "../services/scan-runner";
+import { runScanPipeline } from "../services/scan-pipeline";
 
 const router = Router();
 
@@ -162,12 +151,7 @@ router.post(
       );
 
       // Run the SEO scan in the background
-      processSEOScanInBackground(
-        project.url,
-        crawlerOptions,
-        scanId,
-        project_id,
-      );
+      runScanPipeline("seo", project.url, crawlerOptions, scanId, project_id);
     } catch (error) {
       next(error);
     }
@@ -315,12 +299,7 @@ router.post(
       );
 
       // Run the audit scan in the background
-      processAuditScanInBackground(
-        project.url,
-        crawlerOptions,
-        scanId,
-        project_id,
-      );
+      runScanPipeline("audit", project.url, crawlerOptions, scanId, project_id);
     } catch (error) {
       next(error);
     }
@@ -401,249 +380,5 @@ router.get(
   },
 );
 
-const createScanSnapshot = createScanSnapshotShared;
-
-/**
- * Process SEO scan in the background
- */
-async function processSEOScanInBackground(
-  url: string,
-  options: any,
-  scanId: string,
-  projectId: string,
-): Promise<void> {
-  const crawler = new WebCrawler(url, scanId, projectId);
-  const logger = crawler.logger!;
-
-  try {
-    const scanResults = await crawler.crawl(url, options);
-
-    // Store SEO scan results
-    logger.info("store", `Storing ${scanResults.length} pages in database...`);
-    await storeScanResults(projectId, scanId, scanResults, {
-      crawlCompleted: crawler.crawlCompleted,
-    });
-    logger.info("store", `Pages stored successfully (crawlCompleted=${crawler.crawlCompleted})`);
-
-    // Run site-level analysis (llms.txt, robots.txt AI bots, sitemap validation)
-    let siteLevelData;
-    try {
-      logger.info("analysis", "Running site-level analysis (robots.txt, sitemap, llms.txt)...");
-      siteLevelData = await analyzeSiteLevelData(url, scanResults, {
-        sitemapPath: options?.customSitemapPaths?.[0],
-      });
-      logger.info("analysis", `Site-level analysis complete: llms.txt=${siteLevelData.llms_txt?.exists}, robots.txt=${siteLevelData.robots_txt?.exists}, sitemap=${siteLevelData.sitemap_validation?.found}`);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.error("analysis", `Site-level analysis failed: ${msg}`);
-    }
-
-    // Detect and store issues
-    logger.info("analysis", "Detecting SEO issues...");
-    const issuesFound = await detectAndStoreIssues(
-      scanResults,
-      projectId,
-      scanId,
-    );
-    logger.info("analysis", `Found ${issuesFound} page-level issues`);
-
-    // Detect site-level issues (llms.txt, robots.txt, sitemap)
-    let siteIssuesFound = 0;
-    if (siteLevelData) {
-      try {
-        const supabaseForLookup = getSupabaseServiceClient();
-        const { data: homepagePage } = await supabaseForLookup
-          .from("pages")
-          .select("id")
-          .eq("project_id", projectId)
-          .eq("depth", 0)
-          .limit(1)
-          .single();
-
-        siteIssuesFound = await detectSiteLevelIssues(
-          siteLevelData,
-          projectId,
-          scanId,
-          homepagePage?.id || null,
-        );
-        logger.info("analysis", `Found ${siteIssuesFound} site-level issues`);
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        logger.error("analysis", `Site-level issue detection failed: ${msg}`);
-      }
-    }
-
-    // Check for backlinks from external pages
-    logger.info("analysis", "Checking for backlinks...");
-    const backlinksFound = await checkAndStoreBacklinks(projectId, url);
-    logger.info("analysis", `Discovered ${backlinksFound} backlinks`);
-
-    // Update scan as completed — merge into existing summary_stats to preserve progress data
-    const supabase = getSupabaseServiceClient();
-    const completedAt = new Date().toISOString();
-    const totalIssues = issuesFound + siteIssuesFound;
-
-    const totalLinksScanned = scanResults.reduce(
-      (total, page) => total + page.internal_links.length + page.external_links.length,
-      0,
-    );
-
-    const { data: existingScan } = await supabase
-      .from("scans")
-      .select("started_at, summary_stats")
-      .eq("id", scanId)
-      .single();
-
-    const botProtection = detectBotBlock({
-      pagesScanned: scanResults.length,
-      blockedCount: crawler.botBlockedCount,
-      homepageBlocked: crawler.botBlockedHomepage,
-      sampleError: crawler.botBlockSampleError,
-    });
-    if (botProtection) {
-      logger.warn("complete", `Scan blocked by bot protection — ${botProtection.blocked_pages}/${botProtection.total_pages} pages challenged. Customer should allowlist ${botProtection.egress_ip || "our crawler"}.`);
-    }
-
-    // Canonical scoring, computed once here and persisted so every surface
-    // reads one shared value. A blocked crawl never reached the content, so the
-    // scorer forces 0. The full report (per-check + per-page) goes to the
-    // scan_scores table; a flat copy stays in summary_stats.seo_score for
-    // callers that only need the category numbers.
-    const scoreReport = computeScoreReport(scanResults, { blocked: !!botProtection });
-    const seoScore = {
-      technical: scoreReport.categories.technical.score,
-      content: scoreReport.categories.content.score,
-      media: scoreReport.categories.media.score,
-      aeo: scoreReport.categories.aeo.score,
-      overall: scoreReport.overall,
-    };
-
-    const mergedStats = {
-      ...(typeof existingScan?.summary_stats === "object" && existingScan.summary_stats !== null
-        ? existingScan.summary_stats as Record<string, unknown>
-        : {}),
-      ...(siteLevelData && { site_level_data: siteLevelData }),
-      ...(botProtection && { bot_protection: botProtection }),
-      seo_score: seoScore,
-    };
-
-    await supabase
-      .from("scans")
-      .update({
-        status: "completed",
-        completed_at: completedAt,
-        pages_scanned: scanResults.length,
-        links_scanned: totalLinksScanned,
-        issues_found: totalIssues,
-        summary_stats: JSON.parse(JSON.stringify(mergedStats)),
-      })
-      .eq("id", scanId);
-
-    // Persist the full canonical score report (one row per scan). Non-fatal:
-    // a failure here must not fail the scan, so it is logged and swallowed.
-    try {
-      const { error: scoreError } = await supabase
-        .from("scan_scores")
-        .upsert(
-          {
-            scan_id: scanId,
-            project_id: projectId,
-            version: scoreReport.version,
-            overall: scoreReport.overall,
-            technical: scoreReport.categories.technical.score,
-            content: scoreReport.categories.content.score,
-            media: scoreReport.categories.media.score,
-            aeo: scoreReport.categories.aeo.score,
-            geo: null,
-            blocked: scoreReport.blocked,
-            report: JSON.parse(JSON.stringify(scoreReport)),
-          },
-          { onConflict: "scan_id" },
-        );
-      if (scoreError) {
-        logger.warn("complete", `Failed to persist scan_scores: ${scoreError.message}`);
-      }
-    } catch (err) {
-      logger.warn(
-        "complete",
-        `Failed to persist scan_scores: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    // Create a snapshot for historical trends
-    await createScanSnapshot(
-      projectId,
-      scanId,
-      scanResults.length,
-      totalIssues,
-      existingScan?.started_at || completedAt,
-      completedAt,
-      seoScore.overall,
-    );
-
-    // Update project: last_scan_at and recalculate next_scan_at
-    const { data: projectData } = await supabase
-      .from("projects")
-      .select("scan_frequency")
-      .eq("id", projectId)
-      .single();
-
-    const projectUpdate: any = { last_scan_at: completedAt };
-    if (projectData?.scan_frequency) {
-      const nextScanAt = computeNextScanAt(new Date(), projectData.scan_frequency);
-      if (nextScanAt) {
-        projectUpdate.next_scan_at = nextScanAt.toISOString();
-      }
-    }
-    await supabase
-      .from("projects")
-      .update(projectUpdate)
-      .eq("id", projectId);
-
-    logger.info("complete", `Scan finished: ${scanResults.length} pages, ${totalLinksScanned} links, ${totalIssues} issues, ${backlinksFound} backlinks`);
-    await logger.close();
-  } catch (error) {
-    const errorMessage = error instanceof Error
-      ? error.message
-      : typeof error === "object" && error !== null
-        ? JSON.stringify(error)
-        : String(error);
-    logger.error("complete", `Scan failed: ${errorMessage}`);
-    await logger.close();
-
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const supabase = getSupabaseServiceClient();
-        await supabase
-          .from("scans")
-          .update({
-            status: "failed",
-            completed_at: new Date().toISOString(),
-            summary_stats: {
-              error_message: errorMessage,
-              failed_at: new Date().toISOString(),
-            },
-          })
-          .eq("id", scanId);
-        break;
-      } catch (dbError) {
-        console.error(
-          `Failed to update scan ${scanId} status to failed (attempt ${attempt + 1}/3):`,
-          dbError,
-        );
-        if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-      }
-    }
-  }
-}
-
-async function processAuditScanInBackground(
-  url: string,
-  options: any,
-  scanId: string,
-  projectId: string,
-): Promise<void> {
-  return processAuditScan(url, options, scanId, projectId);
-}
 
 export default router;
