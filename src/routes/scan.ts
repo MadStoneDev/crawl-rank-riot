@@ -17,7 +17,7 @@ import { detectSiteLevelIssues } from "../services/site-issue-detector";
 import { computeNextScanAt } from "../utils/scheduler";
 import { parseProjectSettings } from "../utils/project-settings";
 import { detectBotBlock } from "../utils/bot-block";
-import { computeSeoScore } from "../utils/seo-score";
+import { computeScoreReport } from "../scoring/score-report";
 import { processAuditScan, createScanSnapshot as createScanSnapshotShared } from "../services/scan-runner";
 
 const router = Router();
@@ -504,11 +504,19 @@ async function processSEOScanInBackground(
       logger.warn("complete", `Scan blocked by bot protection — ${botProtection.blocked_pages}/${botProtection.total_pages} pages challenged. Customer should allowlist ${botProtection.egress_ip || "our crawler"}.`);
     }
 
-    // Canonical SEO score, persisted so the dashboard and project page read one
-    // shared value. A blocked crawl never reached the content, so force 0.
-    const seoScore = botProtection
-      ? { technical: 0, content: 0, media: 0, aeo: 0, overall: 0 }
-      : computeSeoScore(scanResults);
+    // Canonical scoring, computed once here and persisted so every surface
+    // reads one shared value. A blocked crawl never reached the content, so the
+    // scorer forces 0. The full report (per-check + per-page) goes to the
+    // scan_scores table; a flat copy stays in summary_stats.seo_score for
+    // callers that only need the category numbers.
+    const scoreReport = computeScoreReport(scanResults, { blocked: !!botProtection });
+    const seoScore = {
+      technical: scoreReport.categories.technical.score,
+      content: scoreReport.categories.content.score,
+      media: scoreReport.categories.media.score,
+      aeo: scoreReport.categories.aeo.score,
+      overall: scoreReport.overall,
+    };
 
     const mergedStats = {
       ...(typeof existingScan?.summary_stats === "object" && existingScan.summary_stats !== null
@@ -530,6 +538,37 @@ async function processSEOScanInBackground(
         summary_stats: JSON.parse(JSON.stringify(mergedStats)),
       })
       .eq("id", scanId);
+
+    // Persist the full canonical score report (one row per scan). Non-fatal:
+    // a failure here must not fail the scan, so it is logged and swallowed.
+    try {
+      const { error: scoreError } = await supabase
+        .from("scan_scores")
+        .upsert(
+          {
+            scan_id: scanId,
+            project_id: projectId,
+            version: scoreReport.version,
+            overall: scoreReport.overall,
+            technical: scoreReport.categories.technical.score,
+            content: scoreReport.categories.content.score,
+            media: scoreReport.categories.media.score,
+            aeo: scoreReport.categories.aeo.score,
+            geo: null,
+            blocked: scoreReport.blocked,
+            report: JSON.parse(JSON.stringify(scoreReport)),
+          },
+          { onConflict: "scan_id" },
+        );
+      if (scoreError) {
+        logger.warn("complete", `Failed to persist scan_scores: ${scoreError.message}`);
+      }
+    } catch (err) {
+      logger.warn(
+        "complete",
+        `Failed to persist scan_scores: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Create a snapshot for historical trends
     await createScanSnapshot(

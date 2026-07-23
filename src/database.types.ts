@@ -688,6 +688,69 @@ export type Database = {
           },
         ]
       }
+      scan_scores: {
+        Row: {
+          id: string
+          scan_id: string
+          project_id: string
+          version: number
+          overall: number
+          technical: number | null
+          content: number | null
+          media: number | null
+          aeo: number | null
+          geo: number | null
+          blocked: boolean
+          report: Json
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          scan_id: string
+          project_id: string
+          version: number
+          overall: number
+          technical?: number | null
+          content?: number | null
+          media?: number | null
+          aeo?: number | null
+          geo?: number | null
+          blocked?: boolean
+          report: Json
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          scan_id?: string
+          project_id?: string
+          version?: number
+          overall?: number
+          technical?: number | null
+          content?: number | null
+          media?: number | null
+          aeo?: number | null
+          geo?: number | null
+          blocked?: boolean
+          report?: Json
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scan_scores_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: true
+            referencedRelation: "scans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scan_scores_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       scans: {
         Row: {
           id: string
