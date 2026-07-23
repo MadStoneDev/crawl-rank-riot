@@ -97,6 +97,13 @@ export interface ScanResult {
   js_count: number;
   css_count: number;
 
+  // Real asset URLs captured from the page markup (<script src>, <link
+  // rel=stylesheet href>). In-memory only (not pages columns); used by the
+  // audit tech-stack / modernization analysis to detect frameworks and CMSs
+  // from actual bundle paths instead of guessing from anchor hrefs.
+  script_srcs?: string[];
+  stylesheet_hrefs?: string[];
+
   // SEO analysis
   keywords: Array<{
     word: string;

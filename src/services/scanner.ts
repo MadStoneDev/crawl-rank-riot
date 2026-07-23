@@ -335,6 +335,8 @@ export class Scanner {
     const techData = await this.extractTechnicalData(page);
     result.js_count = techData.jsCount;
     result.css_count = techData.cssCount;
+    result.script_srcs = techData.scriptSrcs;
+    result.stylesheet_hrefs = techData.stylesheetHrefs;
     result.structured_data = techData.structuredData;
     result.schema_types = techData.schemaTypes;
 
@@ -847,15 +849,22 @@ export class Scanner {
   private async extractTechnicalData(page: Page): Promise<{
     jsCount: number;
     cssCount: number;
+    scriptSrcs: string[];
+    stylesheetHrefs: string[];
     structuredData: any[];
     schemaTypes: string[];
   }> {
     try {
       return await page.evaluate(() => {
-        const jsCount = document.querySelectorAll("script[src]").length;
-        const cssCount = document.querySelectorAll(
-          'link[rel="stylesheet"]',
-        ).length;
+        // Real, browser-resolved asset URLs for framework/CMS detection.
+        const scriptSrcs = Array.from(
+          document.querySelectorAll("script[src]"),
+        ).map((s) => (s as HTMLScriptElement).src);
+        const stylesheetHrefs = Array.from(
+          document.querySelectorAll('link[rel="stylesheet"]'),
+        ).map((l) => (l as HTMLLinkElement).href);
+        const jsCount = scriptSrcs.length;
+        const cssCount = stylesheetHrefs.length;
 
         // Extract structured data
         const structuredData: any[] = [];
@@ -894,6 +903,8 @@ export class Scanner {
         return {
           jsCount,
           cssCount,
+          scriptSrcs,
+          stylesheetHrefs,
           structuredData,
           schemaTypes: [...new Set(schemaTypes)], // Remove duplicates
         };
@@ -902,6 +913,8 @@ export class Scanner {
       return {
         jsCount: 0,
         cssCount: 0,
+        scriptSrcs: [],
+        stylesheetHrefs: [],
         structuredData: [],
         schemaTypes: [],
       };
@@ -1286,11 +1299,31 @@ export class Scanner {
     // Deduplicate schema types
     result.schema_types = [...new Set(result.schema_types)];
 
-    // Extract JS and CSS counts
-    const jsMatches = html.match(/<script[^>]*src=/gi);
-    result.js_count = jsMatches ? jsMatches.length : 0;
-    const cssMatches = html.match(/<link[^>]*rel=["']stylesheet["']/gi);
-    result.css_count = cssMatches ? cssMatches.length : 0;
+    // Capture the real <script src> and <link rel=stylesheet href> URLs so the
+    // audit tech-stack analysis can detect frameworks/CMSs from actual bundle
+    // paths (e.g. /_next/static/, wp-content, cdn.shopify.com) rather than
+    // guessing from anchor hrefs. Counts derive from the captured URLs.
+    const scriptSrcs: string[] = [];
+    const scriptSrcRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
+    let scriptMatch: RegExpExecArray | null;
+    while ((scriptMatch = scriptSrcRe.exec(html)) !== null) {
+      scriptSrcs.push(scriptMatch[1]);
+    }
+    result.script_srcs = scriptSrcs;
+    result.js_count = scriptSrcs.length;
+
+    const stylesheetHrefs: string[] = [];
+    const linkTagRe = /<link\b[^>]*>/gi;
+    let linkMatch: RegExpExecArray | null;
+    while ((linkMatch = linkTagRe.exec(html)) !== null) {
+      const tag = linkMatch[0];
+      if (/\brel\s*=\s*["']stylesheet["']/i.test(tag)) {
+        const href = tag.match(/\bhref\s*=\s*["']([^"']+)["']/i);
+        if (href) stylesheetHrefs.push(href[1]);
+      }
+    }
+    result.stylesheet_hrefs = stylesheetHrefs;
+    result.css_count = stylesheetHrefs.length;
 
     // Check for viewport meta tag
     result.has_viewport_meta = /<meta[^>]*name=["']viewport["']/i.test(html);

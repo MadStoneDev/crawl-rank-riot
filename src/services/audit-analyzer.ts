@@ -1100,38 +1100,13 @@ export class AuditAnalyzer {
    * from external link URLs that point to .js files or known CDN paths.
    */
   private extractScripts(result: ScanResult): string[] {
-    const scripts: string[] = [];
+    // Real <script src> URLs captured from the page markup (scanner populates
+    // result.script_srcs). This replaces the old approach of guessing scripts
+    // from anchor hrefs, which never saw actual bundles and produced false
+    // "no modern framework" verdicts on genuine React/Next/Vue sites.
+    const scripts = Array.isArray(result.script_srcs) ? [...result.script_srcs] : [];
 
-    // Check external link URLs for JS file patterns
-    for (const link of result.external_links) {
-      const url = link.url.toLowerCase();
-      if (
-        url.endsWith(".js") ||
-        url.includes("/js/") ||
-        url.includes("cdn.") ||
-        url.includes("_next/") ||
-        url.includes("wp-content") ||
-        url.includes("wp-includes")
-      ) {
-        scripts.push(link.url);
-      }
-    }
-
-    // Check internal link URLs for JS/framework paths
-    for (const link of result.internal_links) {
-      const url = link.url.toLowerCase();
-      if (
-        url.endsWith(".js") ||
-        url.includes("_next/") ||
-        url.includes("/static/js/") ||
-        url.includes("wp-content") ||
-        url.includes("wp-includes")
-      ) {
-        scripts.push(link.url);
-      }
-    }
-
-    // Also check the page URL itself for platform indicators
+    // Also include the page URL itself for platform indicators in the path.
     scripts.push(result.url);
 
     return scripts;
@@ -1142,28 +1117,9 @@ export class AuditAnalyzer {
    * Inferred from external links pointing to CSS/asset CDN paths.
    */
   private extractLinkTags(result: ScanResult): string[] {
-    const links: string[] = [];
-
-    for (const link of result.external_links) {
-      const url = link.url.toLowerCase();
-      if (
-        url.endsWith(".css") ||
-        url.includes("/css/") ||
-        url.includes("cdn.shopify.com") ||
-        url.includes("cdn.") ||
-        url.includes("fonts.googleapis.com")
-      ) {
-        links.push(link.url);
-      }
-    }
-
-    for (const link of result.internal_links) {
-      const url = link.url.toLowerCase();
-      if (url.endsWith(".css") || url.includes("/css/") || url.includes("/static/")) {
-        links.push(link.url);
-      }
-    }
-
-    return links;
+    // Real <link rel=stylesheet href> URLs captured from the page markup
+    // (scanner populates result.stylesheet_hrefs), e.g. cdn.shopify.com or
+    // /_next/static stylesheets used for platform detection.
+    return Array.isArray(result.stylesheet_hrefs) ? [...result.stylesheet_hrefs] : [];
   }
 }
