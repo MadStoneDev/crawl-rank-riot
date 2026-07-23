@@ -25,6 +25,17 @@
 // must do it itself. `import "dotenv/config"` runs dotenv.config() at import
 // time, ahead of the imports below (import side effects run in order).
 import "dotenv/config";
+
+// The Supabase client constructs a RealtimeClient that needs a global WebSocket.
+// Node 22 provides one; Node < 22 (e.g. a Windows Node 20 shell) does not, and
+// the client throws on init even though this script never uses realtime. Provide
+// one from `ws` (already present via puppeteer) when the global is missing. This
+// touches only this script's process, not the shared production client.
+if (typeof (globalThis as any).WebSocket === "undefined") {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  (globalThis as any).WebSocket = require("ws");
+}
+
 import { getSupabaseServiceClient } from "../services/database/client";
 import { computeScoreReport } from "../scoring/score-report";
 import { ScanResult } from "../types";
