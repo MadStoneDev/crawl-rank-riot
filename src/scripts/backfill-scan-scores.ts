@@ -20,6 +20,11 @@
  *   npx ts-node src/scripts/backfill-scan-scores.ts
  */
 
+// Load .env as the very first side effect, before any import reads process.env.
+// The normal app entry does this via src/config/index.ts; this standalone script
+// must do it itself. `import "dotenv/config"` runs dotenv.config() at import
+// time, ahead of the imports below (import side effects run in order).
+import "dotenv/config";
 import { getSupabaseServiceClient } from "../services/database/client";
 import { computeScoreReport } from "../scoring/score-report";
 import { ScanResult } from "../types";
