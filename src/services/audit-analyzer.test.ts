@@ -68,3 +68,55 @@ describe("AuditAnalyzer tech-stack detection (from real asset URLs)", () => {
     expect(tech.framework).toBeUndefined();
   });
 });
+
+// analyzeDesign is private and network-free; exercise it directly.
+function designOf(page: Parameters<typeof makeScanResult>[0]): Promise<any> {
+  const result = makeScanResult(page);
+  const analyzer = new AuditAnalyzer([result], result.url);
+  return (analyzer as any).analyzeDesign();
+}
+
+describe("AuditAnalyzer design analysis (honest signals only)", () => {
+  it("extracts real Google Font families from stylesheet hrefs", async () => {
+    const design = await designOf({
+      url: "https://example.com/",
+      stylesheet_hrefs: [
+        "https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Roboto+Mono&display=swap",
+      ],
+    });
+    expect(design.fonts).toContain("Inter");
+    expect(design.fonts).toContain("Roboto Mono");
+  });
+
+  it("detects social platforms from external link hostnames, not substrings", async () => {
+    const design = await designOf({
+      url: "https://example.com/",
+      external_links: [
+        { url: "https://www.instagram.com/acme", anchor_text: "IG", rel_attributes: [] },
+        { url: "https://x.com/acme", anchor_text: "X", rel_attributes: [] },
+      ],
+    });
+    expect(design.hasSocialLinks).toBe(true);
+    expect(design.socialPlatforms).toContain("instagram");
+    expect(design.socialPlatforms).toContain("X (Twitter)");
+    expect(design.score).toBe(100); // has social -> no penalty
+  });
+
+  it("does not false-positive social from a non-link mention", async () => {
+    // 'twitter.com' appearing only in meta/text must NOT count — only real
+    // external links do. Here there are no external links at all.
+    const design = await designOf({
+      url: "https://example.com/",
+      meta_description: "Follow us on twitter.com/acme for updates",
+      external_links: [],
+    });
+    expect(design.hasSocialLinks).toBe(false);
+    expect(design.score).toBe(90); // -10 for no social links
+  });
+
+  it("no longer reports colours or a copyright year", async () => {
+    const design = await designOf({ url: "https://example.com/" });
+    expect(design.colors).toBeUndefined();
+    expect(design.copyrightYear).toBeUndefined();
+  });
+});

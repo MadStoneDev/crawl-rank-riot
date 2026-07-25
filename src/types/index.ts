@@ -260,13 +260,9 @@ export interface TechStackAnalysis {
 
 export interface DesignAnalysis {
   score: number; // 0-100
-  colors: {
-    primary: string[];
-    text: string[];
-    background: string[];
-  };
+  // Observable design signals only. Colours and copyright year were removed
+  // because a ScanResult carries no CSS or footer text to derive them honestly.
   fonts: string[];
-  copyrightYear?: number;
   hasSocialLinks: boolean;
   socialPlatforms: string[];
   findings: string[];
