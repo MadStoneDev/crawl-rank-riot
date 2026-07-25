@@ -1902,6 +1902,10 @@ export class Scanner {
     const toCheck = images.slice(0, limit);
     const promises = toCheck.map(async (img) => {
       try {
+        // SSRF guard: img.src comes from the scanned page, so it could point at
+        // a private/internal host. Only HEAD public URLs (same guard the primary
+        // fetch uses).
+        if (!(await isPublicUrl(img.src))) return;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
         const resp = await proxyFetch(img.src, {

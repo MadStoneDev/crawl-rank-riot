@@ -1,5 +1,6 @@
 import { getSupabaseServiceClient } from "./database/client";
 import { proxyFetch } from "../utils/proxy";
+import { isPublicUrl } from "../utils/url";
 
 interface ExternalLink {
   source_page_id: string;
@@ -184,6 +185,10 @@ async function fetchAndFindBacklinks(
   const backlinks: FoundBacklink[] = [];
 
   try {
+    // SSRF guard: externalUrl comes from a scanned page's outbound links, so it
+    // could resolve to a private/internal host. Only fetch public URLs.
+    if (!(await isPublicUrl(externalUrl))) return backlinks;
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000); // 10s timeout
 
