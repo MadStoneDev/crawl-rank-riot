@@ -162,39 +162,63 @@ const BROWSER_LAUNCH_ARGS = [
  * instead of launching a new Chrome process per page scan.
  * Callers acquire the browser, create a page, scan, close the page.
  */
+/**
+ * Max headless pages open at once on the single shared Chrome. Without a cap,
+ * `concurrentRequests` (up to 10) headless scans would open that many pages on
+ * one browser simultaneously and blow up memory. Override with BROWSER_MAX_PAGES.
+ */
+const DEFAULT_MAX_PAGES = 4;
+
 export class BrowserPool {
   private browser: Browser | null = null;
   private launching: Promise<Browser> | null = null;
   private pageCount = 0;
+  private readonly maxPages: number;
+  private waiters: Array<() => void> = [];
+
+  constructor(maxPages?: number) {
+    const envMax = Number(process.env.BROWSER_MAX_PAGES);
+    this.maxPages = maxPages ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : DEFAULT_MAX_PAGES);
+  }
 
   async acquire(): Promise<Browser> {
-    if (this.browser && this.browser.connected) {
-      this.pageCount++;
-      return this.browser;
+    // Backpressure: block until a page slot frees up, so at most `maxPages`
+    // headless pages are open concurrently.
+    while (this.pageCount >= this.maxPages) {
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
     }
-
-    if (this.launching) {
-      const browser = await this.launching;
-      this.pageCount++;
-      return browser;
-    }
-
-    this.launching = puppeteer.launch({
-      headless: true,
-      args: [...BROWSER_LAUNCH_ARGS, ...getPuppeteerProxyArgs()],
-    });
+    // Claim the slot synchronously before any await below, so concurrent
+    // acquirers can't overshoot the cap.
+    this.pageCount++;
 
     try {
-      this.browser = await this.launching;
-      this.pageCount = 1;
-      return this.browser;
-    } finally {
-      this.launching = null;
+      if (this.browser && this.browser.connected) {
+        return this.browser;
+      }
+      if (this.launching) {
+        return await this.launching;
+      }
+      this.launching = puppeteer.launch({
+        headless: true,
+        args: [...BROWSER_LAUNCH_ARGS, ...getPuppeteerProxyArgs()],
+      });
+      try {
+        this.browser = await this.launching;
+        return this.browser;
+      } finally {
+        this.launching = null;
+      }
+    } catch (err) {
+      // Launch failed — give the slot back so we don't leak capacity.
+      this.release();
+      throw err;
     }
   }
 
   release(): void {
     this.pageCount = Math.max(0, this.pageCount - 1);
+    const next = this.waiters.shift();
+    if (next) next();
   }
 
   async close(): Promise<void> {
@@ -205,8 +229,12 @@ export class BrowserPool {
         // Browser may already be closed
       }
       this.browser = null;
-      this.pageCount = 0;
     }
+    this.pageCount = 0;
+    // Release any waiters so a shutdown mid-crawl doesn't hang them forever.
+    const pending = this.waiters;
+    this.waiters = [];
+    for (const w of pending) w();
   }
 }
 
