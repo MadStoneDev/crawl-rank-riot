@@ -39,6 +39,23 @@ export async function detectAndStoreIssues(
       return 0;
     }
 
+    // Bound the issues table to current state: remove issues from PRIOR scans of
+    // this project before recording the current scan's. The app reads issues as
+    // current-state (latest scan) and there is no mark-as-fixed workflow;
+    // historical issue counts live in scan_snapshots. Without this the table
+    // grows unbounded (the same issue re-inserted every scan) and cross-scan
+    // reads like the dashboard's unfixed-issue count get inflated by duplicates.
+    // This runs before detectSiteLevelIssues (same scan_id, inserted after), so
+    // the current scan's issues are preserved.
+    const { error: pruneError } = await supabase
+      .from("issues")
+      .delete()
+      .eq("project_id", projectId)
+      .neq("scan_id", scanId);
+    if (pruneError) {
+      console.error("Error pruning prior-scan issues:", pruneError);
+    }
+
     // Step 2: Fetch broken internal links for this project
     const brokenLinks = await fetchBrokenLinks(projectId);
 
@@ -116,7 +133,8 @@ export async function detectAndStoreIssues(
       });
     }
 
-    // Step 4: Insert new issues (old issues are kept for historical trends).
+    // Step 4: Insert this scan's issues. Prior scans' issues were pruned above,
+    // so a scan that finds nothing correctly leaves the project with no issues.
     if (allIssues.length === 0) {
       console.log("No issues detected for this scan");
       return 0;
