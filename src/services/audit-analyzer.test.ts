@@ -120,3 +120,33 @@ describe("AuditAnalyzer design analysis (honest signals only)", () => {
     expect(design.copyrightYear).toBeUndefined();
   });
 });
+
+// hasSufficientContent is the pure guard behind "no data = 0" for audits.
+function sufficientContent(pages: Parameters<typeof makeScanResult>[0][]): boolean {
+  const results = pages.map((p) => makeScanResult(p));
+  const analyzer = new AuditAnalyzer(results, "https://example.com/");
+  return (analyzer as any).hasSufficientContent();
+}
+
+describe("AuditAnalyzer content-sufficiency guard", () => {
+  it("is false for an empty crawl", () => {
+    expect(sufficientContent([])).toBe(false);
+  });
+
+  it("is false when the only page is 2xx but has no title and no content", () => {
+    // The blocked/blanked-crawl shape: reachable but empty. Must not score high.
+    expect(sufficientContent([{ status: 200, title: undefined, word_count: 0 }])).toBe(false);
+  });
+
+  it("is false when pages returned only non-2xx statuses", () => {
+    expect(sufficientContent([{ status: 403, title: "Blocked" }])).toBe(false);
+  });
+
+  it("is true for a real page with a title", () => {
+    expect(sufficientContent([{ status: 200, title: "Home | Acme" }])).toBe(true);
+  });
+
+  it("is true for a real page with substantial word count", () => {
+    expect(sufficientContent([{ status: 200, title: undefined, word_count: 400 }])).toBe(true);
+  });
+});

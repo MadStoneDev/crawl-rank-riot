@@ -53,8 +53,29 @@ export class AuditAnalyzer {
       modernStandards,
     };
 
+    // Content-sufficiency guard (the audit analog of "no data = 0"). Each
+    // category scores 100-minus-penalties, so a crawl that returned almost
+    // nothing triggers few penalties and would score high — e.g. performance
+    // sees no pages, reports "Good load time (0s)" and stays at 100. If the
+    // crawl did not gather enough real content to assess the site, force every
+    // category and the overall to 0 rather than publish a flattering number.
     const recommendations = this.generateRecommendations(analysis);
-    const overallScore = this.calculateOverallScore(analysis);
+    let overallScore: number;
+    if (!this.hasSufficientContent()) {
+      const note = "Not scored: the crawl did not return enough content to assess this site.";
+      modernization.score = 0;
+      performance.score = 0;
+      completeness.score = 0; // CompletenessAnalysis has no findings array
+      design.score = 0;
+      modernStandards.score = 0;
+      for (const category of [modernization, performance, design, modernStandards]) {
+        category.findings = [note, ...category.findings];
+      }
+      overallScore = 0;
+      console.log("⚠️ Audit not scored — insufficient content crawled.");
+    } else {
+      overallScore = this.calculateOverallScore(analysis);
+    }
 
     console.log(
       `✅ Audit analysis complete. Overall score: ${overallScore}/100`,
@@ -65,6 +86,21 @@ export class AuditAnalyzer {
       recommendations,
       overallScore,
     };
+  }
+
+  /**
+   * Whether the crawl gathered enough real content to legitimately score the
+   * site. Requires at least one reachable (2xx) page with actual content — a
+   * title or a non-trivial word count. A blocked/blanked/empty crawl fails this
+   * and must not produce a flattering "100 minus penalties" score.
+   */
+  private hasSufficientContent(): boolean {
+    return this.scanResults.some(
+      (r) =>
+        r.status >= 200 &&
+        r.status < 300 &&
+        ((r.word_count || 0) >= 50 || !!(r.title && r.title.trim().length > 0)),
+    );
   }
 
   /**
@@ -1089,9 +1125,8 @@ export class AuditAnalyzer {
   }
 
   /**
-   * Helper: Extract script-like sources from scan result link URLs.
-   * Since ScanResult doesn't store raw HTML, we infer script sources
-   * from external link URLs that point to .js files or known CDN paths.
+   * Helper: the real <script src> URLs captured from the page markup, plus the
+   * page URL itself (for platform indicators in the path).
    */
   private extractScripts(result: ScanResult): string[] {
     // Real <script src> URLs captured from the page markup (scanner populates
@@ -1107,8 +1142,8 @@ export class AuditAnalyzer {
   }
 
   /**
-   * Helper: Extract link tag hrefs (stylesheets, etc.) from scan result.
-   * Inferred from external links pointing to CSS/asset CDN paths.
+   * Helper: the real <link rel=stylesheet href> URLs captured from the page
+   * markup (used for platform/font detection).
    */
   private extractLinkTags(result: ScanResult): string[] {
     // Real <link rel=stylesheet href> URLs captured from the page markup
