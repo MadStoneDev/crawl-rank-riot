@@ -341,7 +341,7 @@ These are table-stakes features every major competitor has:
 9. [x] Implement browser pool for headless scanning
 10. [x] Fix race condition in URL processing (retry mechanism)
 11. [x] Cache Supabase service client (already singleton in upstream)
-12. [x] Fix env var name mismatch (SUPABASE_SERVICE_KEY / SERVICE_ROLE_KEY)
+12. [x] Fix env var name mismatch (SUPABASE_SERVICE_KEY / SUPABASE_SERVICE_ROLE_KEY)
 13. [x] Remove unused dependencies (cleaned in upstream)
 14. [x] Fix deploy script extension (fixed in upstream)
 
