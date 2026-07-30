@@ -1,8 +1,6 @@
-import { WebCrawler } from "../services/crawler";
 import { parseProjectSettings } from "./project-settings";
-import { storeScanResults } from "../services/database";
 import { getSupabaseServiceClient } from "../services/database/client";
-import { processAuditScan } from "../services/scan-runner";
+import { runScanPipeline } from "../services/scan-pipeline";
 
 export function computeNextScanAt(
   fromDate: Date,
@@ -186,72 +184,39 @@ export class CrawlScheduler {
       const scanId = scanData.id;
 
       const scheduledMaxPages = 500;
-      const crawler = new WebCrawler(project.url, scanId, project.id);
-      const results = await crawler.crawl(project.url, {
-        maxDepth: 3,
-        maxPages: scheduledMaxPages,
-        concurrentRequests: 2,
-        timeout: Math.max(300_000, scheduledMaxPages * 2_000),
-        ...parseProjectSettings(project.settings, project.url).crawlOverrides,
-      });
-
-      console.log(
-        `Scheduled SEO crawl completed for ${project.url}: ${results.length} pages`,
+      // Run the SAME full pipeline as a manual SEO scan (crawl, store, issues,
+      // site-level analysis, backlinks, scoring, snapshot). Previously this
+      // path did only crawl+store, so scheduled scans produced no score,
+      // issues, or trend point.
+      await runScanPipeline(
+        "seo",
+        project.url,
+        {
+          maxDepth: 3,
+          maxPages: scheduledMaxPages,
+          concurrentRequests: 2,
+          timeout: Math.max(300_000, scheduledMaxPages * 2_000),
+          crawlMode: "seo" as const,
+          ...parseProjectSettings(project.settings, project.url).crawlOverrides,
+        },
+        scanId,
+        project.id,
       );
 
-      await storeScanResults(project.id, scanId, results, {
-        crawlCompleted: crawler.crawlCompleted,
-      });
-
-      const now = new Date();
-      const nextScanAt = computeNextScanAt(now, project.scan_frequency);
-
-      await supabase
-        .from("projects")
-        .update({
-          last_scan_at: now.toISOString(),
-          next_scan_at: nextScanAt ? nextScanAt.toISOString() : null,
-        })
-        .eq("id", project.id);
-
-      await supabase
-        .from("scans")
-        .update({
-          status: "completed",
-          completed_at: now.toISOString(),
-          pages_scanned: results.length,
-        })
-        .eq("id", scanId);
-
       console.log(
-        `Scheduled SEO crawl successfully completed for project: ${project.name}`,
+        `Scheduled SEO scan successfully completed for project: ${project.name}`,
       );
     } catch (error) {
+      // runScanPipeline handles its own failures (marks the scan failed); this
+      // only catches setup errors before/around it. Still advance next_scan_at
+      // so a failure does not wedge the schedule.
       console.error(
         `Error in scheduled SEO crawl for project ${project.id}:`,
         error,
       );
-
-      const supabase = getSupabaseServiceClient();
-      await supabase
-        .from("scans")
-        .update({
-          status: "failed",
-          completed_at: new Date().toISOString(),
-          summary_stats: {
-            error_message:
-              error instanceof Error ? error.message : "Unknown error",
-            failed_at: new Date().toISOString(),
-          },
-        })
-        .eq("project_id", project.id)
-        .eq("status", "in_progress");
-
-      const nextScanAt = computeNextScanAt(
-        new Date(),
-        project.scan_frequency,
-      );
+      const nextScanAt = computeNextScanAt(new Date(), project.scan_frequency);
       if (nextScanAt) {
+        const supabase = getSupabaseServiceClient();
         await supabase
           .from("projects")
           .update({ next_scan_at: nextScanAt.toISOString() })
@@ -295,7 +260,7 @@ export class CrawlScheduler {
       const auditMaxPages = 50;
       const projectSettings = parseProjectSettings(project.settings, project.url);
 
-      await processAuditScan(project.url, {
+      await runScanPipeline("audit", project.url, {
         maxDepth: 3,
         maxPages: auditMaxPages,
         concurrentRequests: 2,

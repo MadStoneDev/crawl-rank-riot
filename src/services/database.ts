@@ -301,15 +301,38 @@ export async function storeScanResults(
     // STEP 9: Only clear and re-insert links if we have new ones to store
     // This prevents data loss if something fails during processing
     if (dedupedLinks.length > 0) {
-      console.log(`🔗 Replacing links: clearing old, inserting ${dedupedLinks.length} new...`);
-
-      const { error: deleteLinksError } = await supabase
-        .from("page_links")
-        .delete()
-        .eq("project_id", projectId);
-
-      if (deleteLinksError) {
-        console.error("Error clearing existing links:", deleteLinksError);
+      if (options.crawlCompleted) {
+        // Full crawl: safe to replace the whole project's links.
+        console.log(`🔗 Replacing links: clearing old, inserting ${dedupedLinks.length} new...`);
+        const { error: deleteLinksError } = await supabase
+          .from("page_links")
+          .delete()
+          .eq("project_id", projectId);
+        if (deleteLinksError) {
+          console.error("Error clearing existing links:", deleteLinksError);
+        }
+      } else {
+        // Partial crawl (e.g. timeout): only clear links for the source pages we
+        // actually re-crawled, so links from pages we never reached this scan are
+        // preserved instead of wiped (mirrors the page-deletion guard above).
+        const sourceIds = Array.from(
+          new Set(dedupedLinks.map((l) => l.source_page_id).filter(Boolean)),
+        );
+        console.log(
+          `🔗 Partial crawl: refreshing links for ${sourceIds.length} crawled source page(s), inserting ${dedupedLinks.length} new...`,
+        );
+        const chunkSize = 100;
+        for (let i = 0; i < sourceIds.length; i += chunkSize) {
+          const chunk = sourceIds.slice(i, i + chunkSize);
+          const { error: delErr } = await supabase
+            .from("page_links")
+            .delete()
+            .eq("project_id", projectId)
+            .in("source_page_id", chunk);
+          if (delErr) {
+            console.error("Error clearing links for crawled pages:", delErr);
+          }
+        }
       }
 
       for (let i = 0; i < dedupedLinks.length; i += batchSize) {

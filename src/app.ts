@@ -16,6 +16,17 @@ try {
 const app = express();
 const PORT = config.server.port;
 
+// Behind Coolify's reverse proxy the real client IP is in X-Forwarded-For.
+// Trust a fixed number of proxy hops so req.ip resolves to the actual client and
+// the rate limiters key per client instead of lumping all traffic under the
+// proxy's single IP. A fixed count (not `true`) avoids X-Forwarded-For spoofing.
+// Default 1 (single proxy); override with TRUST_PROXY_HOPS if there are more.
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS);
+app.set(
+  "trust proxy",
+  Number.isFinite(trustProxyHops) && trustProxyHops >= 0 ? trustProxyHops : 1,
+);
+
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 

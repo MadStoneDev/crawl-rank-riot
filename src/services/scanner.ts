@@ -14,8 +14,6 @@ export class Scanner {
     depth: number,
     forceHeadless: boolean = false,
   ): Promise<ScanResult> {
-    const startTime = Date.now();
-
     // SSRF protection: block requests to private/reserved IP ranges
     const isSafe = await isPublicUrl(url);
     if (!isSafe) {
@@ -28,9 +26,8 @@ export class Scanner {
     // For e-commerce and JS-heavy sites, use headless browser
     if (isJavaScriptHeavySite(url) || forceHeadless) {
       console.log(`🎭 Using headless browser for: ${url}`);
-      const result = await this.headlessScan(url, depth);
-      result.load_time_ms = Date.now() - startTime;
-      return result;
+      // headlessScan sets load_time_ms to the real navigation time.
+      return await this.headlessScan(url, depth);
     }
 
     // Try HTTP first for simple sites
@@ -126,7 +123,10 @@ export class Scanner {
     delete (result as any)._isBotChallenge;
     delete (result as any)._challengeIp;
 
-    result.load_time_ms = Date.now() - startTime;
+    // load_time_ms is set inside httpScan / headlessScan to the real document
+    // load time. scan() no longer overwrites it with whole-scan wall-clock,
+    // which previously also counted proxy retries, the HTTP->headless double
+    // fetch, image HEAD requests, and our own analysis.
     return result;
   }
 
@@ -170,6 +170,9 @@ export class Scanner {
         timeout: 60000,
       });
       result.first_byte_time_ms = Date.now() - navigateStart;
+      // Real load time: navigation through DOMContentLoaded. Excludes the
+      // dynamic-content wait and extraction below, which are our processing.
+      result.load_time_ms = Date.now() - navigateStart;
 
       result.status = response?.status() || 0;
       result.url = urlProcessor.normalize(page.url());
@@ -332,6 +335,8 @@ export class Scanner {
     const techData = await this.extractTechnicalData(page);
     result.js_count = techData.jsCount;
     result.css_count = techData.cssCount;
+    result.script_srcs = techData.scriptSrcs;
+    result.stylesheet_hrefs = techData.stylesheetHrefs;
     result.structured_data = techData.structuredData;
     result.schema_types = techData.schemaTypes;
 
@@ -844,15 +849,22 @@ export class Scanner {
   private async extractTechnicalData(page: Page): Promise<{
     jsCount: number;
     cssCount: number;
+    scriptSrcs: string[];
+    stylesheetHrefs: string[];
     structuredData: any[];
     schemaTypes: string[];
   }> {
     try {
       return await page.evaluate(() => {
-        const jsCount = document.querySelectorAll("script[src]").length;
-        const cssCount = document.querySelectorAll(
-          'link[rel="stylesheet"]',
-        ).length;
+        // Real, browser-resolved asset URLs for framework/CMS detection.
+        const scriptSrcs = Array.from(
+          document.querySelectorAll("script[src]"),
+        ).map((s) => (s as HTMLScriptElement).src);
+        const stylesheetHrefs = Array.from(
+          document.querySelectorAll('link[rel="stylesheet"]'),
+        ).map((l) => (l as HTMLLinkElement).href);
+        const jsCount = scriptSrcs.length;
+        const cssCount = stylesheetHrefs.length;
 
         // Extract structured data
         const structuredData: any[] = [];
@@ -891,6 +903,8 @@ export class Scanner {
         return {
           jsCount,
           cssCount,
+          scriptSrcs,
+          stylesheetHrefs,
           structuredData,
           schemaTypes: [...new Set(schemaTypes)], // Remove duplicates
         };
@@ -899,6 +913,8 @@ export class Scanner {
       return {
         jsCount: 0,
         cssCount: 0,
+        scriptSrcs: [],
+        stylesheetHrefs: [],
         structuredData: [],
         schemaTypes: [],
       };
@@ -1085,11 +1101,16 @@ export class Scanner {
 
         if (!result.content_type.includes("text/html")) {
           clearTimeout(timeoutId);
+          result.load_time_ms = Date.now() - fetchStart;
           return result;
         }
 
         const html = await response.text();
         clearTimeout(timeoutId);
+        // Real load time: first byte through full body download. Everything
+        // after this (HTML parsing, image HEADs, readability) is our analysis
+        // and must not count toward the page's load time.
+        result.load_time_ms = Date.now() - fetchStart;
         result.size_bytes = new TextEncoder().encode(html).length;
 
         await this.processHtml(result, html, urlProcessor);
@@ -1278,11 +1299,31 @@ export class Scanner {
     // Deduplicate schema types
     result.schema_types = [...new Set(result.schema_types)];
 
-    // Extract JS and CSS counts
-    const jsMatches = html.match(/<script[^>]*src=/gi);
-    result.js_count = jsMatches ? jsMatches.length : 0;
-    const cssMatches = html.match(/<link[^>]*rel=["']stylesheet["']/gi);
-    result.css_count = cssMatches ? cssMatches.length : 0;
+    // Capture the real <script src> and <link rel=stylesheet href> URLs so the
+    // audit tech-stack analysis can detect frameworks/CMSs from actual bundle
+    // paths (e.g. /_next/static/, wp-content, cdn.shopify.com) rather than
+    // guessing from anchor hrefs. Counts derive from the captured URLs.
+    const scriptSrcs: string[] = [];
+    const scriptSrcRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
+    let scriptMatch: RegExpExecArray | null;
+    while ((scriptMatch = scriptSrcRe.exec(html)) !== null) {
+      scriptSrcs.push(scriptMatch[1]);
+    }
+    result.script_srcs = scriptSrcs;
+    result.js_count = scriptSrcs.length;
+
+    const stylesheetHrefs: string[] = [];
+    const linkTagRe = /<link\b[^>]*>/gi;
+    let linkMatch: RegExpExecArray | null;
+    while ((linkMatch = linkTagRe.exec(html)) !== null) {
+      const tag = linkMatch[0];
+      if (/\brel\s*=\s*["']stylesheet["']/i.test(tag)) {
+        const href = tag.match(/\bhref\s*=\s*["']([^"']+)["']/i);
+        if (href) stylesheetHrefs.push(href[1]);
+      }
+    }
+    result.stylesheet_hrefs = stylesheetHrefs;
+    result.css_count = stylesheetHrefs.length;
 
     // Check for viewport meta tag
     result.has_viewport_meta = /<meta[^>]*name=["']viewport["']/i.test(html);
@@ -1861,6 +1902,10 @@ export class Scanner {
     const toCheck = images.slice(0, limit);
     const promises = toCheck.map(async (img) => {
       try {
+        // SSRF guard: img.src comes from the scanned page, so it could point at
+        // a private/internal host. Only HEAD public URLs (same guard the primary
+        // fetch uses).
+        if (!(await isPublicUrl(img.src))) return;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
         const resp = await proxyFetch(img.src, {

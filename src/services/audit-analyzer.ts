@@ -53,8 +53,29 @@ export class AuditAnalyzer {
       modernStandards,
     };
 
+    // Content-sufficiency guard (the audit analog of "no data = 0"). Each
+    // category scores 100-minus-penalties, so a crawl that returned almost
+    // nothing triggers few penalties and would score high — e.g. performance
+    // sees no pages, reports "Good load time (0s)" and stays at 100. If the
+    // crawl did not gather enough real content to assess the site, force every
+    // category and the overall to 0 rather than publish a flattering number.
     const recommendations = this.generateRecommendations(analysis);
-    const overallScore = this.calculateOverallScore(analysis);
+    let overallScore: number;
+    if (!this.hasSufficientContent()) {
+      const note = "Not scored: the crawl did not return enough content to assess this site.";
+      modernization.score = 0;
+      performance.score = 0;
+      completeness.score = 0; // CompletenessAnalysis has no findings array
+      design.score = 0;
+      modernStandards.score = 0;
+      for (const category of [modernization, performance, design, modernStandards]) {
+        category.findings = [note, ...category.findings];
+      }
+      overallScore = 0;
+      console.log("⚠️ Audit not scored — insufficient content crawled.");
+    } else {
+      overallScore = this.calculateOverallScore(analysis);
+    }
 
     console.log(
       `✅ Audit analysis complete. Overall score: ${overallScore}/100`,
@@ -65,6 +86,21 @@ export class AuditAnalyzer {
       recommendations,
       overallScore,
     };
+  }
+
+  /**
+   * Whether the crawl gathered enough real content to legitimately score the
+   * site. Requires at least one reachable (2xx) page with actual content — a
+   * title or a non-trivial word count. A blocked/blanked/empty crawl fails this
+   * and must not produce a flattering "100 minus penalties" score.
+   */
+  private hasSufficientContent(): boolean {
+    return this.scanResults.some(
+      (r) =>
+        r.status >= 200 &&
+        r.status < 300 &&
+        ((r.word_count || 0) >= 50 || !!(r.title && r.title.trim().length > 0)),
+    );
   }
 
   /**
@@ -631,97 +667,105 @@ export class AuditAnalyzer {
   }
 
   /**
-   * Analyze design elements
+   * Analyze design elements.
+   *
+   * Honesty note: a ScanResult carries no CSS and no rendered body text, so we
+   * only report design signals we can actually observe from captured data:
+   *   - Web fonts, from real <link> stylesheet hrefs (Google Fonts family names
+   *     are in the URL; other providers are named without families).
+   *   - Social presence, from the page's external link hostnames.
+   * We intentionally do NOT report colours (never captured) or a copyright year
+   * (needs footer text we don't store) rather than guess from a regex over the
+   * serialized result, which produced empty/misleading output before.
    */
   private async analyzeDesign(): Promise<DesignAnalysis> {
     console.log("🎨 Analyzing design...");
 
     let score = 100;
     const findings: string[] = [];
-    const colors = {
-      primary: [] as string[],
-      text: [] as string[],
-      background: [] as string[],
-    };
     const fonts: string[] = [];
-    let copyrightYear: number | undefined;
-    let hasSocialLinks = false;
     const socialPlatforms: string[] = [];
 
-    // Extract fonts from meta tags and content
+    const SOCIAL_DOMAINS: Record<string, string> = {
+      "facebook.com": "facebook",
+      "twitter.com": "X (Twitter)",
+      "x.com": "X (Twitter)",
+      "linkedin.com": "linkedin",
+      "instagram.com": "instagram",
+      "youtube.com": "youtube",
+      "tiktok.com": "tiktok",
+      "pinterest.com": "pinterest",
+    };
+
+    const hostnameOf = (u: string): string => {
+      try {
+        return new URL(u).hostname.replace(/^www\./, "").toLowerCase();
+      } catch {
+        return "";
+      }
+    };
+
+    const addFont = (name: string) => {
+      const f = name.trim();
+      if (f && !fonts.includes(f) && fonts.length < 8) fonts.push(f);
+    };
+
     for (const result of this.scanResults.slice(0, 5)) {
-      const content = JSON.stringify(result);
-
-      // Look for Google Fonts or font families
-      const fontMatches = content.match(/font-family[:\s]+([^;}"]+)/gi);
-      if (fontMatches) {
-        fontMatches.forEach((match) => {
-          const font = match.replace(/font-family[:\s]+/i, "").trim();
-          if (!fonts.includes(font) && fonts.length < 5) {
-            fonts.push(font);
-          }
-        });
-      }
-
-      // Look for copyright year — match "Copyright 2024" or "© 2024"
-      const copyrightMatch = content.match(/(?:copyright|©)\s*(?:.*?)\b(20\d{2})\b/i);
-      if (copyrightMatch) {
-        const year = parseInt(copyrightMatch[1]);
-        if (year > 2000 && (!copyrightYear || year > copyrightYear)) {
-          copyrightYear = year;
-        }
-      }
-
-      // Check for social links
-      const socialDomains = [
-        "facebook.com",
-        "twitter.com",
-        "x.com",
-        "linkedin.com",
-        "instagram.com",
-        "youtube.com",
-        "tiktok.com",
+      // Web fonts from real stylesheet hrefs (+ any font links in the markup).
+      const assetUrls = [
+        ...(Array.isArray(result.stylesheet_hrefs) ? result.stylesheet_hrefs : []),
+        ...(Array.isArray(result.script_srcs) ? result.script_srcs : []),
       ];
-
-      socialDomains.forEach((domain) => {
-        if (content.includes(domain) && !socialPlatforms.includes(domain)) {
-          socialPlatforms.push(domain);
-          hasSocialLinks = true;
+      for (const href of assetUrls) {
+        const lower = href.toLowerCase();
+        if (lower.includes("fonts.googleapis.com") || lower.includes("fonts.gstatic.com")) {
+          // Parse family names from ?family=Open+Sans:400&family=Inter:wght@400
+          try {
+            const url = new URL(href);
+            const families = url.searchParams.getAll("family");
+            for (const fam of families) {
+              const name = fam.split(":")[0].replace(/\+/g, " ").trim();
+              addFont(name);
+            }
+          } catch {
+            /* ignore unparseable href */
+          }
+        } else if (lower.includes("use.typekit.net") || lower.includes("fonts.adobe.com")) {
+          addFont("Adobe Fonts");
         }
-      });
+      }
+
+      // Social presence from actual external link hostnames (precise — not a
+      // substring match over the whole serialized page).
+      for (const link of result.external_links || []) {
+        const host = hostnameOf(link.url);
+        if (!host) continue;
+        for (const domain of Object.keys(SOCIAL_DOMAINS)) {
+          if ((host === domain || host.endsWith(`.${domain}`)) && !socialPlatforms.includes(SOCIAL_DOMAINS[domain])) {
+            socialPlatforms.push(SOCIAL_DOMAINS[domain]);
+          }
+        }
+      }
     }
 
-    // Evaluate design elements
+    const hasSocialLinks = socialPlatforms.length > 0;
+
     if (fonts.length > 0) {
-      findings.push(`Fonts detected: ${fonts.slice(0, 3).join(", ")}`);
-    }
-
-    if (copyrightYear && copyrightYear < new Date().getFullYear()) {
-      score -= 5;
-      findings.push(`Copyright year outdated (${copyrightYear})`);
-    } else if (copyrightYear === new Date().getFullYear()) {
-      findings.push("Copyright year is current");
+      findings.push(`Web fonts detected: ${fonts.slice(0, 3).join(", ")}`);
     }
 
     if (!hasSocialLinks) {
       score -= 10;
       findings.push("No social media links detected");
     } else {
-      findings.push(
-        `Social media presence: ${socialPlatforms.length} platforms`,
-      );
+      findings.push(`Social media presence: ${socialPlatforms.length} platform(s)`);
     }
 
     return {
       score: Math.max(0, score),
-      colors,
       fonts,
-      copyrightYear,
       hasSocialLinks,
-      socialPlatforms: socialPlatforms.map((d) => {
-        const name = d.replace(".com", "");
-        return name === "x" ? "X (Twitter)" : name;
-      }),
+      socialPlatforms,
       findings,
     };
   }
@@ -960,20 +1004,6 @@ export class AuditAnalyzer {
       });
     }
 
-    if (
-      analysis.design.copyrightYear &&
-      analysis.design.copyrightYear < new Date().getFullYear()
-    ) {
-      recommendations.push({
-        type: "nice-to-have",
-        category: "design",
-        title: "Update Copyright Year",
-        description: "Copyright year is outdated. Update to current year.",
-        impact: "Shows site is actively maintained",
-        effort: "low",
-      });
-    }
-
     // CLS risk recommendations
     const totalClsRisk = this.scanResults.reduce((sum, r) => sum + (r.cls_risk_images || 0), 0);
     if (totalClsRisk > 5) {
@@ -1095,75 +1125,30 @@ export class AuditAnalyzer {
   }
 
   /**
-   * Helper: Extract script-like sources from scan result link URLs.
-   * Since ScanResult doesn't store raw HTML, we infer script sources
-   * from external link URLs that point to .js files or known CDN paths.
+   * Helper: the real <script src> URLs captured from the page markup, plus the
+   * page URL itself (for platform indicators in the path).
    */
   private extractScripts(result: ScanResult): string[] {
-    const scripts: string[] = [];
+    // Real <script src> URLs captured from the page markup (scanner populates
+    // result.script_srcs). This replaces the old approach of guessing scripts
+    // from anchor hrefs, which never saw actual bundles and produced false
+    // "no modern framework" verdicts on genuine React/Next/Vue sites.
+    const scripts = Array.isArray(result.script_srcs) ? [...result.script_srcs] : [];
 
-    // Check external link URLs for JS file patterns
-    for (const link of result.external_links) {
-      const url = link.url.toLowerCase();
-      if (
-        url.endsWith(".js") ||
-        url.includes("/js/") ||
-        url.includes("cdn.") ||
-        url.includes("_next/") ||
-        url.includes("wp-content") ||
-        url.includes("wp-includes")
-      ) {
-        scripts.push(link.url);
-      }
-    }
-
-    // Check internal link URLs for JS/framework paths
-    for (const link of result.internal_links) {
-      const url = link.url.toLowerCase();
-      if (
-        url.endsWith(".js") ||
-        url.includes("_next/") ||
-        url.includes("/static/js/") ||
-        url.includes("wp-content") ||
-        url.includes("wp-includes")
-      ) {
-        scripts.push(link.url);
-      }
-    }
-
-    // Also check the page URL itself for platform indicators
+    // Also include the page URL itself for platform indicators in the path.
     scripts.push(result.url);
 
     return scripts;
   }
 
   /**
-   * Helper: Extract link tag hrefs (stylesheets, etc.) from scan result.
-   * Inferred from external links pointing to CSS/asset CDN paths.
+   * Helper: the real <link rel=stylesheet href> URLs captured from the page
+   * markup (used for platform/font detection).
    */
   private extractLinkTags(result: ScanResult): string[] {
-    const links: string[] = [];
-
-    for (const link of result.external_links) {
-      const url = link.url.toLowerCase();
-      if (
-        url.endsWith(".css") ||
-        url.includes("/css/") ||
-        url.includes("cdn.shopify.com") ||
-        url.includes("cdn.") ||
-        url.includes("fonts.googleapis.com")
-      ) {
-        links.push(link.url);
-      }
-    }
-
-    for (const link of result.internal_links) {
-      const url = link.url.toLowerCase();
-      if (url.endsWith(".css") || url.includes("/css/") || url.includes("/static/")) {
-        links.push(link.url);
-      }
-    }
-
-    return links;
+    // Real <link rel=stylesheet href> URLs captured from the page markup
+    // (scanner populates result.stylesheet_hrefs), e.g. cdn.shopify.com or
+    // /_next/static stylesheets used for platform detection.
+    return Array.isArray(result.stylesheet_hrefs) ? [...result.stylesheet_hrefs] : [];
   }
 }

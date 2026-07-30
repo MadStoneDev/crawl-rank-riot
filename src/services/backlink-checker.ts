@@ -1,5 +1,7 @@
 import { getSupabaseServiceClient } from "./database/client";
 import { proxyFetch } from "../utils/proxy";
+import { isPublicUrl } from "../utils/url";
+import { USER_AGENT } from "../config/identity";
 
 interface ExternalLink {
   source_page_id: string;
@@ -184,14 +186,19 @@ async function fetchAndFindBacklinks(
   const backlinks: FoundBacklink[] = [];
 
   try {
+    // SSRF guard: externalUrl comes from a scanned page's outbound links, so it
+    // could resolve to a private/internal host. Only fetch public URLs.
+    if (!(await isPublicUrl(externalUrl))) return backlinks;
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000); // 10s timeout
 
     const response = await proxyFetch(externalUrl, {
       signal: controller.signal,
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; RankRiotBot/1.0; +https://rankriot.com/bot)",
+        // Use the shared crawler identity (single source of truth) so this stays
+        // in sync and points at the correct rankriot.app domain.
+        "User-Agent": USER_AGENT,
         Accept: "text/html",
       },
       redirect: "follow",
