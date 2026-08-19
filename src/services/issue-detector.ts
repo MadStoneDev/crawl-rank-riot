@@ -544,49 +544,90 @@ function analyzePageIssues(
   // Structured data validation
   if (result.structured_data && result.structured_data.length > 0) {
     const sdIssues: string[] = [];
-    for (const sd of result.structured_data) {
-      if (!sd["@type"]) {
-        sdIssues.push("Missing @type property");
-        continue;
-      }
-      const type = sd["@type"];
 
-      if (type === "Organization" || type === "LocalBusiness") {
-        if (!sd.name) sdIssues.push(`${type}: missing "name"`);
-        if (!sd.url) sdIssues.push(`${type}: missing "url"`);
+    // A pure { "@id": "..." } object references another node; it is not a node
+    // itself and must not be expected to carry @type.
+    const isReferenceNode = (obj: any): boolean => {
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) return true;
+      const keys = Object.keys(obj).filter((k) => k !== "@context");
+      return keys.length === 1 && keys[0] === "@id";
+    };
+
+    // Unwrap top-level arrays and the { "@context", "@graph": [...] } wrapper
+    // down to the actual nodes that must carry @type. The graph wrapper itself
+    // legitimately has no @type (this is Google's recommended syntax), so it is
+    // skipped rather than flagged.
+    const collectNodes = (entry: any, out: any[]): void => {
+      if (Array.isArray(entry)) {
+        for (const el of entry) collectNodes(el, out);
+        return;
       }
-      if (type === "Article" || type === "BlogPosting" || type === "NewsArticle") {
-        if (!sd.headline) sdIssues.push(`${type}: missing "headline"`);
-        if (!sd.datePublished) sdIssues.push(`${type}: missing "datePublished"`);
-        if (!sd.author) sdIssues.push(`${type}: missing "author"`);
-        if (!sd.image) sdIssues.push(`${type}: missing "image"`);
+      if (!entry || typeof entry !== "object") return;
+      if (Array.isArray(entry["@graph"])) {
+        for (const el of entry["@graph"]) collectNodes(el, out);
+        const extra = Object.keys(entry).filter(
+          (k) => k !== "@context" && k !== "@graph",
+        );
+        if (extra.length === 0) return; // pure graph wrapper, nothing else to validate
       }
-      if (type === "Product") {
-        if (!sd.name) sdIssues.push(`Product: missing "name"`);
-        if (!sd.offers && !sd.price) sdIssues.push(`Product: missing "offers" or "price"`);
-        if (!sd.image) sdIssues.push(`Product: missing "image"`);
+      if (isReferenceNode(entry)) return;
+      out.push(entry);
+    };
+
+    // A node may declare multiple types, e.g. "@type": ["Person", "Author"].
+    const typesOf = (node: any): string[] => {
+      const t = node["@type"];
+      if (Array.isArray(t)) return t.filter((x) => typeof x === "string");
+      return typeof t === "string" ? [t] : [];
+    };
+
+    const validateNode = (node: any): void => {
+      const types = typesOf(node);
+      if (types.length === 0) {
+        sdIssues.push("Missing @type property");
+        return;
       }
-      if (type === "BreadcrumbList") {
-        if (!sd.itemListElement || !Array.isArray(sd.itemListElement) || sd.itemListElement.length === 0) {
+      const has = (name: string) => types.includes(name);
+
+      if (has("Organization") || has("LocalBusiness")) {
+        const type = has("LocalBusiness") ? "LocalBusiness" : "Organization";
+        if (!node.name) sdIssues.push(`${type}: missing "name"`);
+        if (!node.url) sdIssues.push(`${type}: missing "url"`);
+      }
+      if (has("Article") || has("BlogPosting") || has("NewsArticle")) {
+        const type = has("NewsArticle")
+          ? "NewsArticle"
+          : has("BlogPosting")
+            ? "BlogPosting"
+            : "Article";
+        if (!node.headline) sdIssues.push(`${type}: missing "headline"`);
+        if (!node.datePublished) sdIssues.push(`${type}: missing "datePublished"`);
+        if (!node.author) sdIssues.push(`${type}: missing "author"`);
+        if (!node.image) sdIssues.push(`${type}: missing "image"`);
+      }
+      if (has("Product")) {
+        if (!node.name) sdIssues.push(`Product: missing "name"`);
+        if (!node.offers && !node.price) sdIssues.push(`Product: missing "offers" or "price"`);
+        if (!node.image) sdIssues.push(`Product: missing "image"`);
+      }
+      if (has("BreadcrumbList")) {
+        if (!node.itemListElement || !Array.isArray(node.itemListElement) || node.itemListElement.length === 0) {
           sdIssues.push("BreadcrumbList: missing or empty itemListElement");
         }
       }
-      if (type === "FAQPage") {
-        if (!sd.mainEntity || !Array.isArray(sd.mainEntity) || sd.mainEntity.length === 0) {
+      if (has("FAQPage")) {
+        if (!node.mainEntity || !Array.isArray(node.mainEntity) || node.mainEntity.length === 0) {
           sdIssues.push("FAQPage: missing or empty mainEntity");
         }
       }
-      if (type === "WebSite") {
-        if (!sd.name) sdIssues.push("WebSite: missing \"name\"");
+      if (has("WebSite")) {
+        if (!node.name) sdIssues.push('WebSite: missing "name"');
       }
+    };
 
-      // Check @graph items
-      if (sd["@graph"] && Array.isArray(sd["@graph"])) {
-        for (const item of sd["@graph"]) {
-          if (!item["@type"]) sdIssues.push("@graph item missing @type");
-        }
-      }
-    }
+    const nodes: any[] = [];
+    for (const sd of result.structured_data) collectNodes(sd, nodes);
+    for (const node of nodes) validateNode(node);
 
     if (sdIssues.length > 0) {
       addIssue(
