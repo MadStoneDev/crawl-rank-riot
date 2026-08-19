@@ -116,6 +116,17 @@ export async function detectAndStoreIssues(
       }
     }
 
+    // Step 3c-2: Persist per-page inlink/outlink counts (for the link-graph
+    // export and the pages UI). Runs after all page_links are inserted; the
+    // aggregation happens in-database so it is immune to row-read caps.
+    const { error: linkCountError } = await supabase.rpc(
+      "update_page_link_counts",
+      { p_project_id: projectId },
+    );
+    if (linkCountError) {
+      console.error("Error updating page link counts:", linkCountError);
+    }
+
     // Step 3d: Add broken link issues (sourced from page_links table)
     for (const link of brokenLinks) {
       allIssues.push({

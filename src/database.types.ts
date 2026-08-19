@@ -419,6 +419,10 @@ export type Database = {
           has_robots_noindex: boolean | null
           has_robots_nofollow: boolean | null
           depth: number | null
+          inlink_count: number | null
+          unique_inlink_count: number | null
+          outlink_count: number | null
+          unique_outlink_count: number | null
           crawl_priority: number | null
           redirect_url: string | null
           content_type: string | null
@@ -469,6 +473,10 @@ export type Database = {
           has_robots_noindex?: boolean | null
           has_robots_nofollow?: boolean | null
           depth?: number | null
+          inlink_count?: number | null
+          unique_inlink_count?: number | null
+          outlink_count?: number | null
+          unique_outlink_count?: number | null
           crawl_priority?: number | null
           redirect_url?: string | null
           content_type?: string | null
@@ -519,6 +527,10 @@ export type Database = {
           has_robots_noindex?: boolean | null
           has_robots_nofollow?: boolean | null
           depth?: number | null
+          inlink_count?: number | null
+          unique_inlink_count?: number | null
+          outlink_count?: number | null
+          unique_outlink_count?: number | null
           crawl_priority?: number | null
           redirect_url?: string | null
           content_type?: string | null
@@ -920,6 +932,12 @@ export type Database = {
           p_user_id: string
           p_scans: number
           p_pages: number
+        }
+        Returns: undefined
+      }
+      update_page_link_counts: {
+        Args: {
+          p_project_id: string
         }
         Returns: undefined
       }
