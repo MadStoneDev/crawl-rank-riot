@@ -1,8 +1,75 @@
 import { ScanResult } from "../types";
 import { Tables } from "../database.types";
 import { getSupabaseServiceClient } from "./database/client";
+import { proxyFetch } from "../utils/proxy";
+import { isPublicUrl } from "../utils/url";
 
 type Page = Tables<`pages`>;
+
+// External link health check — bounds so a link-heavy site can't stall a crawl.
+const EXTERNAL_CHECK_CONCURRENCY = 10;
+const EXTERNAL_CHECK_TIMEOUT_MS = 8000;
+const EXTERNAL_CHECK_CAP = 500;
+
+/**
+ * Check the HTTP status of external URLs (HEAD, falling back to GET). Returns a
+ * map of url -> { status, broken }. Network errors / timeouts map to status 0
+ * (broken). SSRF-guarded and concurrency-limited.
+ */
+async function checkExternalLinkStatuses(
+  urls: string[],
+): Promise<Map<string, { status: number | null; broken: boolean }>> {
+  const results = new Map<string, { status: number | null; broken: boolean }>();
+  const queue = [...urls];
+  const ua = process.env.CRAWLER_USER_AGENT || "RankRiotBot";
+
+  const checkOne = async (url: string): Promise<void> => {
+    try {
+      if (!(await isPublicUrl(url))) {
+        // Can't safely probe a private/reserved address — don't flag it broken.
+        results.set(url, { status: null, broken: false });
+        return;
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), EXTERNAL_CHECK_TIMEOUT_MS);
+      try {
+        let resp = await proxyFetch(url, {
+          method: "HEAD",
+          redirect: "follow",
+          signal: controller.signal,
+          headers: { "User-Agent": ua },
+        });
+        // Some servers reject HEAD (405/501) — retry with a minimal GET.
+        if (resp.status === 405 || resp.status === 501) {
+          resp = await proxyFetch(url, {
+            method: "GET",
+            redirect: "follow",
+            signal: controller.signal,
+            headers: { "User-Agent": ua, Range: "bytes=0-0" },
+          });
+        }
+        results.set(url, { status: resp.status, broken: resp.status >= 400 });
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      // DNS failure / connection refused / timeout — treat as unreachable.
+      results.set(url, { status: 0, broken: true });
+    }
+  };
+
+  const worker = async (): Promise<void> => {
+    while (queue.length) {
+      const url = queue.shift();
+      if (!url) break;
+      await checkOne(url);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: EXTERNAL_CHECK_CONCURRENCY }, () => worker()),
+  );
+  return results;
+}
 
 /**
  * Store scan results in the database with deduplication, UPSERT, and cleanup
@@ -301,6 +368,44 @@ export async function storeScanResults(
     }
     const dedupedLinks = Array.from(linkDedupeMap.values());
     console.log(`🔗 Links built: ${allLinks.length}, after dedup: ${dedupedLinks.length}`);
+
+    // STEP 8.5: Check external link health. The crawl already knows internal
+    // link status (destination pages are crawled), but external targets are
+    // unchecked. Probe each unique external URL once and flag dead ones.
+    // Toggle off with EXTERNAL_LINK_CHECK=false.
+    if (process.env.EXTERNAL_LINK_CHECK !== "false") {
+      const externalUrls = Array.from(
+        new Set(
+          dedupedLinks
+            .filter((l) => l.link_type === "external")
+            .map((l) => l.destination_url),
+        ),
+      );
+      if (externalUrls.length > 0) {
+        const toCheck = externalUrls.slice(0, EXTERNAL_CHECK_CAP);
+        if (externalUrls.length > EXTERNAL_CHECK_CAP) {
+          console.log(
+            `🔗 External link check capped: probing ${EXTERNAL_CHECK_CAP} of ${externalUrls.length} unique external URLs`,
+          );
+        }
+        console.log(`🔗 Checking ${toCheck.length} unique external links...`);
+        const started = Date.now();
+        const statuses = await checkExternalLinkStatuses(toCheck);
+        const brokenCount = Array.from(statuses.values()).filter((s) => s.broken).length;
+        console.log(
+          `🔗 External link check done in ${Math.round((Date.now() - started) / 1000)}s — ${brokenCount} broken`,
+        );
+        for (const link of dedupedLinks) {
+          if (link.link_type === "external") {
+            const s = statuses.get(link.destination_url);
+            if (s) {
+              link.http_status = s.status;
+              link.is_broken = s.broken;
+            }
+          }
+        }
+      }
+    }
 
     // STEP 9: Only clear and re-insert links if we have new ones to store
     // This prevents data loss if something fails during processing
