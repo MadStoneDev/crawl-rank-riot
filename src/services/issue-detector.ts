@@ -16,6 +16,20 @@ interface DetectedIssue {
 }
 
 /**
+ * Stable identity for an issue across scans: page + type, plus a discriminator
+ * for issue types that can occur more than once on a page (e.g. one broken link
+ * per destination). Unique within a project (project_id is part of the DB index).
+ */
+function issueFingerprint(issue: DetectedIssue): string {
+  const details = (issue.details ?? {}) as Record<string, any>;
+  let discriminator = "";
+  if (issue.issue_type === "broken_internal_link") {
+    discriminator = String(details.destination_url ?? "");
+  }
+  return `${issue.page_id}:${issue.issue_type}:${discriminator}`;
+}
+
+/**
  * Detect SEO issues from scan results and store them in the database.
  *
  * Issues are accumulated across scans so that historical data is preserved
@@ -39,21 +53,17 @@ export async function detectAndStoreIssues(
       return 0;
     }
 
-    // Bound the issues table to current state: remove issues from PRIOR scans of
-    // this project before recording the current scan's. The app reads issues as
-    // current-state (latest scan) and there is no mark-as-fixed workflow;
-    // historical issue counts live in scan_snapshots. Without this the table
-    // grows unbounded (the same issue re-inserted every scan) and cross-scan
-    // reads like the dashboard's unfixed-issue count get inflated by duplicates.
-    // This runs before detectSiteLevelIssues (same scan_id, inserted after), so
-    // the current scan's issues are preserved.
-    const { error: pruneError } = await supabase
+    // One-time baseline: issues are now persistent and reconciled by fingerprint
+    // (see Step 4). Clear any pre-migration rows, which have no fingerprint, so
+    // the first reconcile starts from a clean baseline. After that there are no
+    // null-fingerprint rows and this is a no-op.
+    const { error: baselineError } = await supabase
       .from("issues")
       .delete()
       .eq("project_id", projectId)
-      .neq("scan_id", scanId);
-    if (pruneError) {
-      console.error("Error pruning prior-scan issues:", pruneError);
+      .is("fingerprint", null);
+    if (baselineError) {
+      console.error("Error clearing pre-migration issues:", baselineError);
     }
 
     // Step 2: Fetch broken internal links for this project
@@ -144,45 +154,95 @@ export async function detectAndStoreIssues(
       });
     }
 
-    // Step 4: Insert this scan's issues. Prior scans' issues were pruned above,
-    // so a scan that finds nothing correctly leaves the project with no issues.
-    if (allIssues.length === 0) {
-      console.log("No issues detected for this scan");
-      return 0;
+    // Step 4: Reconcile against existing issues by fingerprint, giving each
+    // issue a persistent identity across scans (first-seen, last-seen, age,
+    // resolved/new/unchanged). Dedupe this scan's detections by fingerprint.
+    const currentByFp = new Map<string, DetectedIssue>();
+    for (const issue of allIssues) {
+      currentByFp.set(issueFingerprint(issue), issue);
     }
 
+    // Existing issues for this project, to preserve first-seen / dismissed, grow
+    // seen_count, and detect which issues resolved this scan.
+    const { data: existingIssues } = await supabase
+      .from("issues")
+      .select("id, fingerprint, page_id, is_fixed, seen_count, created_at, dismissed")
+      .eq("project_id", projectId);
+
+    const existingByFp = new Map<string, NonNullable<typeof existingIssues>[number]>();
+    for (const e of existingIssues || []) {
+      if (e.fingerprint) existingByFp.set(e.fingerprint, e);
+    }
+
+    const nowIso = new Date().toISOString();
+    const crawledPageIds = new Set(pageIdMap.values());
+
+    // Insert new / update existing detected issues (arbiter: project_id,fingerprint).
+    const upsertRows = Array.from(currentByFp.entries()).map(([fp, issue]) => {
+      const prev = existingByFp.get(fp);
+      return {
+        project_id: issue.project_id,
+        page_id: issue.page_id,
+        scan_id: issue.scan_id,
+        issue_type: issue.issue_type,
+        severity: issue.severity,
+        description: issue.description,
+        details: issue.details,
+        fingerprint: fp,
+        is_fixed: false,
+        fixed_at: null,
+        dismissed: prev?.dismissed ?? false, // never re-open a dismissed issue
+        seen_count: prev ? (prev.seen_count ?? 1) + 1 : 1,
+        created_at: prev?.created_at ?? nowIso, // preserve first-seen
+        updated_at: nowIso,
+      };
+    });
+
     const batchSize = 50;
-    let totalInserted = 0;
-    let insertFailed = false;
-
-    // Step 5: Insert new issues in batches
-    for (let i = 0; i < allIssues.length; i += batchSize) {
-      const batch = allIssues.slice(i, i + batchSize);
-      const { error: insertError } = await supabase
+    let totalUpserted = 0;
+    for (let i = 0; i < upsertRows.length; i += batchSize) {
+      const batch = upsertRows.slice(i, i + batchSize);
+      const { error: upsertError } = await supabase
         .from("issues")
-        .insert(batch);
-
-      if (insertError) {
+        .upsert(batch, { onConflict: "project_id,fingerprint" });
+      if (upsertError) {
         console.error(
-          `Error inserting issues batch ${Math.floor(i / batchSize) + 1}:`,
-          insertError,
+          `Error upserting issues batch ${Math.floor(i / batchSize) + 1}:`,
+          upsertError,
         );
-        insertFailed = true;
       } else {
-        totalInserted += batch.length;
+        totalUpserted += batch.length;
       }
     }
 
-    if (insertFailed && totalInserted === 0) {
-      console.error(
-        "All issue inserts failed for this scan",
-      );
+    // Auto-resolve: open issues on pages we crawled this scan whose fingerprint
+    // was not detected this time. Scoped to crawled pages so a partial crawl
+    // does not resolve issues on pages we never reached.
+    const resolvedIds = (existingIssues || [])
+      .filter(
+        (e) =>
+          e.fingerprint &&
+          e.is_fixed !== true &&
+          crawledPageIds.has(e.page_id) &&
+          !currentByFp.has(e.fingerprint),
+      )
+      .map((e) => e.id);
+
+    for (let i = 0; i < resolvedIds.length; i += batchSize) {
+      const idBatch = resolvedIds.slice(i, i + batchSize);
+      const { error: resolveError } = await supabase
+        .from("issues")
+        .update({ is_fixed: true, fixed_at: nowIso, updated_at: nowIso })
+        .in("id", idBatch);
+      if (resolveError) {
+        console.error("Error auto-resolving issues:", resolveError);
+      }
     }
 
     console.log(
-      `Issue detection complete: ${totalInserted} issues found for project ${projectId} (scan ${scanId})`,
+      `Issue reconcile complete: ${totalUpserted} current, ${resolvedIds.length} resolved for project ${projectId} (scan ${scanId})`,
     );
-    return totalInserted;
+    return totalUpserted;
   } catch (error) {
     console.error("Error in issue detection:", error);
     throw error;

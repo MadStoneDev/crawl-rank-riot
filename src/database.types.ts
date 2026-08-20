@@ -194,6 +194,10 @@ export type Database = {
           details: Json | null
           is_fixed: boolean | null
           fixed_at: string | null
+          fingerprint: string | null
+          dismissed: boolean
+          dismissed_at: string | null
+          seen_count: number
           created_at: string | null
           updated_at: string | null
         }
@@ -208,6 +212,10 @@ export type Database = {
           details?: Json | null
           is_fixed?: boolean | null
           fixed_at?: string | null
+          fingerprint?: string | null
+          dismissed?: boolean
+          dismissed_at?: string | null
+          seen_count?: number
           created_at?: string | null
           updated_at?: string | null
         }
@@ -222,6 +230,10 @@ export type Database = {
           details?: Json | null
           is_fixed?: boolean | null
           fixed_at?: string | null
+          fingerprint?: string | null
+          dismissed?: boolean
+          dismissed_at?: string | null
+          seen_count?: number
           created_at?: string | null
           updated_at?: string | null
         }
