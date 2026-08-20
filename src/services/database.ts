@@ -144,6 +144,10 @@ export async function storeScanResults(
       url_issues: result.url_issues || null,
       content_hash: result.content_hash || null,
       readability_score: result.readability_score ?? null,
+      scan_method: result.scan_method ?? null,
+      detected_platform: result.detected_platform ?? null,
+      js_rendering_gap: result.js_rendering_gap ?? null,
+      schema_source: result.schema_source ?? null,
       crawl_priority: result.depth === 0 ? 10 : Math.max(1, 10 - result.depth),
       updated_at: new Date().toISOString(),
     }));
@@ -166,12 +170,39 @@ export async function storeScanResults(
         return true;
       });
 
-      const { error: pagesError } = await supabase
+      let { error: pagesError } = await supabase
         .from("pages")
         .upsert(cleanBatch, {
           onConflict: "project_id,url",
           ignoreDuplicates: false,
         });
+
+      // Render-transparency columns come from migration 20260820. If the DB
+      // hasn't been migrated yet, the upsert rejects the unknown columns —
+      // strip them and retry so scans keep working (those fields persist once
+      // the migration is applied). Safe to remove once the migration is live.
+      const RENDER_KEYS = [
+        "scan_method",
+        "detected_platform",
+        "js_rendering_gap",
+        "schema_source",
+      ];
+      if (
+        pagesError &&
+        RENDER_KEYS.some((k) => (pagesError!.message || "").includes(k))
+      ) {
+        const strippedBatch = cleanBatch.map((page) => {
+          const copy: Record<string, any> = { ...page };
+          for (const k of RENDER_KEYS) delete copy[k];
+          return copy;
+        });
+        ({ error: pagesError } = await supabase
+          .from("pages")
+          .upsert(strippedBatch as typeof cleanBatch, {
+            onConflict: "project_id,url",
+            ignoreDuplicates: false,
+          }));
+      }
 
       if (pagesError) {
         console.error("Error upserting pages batch:", pagesError);

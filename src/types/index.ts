@@ -155,11 +155,13 @@ export interface ScanResult {
   // Readability
   readability_score?: number;
 
-  // Crawler metadata
+  // Crawler metadata (render transparency — persisted to the pages table)
   scan_method?: "http" | "headless";
   // Platform/CMS detected from headers + HTML (e.g. "shopify", "wordpress").
-  // In-memory only (not a pages column); used by the audit tech-stack analysis.
   detected_platform?: string | null;
+  // Where the page's JSON-LD lives: "server" = in the raw server HTML,
+  // "client" = only after JS render (Google may miss it), "both", or "none".
+  schema_source?: "server" | "client" | "both" | "none";
   // Favicon URL declared in the page head (<link rel="...icon...">), if any.
   favicon_url?: string | null;
   scanned_at: string;

@@ -117,6 +117,14 @@ export class Scanner {
     // the final result came from the headless pass.
     result.detected_platform = detectedPlatform || null;
 
+    // For an HTTP-final result we only ever saw the raw server HTML, so any
+    // schema found is server-rendered by definition. (The headless path sets
+    // schema_source itself, distinguishing server/client/both.)
+    if (result.scan_method === "http" && !result.schema_source) {
+      result.schema_source =
+        (result.schema_types?.length ?? 0) > 0 ? "server" : "none";
+    }
+
     // Clean up internal fields
     delete (result as any)._detectedPlatform;
     delete (result as any)._rawHtml;
@@ -177,6 +185,12 @@ export class Scanner {
       result.status = response?.status() || 0;
       result.url = urlProcessor.normalize(page.url());
 
+      // Raw server HTML (before client JS runs). Captured now so we can later
+      // tell whether JSON-LD is server-rendered or injected on the client.
+      const rawServerHtml = response
+        ? await response.text().catch(() => "")
+        : "";
+
       // Capture security headers from the response
       if (response) {
         result.security_headers = this.extractSecurityHeaders(response.headers());
@@ -217,6 +231,16 @@ export class Scanner {
 
       // Capture page size in bytes
       result.size_bytes = Buffer.byteLength(await page.content(), 'utf8');
+
+      // Render transparency: is the JSON-LD in the raw server HTML, or only
+      // present after the client render? "client" means Google may not see it.
+      const rawHasSchema = /application\/ld\+json/i.test(rawServerHtml);
+      const renderedHasSchema =
+        (result.schema_types?.length ?? 0) > 0 ||
+        (result.structured_data?.length ?? 0) > 0;
+      result.schema_source = rawHasSchema
+        ? (renderedHasSchema ? "both" : "server")
+        : (renderedHasSchema ? "client" : "none");
 
       console.log(
         `🎭 Headless scan completed: ${result.title} (${result.internal_links.length} internal, ${result.external_links.length} external links)`,
