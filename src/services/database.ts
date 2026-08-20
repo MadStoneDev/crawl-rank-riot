@@ -170,39 +170,12 @@ export async function storeScanResults(
         return true;
       });
 
-      let { error: pagesError } = await supabase
+      const { error: pagesError } = await supabase
         .from("pages")
         .upsert(cleanBatch, {
           onConflict: "project_id,url",
           ignoreDuplicates: false,
         });
-
-      // Render-transparency columns come from migration 20260820. If the DB
-      // hasn't been migrated yet, the upsert rejects the unknown columns —
-      // strip them and retry so scans keep working (those fields persist once
-      // the migration is applied). Safe to remove once the migration is live.
-      const RENDER_KEYS = [
-        "scan_method",
-        "detected_platform",
-        "js_rendering_gap",
-        "schema_source",
-      ];
-      if (
-        pagesError &&
-        RENDER_KEYS.some((k) => (pagesError!.message || "").includes(k))
-      ) {
-        const strippedBatch = cleanBatch.map((page) => {
-          const copy: Record<string, any> = { ...page };
-          for (const k of RENDER_KEYS) delete copy[k];
-          return copy;
-        });
-        ({ error: pagesError } = await supabase
-          .from("pages")
-          .upsert(strippedBatch as typeof cleanBatch, {
-            onConflict: "project_id,url",
-            ignoreDuplicates: false,
-          }));
-      }
 
       if (pagesError) {
         console.error("Error upserting pages batch:", pagesError);
