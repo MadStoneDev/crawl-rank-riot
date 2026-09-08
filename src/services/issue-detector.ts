@@ -154,6 +154,47 @@ export async function detectAndStoreIssues(
       });
     }
 
+    // Step 3e: Site-wide server response (TTFB). Per-page TTFB flags would be
+    // noise on a slow host (every page fires); instead report ONE issue when
+    // the site-wide MEDIAN first-byte time is slow. This is server response
+    // time, not page weight, and is usually a single infrastructure fix.
+    const ttfbs = results
+      .map((r) => r.first_byte_time_ms)
+      .filter((v): v is number => typeof v === "number" && v > 0)
+      .sort((a, b) => a - b);
+    if (ttfbs.length >= 5) {
+      const mid = Math.floor(ttfbs.length / 2);
+      const medianTtfb =
+        ttfbs.length % 2 === 0
+          ? (ttfbs[mid - 1] + ttfbs[mid]) / 2
+          : ttfbs[mid];
+      if (medianTtfb > 600) {
+        const slowCount = ttfbs.filter((v) => v > 600).length;
+        const anchor =
+          results.find((r) => r.depth === 0 && pageIdMap.has(r.url)) ??
+          results.find((r) => pageIdMap.has(r.url));
+        const anchorPageId = anchor ? pageIdMap.get(anchor.url) : undefined;
+        if (anchor && anchorPageId) {
+          allIssues.push({
+            project_id: projectId,
+            page_id: anchorPageId,
+            scan_id: scanId,
+            issue_type: "slow_server_response",
+            severity: medianTtfb > 1200 ? "high" : "medium",
+            description: `Median server response time (TTFB) is ${Math.round(
+              medianTtfb,
+            )}ms across ${ttfbs.length} pages (${slowCount} over 600ms). This is server response time, not page weight — usually a hosting, caching, or backend fix.`,
+            details: {
+              url: anchor.url,
+              median_ttfb_ms: Math.round(medianTtfb),
+              pages_measured: ttfbs.length,
+              pages_over_600ms: slowCount,
+            },
+          });
+        }
+      }
+    }
+
     // Step 4: Reconcile against existing issues by fingerprint, giving each
     // issue a persistent identity across scans (first-seen, last-seen, age,
     // resolved/new/unchanged). Dedupe this scan's detections by fingerprint.
@@ -467,6 +508,17 @@ function analyzePageIssues(
     addIssue("missing_title", "high", "Page is missing a title tag", {
       url: result.url,
     });
+  } else if (/^[\s\-–—|:•·»]+/.test(result.title.trim())) {
+    // Title present but the page-specific part is empty — it is only the
+    // site-name suffix behind a leading separator (e.g. "- Blu Bookkeepers",
+    // from a CMS title template with no page title). As useless as a missing
+    // title for SEO/AEO, so flag it high.
+    addIssue(
+      "empty_page_title",
+      "high",
+      `Title has no page-specific text — only a site-name suffix ("${result.title.trim()}")`,
+      { url: result.url, title: result.title },
+    );
   }
 
   if (!result.meta_description || result.meta_description.trim() === "") {
@@ -1039,32 +1091,22 @@ function analyzePageIssues(
     }
   }
 
-  // Canonical pointing to a different page that also has a different canonical (chain)
-  if (
-    result.canonical_url &&
-    result.canonical_is_self === false &&
-    result.status >= 200 &&
-    result.status < 400
-  ) {
-    addIssue(
-      "canonical_not_self",
-      "medium",
-      `Page has a canonical URL pointing to a different page: ${result.canonical_url}`,
-      {
-        url: result.url,
-        canonical_url: result.canonical_url,
-      },
-    );
-  }
+  // (canonical mismatch is reported once, above, as `canonical_mismatch`;
+  // the former `canonical_not_self` fired on the identical condition and has
+  // been removed to stop double-counting the same issue.)
 
   // ── NEW: CLS / ACCESSIBILITY / RESOURCE HINTS / JS RENDERING ────────
 
-  if (result.cls_risk_images && result.cls_risk_images > 3) {
+  // Any page with dimensionless images risks layout shift. The old `> 3`
+  // threshold silently dropped most (a site with hundreds of affected pages
+  // reported a handful); report every affected page, scaling severity by count.
+  if (result.cls_risk_images && result.cls_risk_images > 0) {
+    const n = result.cls_risk_images;
     addIssue(
       "missing_image_dimensions",
-      "medium",
-      `${result.cls_risk_images} images lack explicit width/height attributes — causes Cumulative Layout Shift`,
-      { url: result.url, count: result.cls_risk_images },
+      n > 3 ? "medium" : "low",
+      `${n} image${n === 1 ? "" : "s"} lack explicit width/height attributes — causes Cumulative Layout Shift`,
+      { url: result.url, count: n },
     );
   }
 

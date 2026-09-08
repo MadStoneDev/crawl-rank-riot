@@ -287,7 +287,17 @@ async function validateSitemap(
     result.url = sitemapUrl;
 
     if (!content.includes("<urlset") && !content.includes("<sitemapindex")) {
-      result.errors.push("Sitemap does not contain valid XML urlset or sitemapindex");
+      // Capture WHAT was actually fetched so the user can tell whether the site
+      // or the crawler is at fault. A valid Yoast XSL-styled sitemap still has a
+      // <urlset> root, so landing here usually means gzip/HTML/redirect/WAF
+      // content, not a real sitemap.
+      const contentType = response.headers.get("content-type") || "unknown";
+      const snippet = content.slice(0, 200).replace(/\s+/g, " ").trim();
+      result.errors.push(
+        `Sitemap did not contain a valid <urlset> or <sitemapindex> ` +
+          `(HTTP ${response.status}, content-type: ${contentType}). ` +
+          `First bytes: ${snippet || "(empty)"}`,
+      );
       return result;
     }
 
