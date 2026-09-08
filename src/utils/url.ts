@@ -111,6 +111,58 @@ export function isUtilityPage(url: string): boolean {
   }
 }
 
+export type PageType =
+  | "content"
+  | "tag"
+  | "category"
+  | "author"
+  | "pagination"
+  | "date_archive"
+  | "search"
+  | "feed"
+  | "attachment"
+  | "utility";
+
+/**
+ * Classify a page's role from its URL. WordPress (and most CMSes) expose
+ * predictable taxonomy/pagination URLs; treating a tag archive or a `/page/2`
+ * listing as an ordinary content page is what inflates thin-content,
+ * missing-H1/meta, duplicate-title and orphan counts many times over on a real
+ * site. This is a heuristic on the URL only, which is safe because a
+ * misclassified page is merely excluded from content-audit *counts* — it is
+ * still crawled, scored, and reported under its own segment.
+ */
+export function classifyPageType(url: string): PageType {
+  let pathname = url;
+  let search = "";
+  try {
+    const u = new URL(url);
+    pathname = u.pathname;
+    search = u.search;
+  } catch {
+    // fall back to treating the whole string as a path
+  }
+  const p = pathname.toLowerCase();
+
+  if (UTILITY_PAGE_PATTERN.test(pathname)) return "utility";
+  // Pagination first: `/page/2` sits on top of any archive or content path.
+  if (/\/page\/\d+(\/|$)/i.test(p)) return "pagination";
+  if (/\/tags?\//i.test(p)) return "tag";
+  if (/\/(categor(?:y|ies)|cat)\//i.test(p)) return "category";
+  if (/\/authors?\//i.test(p)) return "author";
+  // Date-based archives: /2024, /2024/08, /2024/08/24
+  if (/^\/\d{4}(\/\d{2}(\/\d{2})?)?\/?$/.test(p)) return "date_archive";
+  if (/\/feed(\/|$)/i.test(p) || /\/comments\/feed/i.test(p)) return "feed";
+  if (/\/search(\/|$)/i.test(p) || /[?&]s=/i.test(search)) return "search";
+  if (/[?&]attachment_id=/i.test(search)) return "attachment";
+  return "content";
+}
+
+/** True when a URL is an ordinary content page (not taxonomy/pagination/etc.). */
+export function isContentPage(url: string): boolean {
+  return classifyPageType(url) === "content";
+}
+
 export class UrlProcessor {
   private baseUrl: string;
   private baseDomain: string;

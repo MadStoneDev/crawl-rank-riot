@@ -1,7 +1,7 @@
 import { ScanResult } from "../types";
 import { Json } from "../database.types";
 import { getSupabaseServiceClient } from "./database/client";
-import { isUtilityPage } from "../utils/url";
+import { isContentPage } from "../utils/url";
 
 type IssueSeverity = "critical" | "high" | "medium" | "low";
 
@@ -110,6 +110,10 @@ export async function detectAndStoreIssues(
 
       for (const result of results) {
         if (result.depth === 0) continue;
+        // Tag/category/author/pagination pages are reachable through archive
+        // navigation, not in-content links; flagging them as orphans is noise
+        // (they were the bulk of false orphans on real sites).
+        if (!isContentPage(result.url)) continue;
         const pageId = pageIdMap.get(result.url);
         if (!pageId) continue;
         if (!pagesWithInbound.has(pageId)) {
@@ -368,6 +372,9 @@ function detectCrossPageDuplicates(
   for (const result of results) {
     const pageId = pageIdMap.get(result.url);
     if (!pageId) continue;
+    // Paginated archives (/blog/page/2) and taxonomy pages share a title by
+    // design; that is not a content duplicate-title problem, so exclude them.
+    if (!isContentPage(result.url)) continue;
     const title = result.title?.trim();
     if (!title) continue;
     const existing = titleMap.get(title) || [];
@@ -521,7 +528,12 @@ function analyzePageIssues(
     );
   }
 
-  if (!result.meta_description || result.meta_description.trim() === "") {
+  // Archive/taxonomy/pagination pages legitimately lack a unique meta
+  // description or a single content H1, so these fire only on content pages.
+  if (
+    (!result.meta_description || result.meta_description.trim() === "") &&
+    isContentPage(result.url)
+  ) {
     addIssue(
       "missing_meta_description",
       "high",
@@ -530,7 +542,7 @@ function analyzePageIssues(
     );
   }
 
-  if (!result.h1s || result.h1s.length === 0) {
+  if ((!result.h1s || result.h1s.length === 0) && isContentPage(result.url)) {
     addIssue("missing_h1", "high", "Page is missing an H1 heading tag", {
       url: result.url,
     });
@@ -601,7 +613,7 @@ function analyzePageIssues(
   if (
     result.word_count < 300 &&
     !result.has_robots_noindex &&
-    !isUtilityPage(result.url)
+    isContentPage(result.url)
   ) {
     addIssue(
       "thin_content",
