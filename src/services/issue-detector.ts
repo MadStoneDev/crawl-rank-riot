@@ -745,6 +745,30 @@ function analyzePageIssues(
         },
       );
     }
+
+    // Specialised content on a generic schema type. A podcast episode page that
+    // only carries Article (or no) schema misses PodcastEpisode markup, which
+    // podcast directories and AI assistants use to surface episodes.
+    let pagePath = "";
+    try {
+      pagePath = new URL(result.url).pathname;
+    } catch {
+      pagePath = result.url;
+    }
+    const looksLikePodcastEpisode = /\/(podcast|episodes?)\/[^/]+/i.test(
+      pagePath,
+    );
+    const hasPodcastSchema = (result.schema_types || []).some((t) =>
+      /podcast/i.test(t),
+    );
+    if (looksLikePodcastEpisode && !hasPodcastSchema) {
+      addIssue(
+        "missing_podcast_schema",
+        "low",
+        "This looks like a podcast episode page but has no PodcastEpisode schema. Adding it helps podcast directories and AI assistants surface the episode.",
+        { url: result.url, schema_types: result.schema_types || [] },
+      );
+    }
   }
 
   // Structured data validation
