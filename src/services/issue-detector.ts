@@ -769,6 +769,23 @@ function analyzePageIssues(
         { url: result.url, schema_types: result.schema_types || [] },
       );
     }
+
+    // Answer block (AEO): a substantial content page should open with a direct
+    // answer under its H1. Fire only when there is genuinely no lead paragraph,
+    // to avoid penalising pages that merely structure their intro differently.
+    if (
+      result.word_count >= 300 &&
+      result.h1s &&
+      result.h1s.length > 0 &&
+      (result.lead_paragraph_words ?? 20) < 20
+    ) {
+      addIssue(
+        "missing_answer_block",
+        "low",
+        "This page has substantial content but no lead paragraph directly under the H1. Opening with a concise, direct answer helps readers and lets AI answer engines quote the page.",
+        { url: result.url, lead_paragraph_words: result.lead_paragraph_words ?? 0 },
+      );
+    }
   }
 
   // Structured data validation

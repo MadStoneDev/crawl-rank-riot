@@ -41,6 +41,10 @@ export interface ScanResult {
   h6s: string[];
   content_length: number;
   word_count: number;
+  // Word count of the first substantial paragraph after the H1 — the "answer
+  // block". 0 means no lead paragraph was found. Transient (used for AEO issue
+  // detection); not persisted.
+  lead_paragraph_words?: number;
 
   // Meta information
   canonical_url: string | null;

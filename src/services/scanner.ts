@@ -333,6 +333,7 @@ export class Scanner {
     const contentStats = await this.extractContentStats(page);
     result.content_length = contentStats.contentLength;
     result.word_count = contentStats.wordCount;
+    result.lead_paragraph_words = contentStats.leadParagraphWords;
 
     const bodyText = await page.evaluate(() => document.body?.innerText || "");
     result.keywords = this.extractKeywords(bodyText);
@@ -685,7 +686,11 @@ export class Scanner {
 
   private async extractContentStats(
     page: Page,
-  ): Promise<{ contentLength: number; wordCount: number }> {
+  ): Promise<{
+    contentLength: number;
+    wordCount: number;
+    leadParagraphWords: number;
+  }> {
     try {
       return await page.evaluate(() => {
         const countWords = (text: string) =>
@@ -737,13 +742,32 @@ export class Scanner {
           .forEach((el) => el.remove());
         const fullText = fullClone.textContent || "";
 
+        // Answer block: the first substantial paragraph at the top of the main
+        // content (ideally right after the H1). AEO best practice is to lead
+        // with a direct answer; 0 here means the page opens with no lead prose.
+        let leadParagraphWords = 0;
+        const scope = contentEl || document.body;
+        const h1 = scope.querySelector("h1");
+        const paragraphs = Array.from(scope.querySelectorAll("p"));
+        const h1Top = h1 ? h1.getBoundingClientRect().top : -Infinity;
+        for (const p of paragraphs) {
+          // Only consider paragraphs at/after the H1, and near the top.
+          if (h1 && p.getBoundingClientRect().top < h1Top) continue;
+          const w = countWords(p.textContent || "");
+          if (w >= 10) {
+            leadParagraphWords = w;
+            break;
+          }
+        }
+
         return {
           contentLength: fullText.length,
           wordCount: countWords(contentText),
+          leadParagraphWords,
         };
       });
     } catch (error) {
-      return { contentLength: 0, wordCount: 0 };
+      return { contentLength: 0, wordCount: 0, leadParagraphWords: 0 };
     }
   }
 
@@ -1304,6 +1328,19 @@ export class Scanner {
     result.word_count = textContent
       .split(/\s+/)
       .filter((w) => w.length > 0).length;
+
+    // Answer block: first substantial <p> after the H1 in the content area.
+    const afterH1 =
+      contentHtml.split(/<h1\b[^>]*>[\s\S]*?<\/h1>/i)[1] ?? contentHtml;
+    const firstP = afterH1.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i);
+    result.lead_paragraph_words = firstP
+      ? firstP[1]
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .split(/\s+/)
+          .filter((w) => w.length > 0).length
+      : 0;
 
     result.content_hash = this.computeContentHash(textContent);
     result.readability_score = this.computeReadabilityScore(textContent);
