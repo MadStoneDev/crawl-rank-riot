@@ -485,16 +485,33 @@ export class UrlProcessor {
         "utm_term",
         "fbclid",
         "gclid",
+        "gclsrc",
+        "dclid",
         "msclkid",
+        "yclid",
         "ref",
         "_ga",
         "mc_cid",
         "mc_eid",
+        "igshid",
+        "_hsenc",
+        "_hsmi",
+        "et_blog", // Divi theme pagination artifact
       ];
 
       trackingParams.forEach((param) => {
         urlObj.searchParams.delete(param);
       });
+
+      // Drop empty-valued params (e.g. "?et_blog=", "?ref="). These are almost
+      // always tracking/theme artifacts and otherwise produce a phantom
+      // duplicate of the same page — crawled twice, then flagged as a false
+      // canonical mismatch / duplicate title.
+      for (const key of Array.from(urlObj.searchParams.keys())) {
+        if (urlObj.searchParams.get(key) === "") {
+          urlObj.searchParams.delete(key);
+        }
+      }
 
       // Clean up trailing slash consistency
       if (urlObj.pathname.endsWith("/") && urlObj.pathname.length > 1) {

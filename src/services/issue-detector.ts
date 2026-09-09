@@ -141,19 +141,42 @@ export async function detectAndStoreIssues(
       console.error("Error updating page link counts:", linkCountError);
     }
 
-    // Step 3d: Add broken link issues (sourced from page_links table)
+    // Step 3d: Broken internal links, GROUPED BY DESTINATION so a single broken
+    // target linked site-wide is one issue to fix, not one per source page
+    // (e.g. a nav link broken on 400 pages = 1 fix). Skip known non-links that
+    // are not real broken targets: Cloudflare /cdn-cgi/ endpoints (including the
+    // email-obfuscation URLs CF injects in place of mailto: links) 404/challenge
+    // by design and are not links the site author can "fix".
+    const KNOWN_NON_LINK = /\/cdn-cgi\//i;
+    const brokenByDest = new Map<string, typeof brokenLinks>();
     for (const link of brokenLinks) {
+      if (KNOWN_NON_LINK.test(link.destination_url)) continue;
+      const group = brokenByDest.get(link.destination_url) ?? [];
+      group.push(link);
+      brokenByDest.set(link.destination_url, group);
+    }
+    for (const [destination, links] of brokenByDest) {
+      // Deterministic representative source page keeps the fingerprint stable
+      // across scans as long as that page still carries the broken link.
+      const sorted = [...links].sort((a, b) =>
+        a.source_page_id.localeCompare(b.source_page_id),
+      );
+      const rep = sorted[0];
+      const sourceCount = new Set(links.map((l) => l.source_page_id)).size;
+      const countText = sourceCount === 1 ? "1 page" : `${sourceCount} pages`;
       allIssues.push({
         project_id: projectId,
-        page_id: link.source_page_id,
+        page_id: rep.source_page_id,
         scan_id: scanId,
         issue_type: "broken_internal_link",
         severity: "high",
-        description: `Broken internal link to ${link.destination_url} (HTTP ${link.http_status ?? "unknown"})`,
+        description: `Broken internal link to ${destination} (HTTP ${rep.http_status ?? "unknown"}), linked from ${countText}`,
         details: {
-          destination_url: link.destination_url,
-          http_status: link.http_status ?? null,
-          anchor_text: link.anchor_text ?? null,
+          destination_url: destination,
+          http_status: rep.http_status ?? null,
+          anchor_text: rep.anchor_text ?? null,
+          source_count: sourceCount,
+          source_page_ids: sorted.slice(0, 50).map((l) => l.source_page_id),
         },
       });
     }

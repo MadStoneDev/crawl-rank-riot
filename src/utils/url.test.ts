@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyPageType, isContentPage } from "./url";
+import { classifyPageType, isContentPage, UrlProcessor } from "./url";
 
 const BASE = "https://blubookkeepers.com";
 
@@ -53,5 +53,25 @@ describe("classifyPageType", () => {
     expect(classifyPageType(`${BASE}/2024/best-bookkeeping-tips`)).toBe(
       "content",
     );
+  });
+});
+
+describe("UrlProcessor.normalize param folding", () => {
+  const up = new UrlProcessor(BASE);
+
+  it("folds Divi's empty ?et_blog= to the clean URL (no phantom duplicate)", () => {
+    expect(up.normalize(`${BASE}/blogs/page/2?et_blog=`)).toBe(
+      `${BASE}/blogs/page/2`,
+    );
+  });
+
+  it("strips utm and other empty-valued params", () => {
+    expect(up.normalize(`${BASE}/services?utm_source=fb&ref=`)).toBe(
+      `${BASE}/services`,
+    );
+  });
+
+  it("keeps a meaningful, valued param", () => {
+    expect(up.normalize(`${BASE}/search?id=5`)).toBe(`${BASE}/search?id=5`);
   });
 });
