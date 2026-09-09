@@ -2,7 +2,7 @@ import { ScanResult } from "../types";
 import { Tables } from "../database.types";
 import { getSupabaseServiceClient } from "./database/client";
 import { proxyFetch } from "../utils/proxy";
-import { isPublicUrl } from "../utils/url";
+import { isPublicUrl, classifyPageType } from "../utils/url";
 
 type Page = Tables<`pages`>;
 
@@ -171,6 +171,10 @@ export async function storeScanResults(
     const pages = deduplicatedResults.map((result) => ({
       project_id: projectId,
       url: result.url,
+      // Persist the URL-derived page role so the app can segment content vs
+      // taxonomy/pagination/system pages (the crawler already excludes
+      // non-content pages from content-audit issue counts in Phase A1).
+      page_type: classifyPageType(result.url),
       title: result.title,
       meta_description: result.meta_description,
       h1s: result.h1s,

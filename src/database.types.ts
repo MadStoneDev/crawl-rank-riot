@@ -12,6 +12,44 @@ export type Database = {
   }
   public: {
     Tables: {
+      admin_notes: {
+        Row: {
+          id: string
+          author_id: string
+          target_type: string
+          target_id: string
+          content: string
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          author_id: string
+          target_type: string
+          target_id: string
+          content: string
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          author_id?: string
+          target_type?: string
+          target_id?: string
+          content?: string
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "admin_notes_author_id_fkey"
+            columns: ["author_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       audit_results: {
         Row: {
           id: string
@@ -194,12 +232,12 @@ export type Database = {
           details: Json | null
           is_fixed: boolean | null
           fixed_at: string | null
+          created_at: string | null
+          updated_at: string | null
           fingerprint: string | null
           dismissed: boolean
           dismissed_at: string | null
           seen_count: number
-          created_at: string | null
-          updated_at: string | null
         }
         Insert: {
           id?: string
@@ -212,12 +250,12 @@ export type Database = {
           details?: Json | null
           is_fixed?: boolean | null
           fixed_at?: string | null
+          created_at?: string | null
+          updated_at?: string | null
           fingerprint?: string | null
           dismissed?: boolean
           dismissed_at?: string | null
           seen_count?: number
-          created_at?: string | null
-          updated_at?: string | null
         }
         Update: {
           id?: string
@@ -230,12 +268,12 @@ export type Database = {
           details?: Json | null
           is_fixed?: boolean | null
           fixed_at?: string | null
+          created_at?: string | null
+          updated_at?: string | null
           fingerprint?: string | null
           dismissed?: boolean
           dismissed_at?: string | null
           seen_count?: number
-          created_at?: string | null
-          updated_at?: string | null
         }
         Relationships: [
           {
@@ -431,10 +469,6 @@ export type Database = {
           has_robots_noindex: boolean | null
           has_robots_nofollow: boolean | null
           depth: number | null
-          inlink_count: number | null
-          unique_inlink_count: number | null
-          outlink_count: number | null
-          unique_outlink_count: number | null
           crawl_priority: number | null
           redirect_url: string | null
           content_type: string | null
@@ -460,10 +494,15 @@ export type Database = {
           url_issues: Json | null
           content_hash: string | null
           readability_score: number | null
+          inlink_count: number | null
+          unique_inlink_count: number | null
+          outlink_count: number | null
+          unique_outlink_count: number | null
           scan_method: string | null
           detected_platform: string | null
           js_rendering_gap: Json | null
           schema_source: string | null
+          page_type: string | null
         }
         Insert: {
           id?: string
@@ -489,10 +528,6 @@ export type Database = {
           has_robots_noindex?: boolean | null
           has_robots_nofollow?: boolean | null
           depth?: number | null
-          inlink_count?: number | null
-          unique_inlink_count?: number | null
-          outlink_count?: number | null
-          unique_outlink_count?: number | null
           crawl_priority?: number | null
           redirect_url?: string | null
           content_type?: string | null
@@ -518,10 +553,15 @@ export type Database = {
           url_issues?: Json | null
           content_hash?: string | null
           readability_score?: number | null
+          inlink_count?: number | null
+          unique_inlink_count?: number | null
+          outlink_count?: number | null
+          unique_outlink_count?: number | null
           scan_method?: string | null
           detected_platform?: string | null
           js_rendering_gap?: Json | null
           schema_source?: string | null
+          page_type?: string | null
         }
         Update: {
           id?: string
@@ -547,10 +587,6 @@ export type Database = {
           has_robots_noindex?: boolean | null
           has_robots_nofollow?: boolean | null
           depth?: number | null
-          inlink_count?: number | null
-          unique_inlink_count?: number | null
-          outlink_count?: number | null
-          unique_outlink_count?: number | null
           crawl_priority?: number | null
           redirect_url?: string | null
           content_type?: string | null
@@ -576,10 +612,15 @@ export type Database = {
           url_issues?: Json | null
           content_hash?: string | null
           readability_score?: number | null
+          inlink_count?: number | null
+          unique_inlink_count?: number | null
+          outlink_count?: number | null
+          unique_outlink_count?: number | null
           scan_method?: string | null
           detected_platform?: string | null
           js_rendering_gap?: Json | null
           schema_source?: string | null
+          page_type?: string | null
         }
         Relationships: [
           {
@@ -605,6 +646,7 @@ export type Database = {
           updated_at: string | null
           paddle_subscription_id: string | null
           subscription_period_end: string | null
+          role: string | null
         }
         Insert: {
           id: string
@@ -619,6 +661,7 @@ export type Database = {
           updated_at?: string | null
           paddle_subscription_id?: string | null
           subscription_period_end?: string | null
+          role?: string | null
         }
         Update: {
           id?: string
@@ -633,6 +676,7 @@ export type Database = {
           updated_at?: string | null
           paddle_subscription_id?: string | null
           subscription_period_end?: string | null
+          role?: string | null
         }
         Relationships: []
       }
@@ -695,28 +739,37 @@ export type Database = {
           },
         ]
       }
-      scan_snapshots: {
+      scan_logs: {
         Row: {
-          id: string
+          id: number
           scan_id: string
-          snapshot_data: Json
-          created_at: string | null
+          timestamp: string
+          level: string
+          stage: string
+          message: string
+          metadata: Json | null
         }
         Insert: {
-          id?: string
+          id?: number
           scan_id: string
-          snapshot_data: Json
-          created_at?: string | null
+          timestamp?: string
+          level?: string
+          stage: string
+          message: string
+          metadata?: Json | null
         }
         Update: {
-          id?: string
+          id?: number
           scan_id?: string
-          snapshot_data?: Json
-          created_at?: string | null
+          timestamp?: string
+          level?: string
+          stage?: string
+          message?: string
+          metadata?: Json | null
         }
         Relationships: [
           {
-            foreignKeyName: "scan_snapshots_scan_id_fkey"
+            foreignKeyName: "scan_logs_scan_id_fkey"
             columns: ["scan_id"]
             isOneToOne: false
             referencedRelation: "scans"
@@ -772,17 +825,46 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "scan_scores_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "scan_scores_scan_id_fkey"
             columns: ["scan_id"]
             isOneToOne: true
             referencedRelation: "scans"
             referencedColumns: ["id"]
           },
+        ]
+      }
+      scan_snapshots: {
+        Row: {
+          id: string
+          scan_id: string
+          snapshot_data: Json
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          scan_id: string
+          snapshot_data: Json
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          scan_id?: string
+          snapshot_data?: Json
+          created_at?: string | null
+        }
+        Relationships: [
           {
-            foreignKeyName: "scan_scores_project_id_fkey"
-            columns: ["project_id"]
+            foreignKeyName: "scan_snapshots_scan_id_fkey"
+            columns: ["scan_id"]
             isOneToOne: false
-            referencedRelation: "projects"
+            referencedRelation: "scans"
             referencedColumns: ["id"]
           },
         ]
@@ -1097,4 +1179,3 @@ export const Constants = {
     Enums: {},
   },
 } as const
-
