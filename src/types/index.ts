@@ -174,6 +174,7 @@ export interface SiteLevelData {
     exists: boolean;
     content?: string;
     fields?: Record<string, string>;
+    link_count?: number;
   };
   robots_txt?: {
     exists: boolean;

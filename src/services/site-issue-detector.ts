@@ -49,6 +49,16 @@ export async function detectSiteLevelIssues(
       "No llms.txt file found. This file helps AI models understand your site.",
       { url: "/llms.txt" },
     );
+  } else if (
+    siteLevelData.llms_txt?.exists &&
+    (siteLevelData.llms_txt.link_count ?? 0) === 0
+  ) {
+    addIssue(
+      "empty_llms_txt",
+      "low",
+      "An llms.txt file exists but does not link to any pages. It should reference your priority pages so AI models know what to read.",
+      { url: "/llms.txt" },
+    );
   }
 
   if (siteLevelData.robots_txt) {

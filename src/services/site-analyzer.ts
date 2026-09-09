@@ -105,10 +105,15 @@ async function fetchLlmsTxt(
       }
     }
 
+    // A useful llms.txt links out to the site's key pages (markdown links).
+    // Count them so we can flag a present-but-empty file that references nothing.
+    const linkCount = (content.match(/\[[^\]]+\]\([^)]+\)/g) || []).length;
+
     return {
       exists: true,
       content: content.slice(0, 5000),
       fields,
+      link_count: linkCount,
     };
   } catch {
     return { exists: false };
