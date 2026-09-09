@@ -674,6 +674,16 @@ function analyzePageIssues(
       "Page is missing Open Graph meta tags",
       { url: result.url },
     );
+  } else if (
+    !result.open_graph["og:image"] &&
+    !result.open_graph["image"]
+  ) {
+    addIssue(
+      "incomplete_open_graph",
+      "low",
+      "Open Graph tags are present but there is no og:image — link shares and AI previews will show no image",
+      { url: result.url },
+    );
   }
 
   // ── LOW ───────────────────────────────────────────────────────────────
@@ -697,6 +707,44 @@ function analyzePageIssues(
       "Page has no structured data / schema markup",
       { url: result.url },
     );
+  }
+
+  // FAQ content present but no FAQPage schema — a concrete AEO opportunity
+  // (rich results + easier for AI answer engines to cite).
+  if (isContentPage(result.url)) {
+    const headings = [...(result.h2s || []), ...(result.h3s || [])].map((h) =>
+      (h || "").trim(),
+    );
+    const hasFaqHeading = headings.some((h) =>
+      /frequently asked questions|(^|\s)faqs?(\s|$)/i.test(h),
+    );
+    const questionHeadings = headings.filter(
+      (h) =>
+        h.endsWith("?") ||
+        /^(how|what|why|when|where|who|which|can|do|does|is|are|should)\b/i.test(
+          h,
+        ),
+    );
+    const looksLikeFaq = hasFaqHeading || questionHeadings.length >= 3;
+    const hasFaqSchema = (result.schema_types || []).some((t) =>
+      /faqpage/i.test(t),
+    );
+    if (looksLikeFaq && !hasFaqSchema) {
+      addIssue(
+        "faq_without_schema",
+        "low",
+        "Page has FAQ-style content but no FAQPage schema. Adding FAQPage markup can earn rich results and helps AI answer engines cite the page.",
+        {
+          url: result.url,
+          faq_headings: (hasFaqHeading
+            ? headings.filter((h) =>
+                /frequently asked questions|faqs?/i.test(h),
+              )
+            : questionHeadings
+          ).slice(0, 10),
+        },
+      );
+    }
   }
 
   // Structured data validation

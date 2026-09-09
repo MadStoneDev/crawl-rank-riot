@@ -688,20 +688,58 @@ export class Scanner {
   ): Promise<{ contentLength: number; wordCount: number }> {
     try {
       return await page.evaluate(() => {
-        // Remove script and style elements
-        const clonedBody = document.body.cloneNode(true) as HTMLElement;
-        const scripts = clonedBody.querySelectorAll("script, style, noscript");
-        scripts.forEach((el) => el.remove());
+        const countWords = (text: string) =>
+          text
+            .trim()
+            .split(/\s+/)
+            .filter((w) => w.length > 0).length;
 
-        const content = clonedBody.textContent || "";
-        const words = content
-          .trim()
-          .split(/\s+/)
-          .filter((w) => w.length > 0);
+        // Word count should reflect the MAIN CONTENT, not nav/header/footer
+        // boilerplate — otherwise a Divi header+footer alone reads as ~150 words
+        // and thin, real pages get falsely flagged. Prefer an explicit content
+        // container; fall back to the body with chrome removed.
+        const mainSelectors = [
+          "main",
+          "article",
+          "[role=main]",
+          ".entry-content",
+          ".post-content",
+          ".article-content",
+          ".et_pb_post_content",
+          "#content",
+          "#main",
+        ];
+        let contentEl: HTMLElement | null = null;
+        for (const sel of mainSelectors) {
+          const el = document.querySelector(sel) as HTMLElement | null;
+          if (el && (el.textContent || "").trim().length > 200) {
+            contentEl = el;
+            break;
+          }
+        }
+
+        const source = (contentEl || document.body).cloneNode(
+          true,
+        ) as HTMLElement;
+        source
+          .querySelectorAll(
+            "script, style, noscript, nav, header, footer, aside, form," +
+              "[role=navigation], [role=banner], [role=contentinfo]," +
+              ".nav, .navbar, .menu, .sidebar, .widget, .footer, .site-footer, .site-header, .header",
+          )
+          .forEach((el) => el.remove());
+        const contentText = source.textContent || "";
+
+        // contentLength stays a whole-page proxy (used as a page-size signal).
+        const fullClone = document.body.cloneNode(true) as HTMLElement;
+        fullClone
+          .querySelectorAll("script, style, noscript")
+          .forEach((el) => el.remove());
+        const fullText = fullClone.textContent || "";
 
         return {
-          contentLength: content.length,
-          wordCount: words.length,
+          contentLength: fullText.length,
+          wordCount: countWords(contentText),
         };
       });
     } catch (error) {
@@ -1238,15 +1276,31 @@ export class Scanner {
     // Extract images
     this.extractImagesFromHtml(html, result, urlProcessor);
 
-    // Extract content
-    const textContent = html
+    // Content-area text: exclude nav/header/footer/aside boilerplate so word
+    // count, readability and the duplicate-content hash reflect real content,
+    // not a Divi header+footer shared across every page (which alone reads as
+    // ~150 words and falsely flags real pages as thin).
+    const noScripts = html
       .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "");
+    const mainMatch = noScripts.match(
+      /<(main|article)\b[^>]*>([\s\S]*?)<\/\1>/i,
+    );
+    const contentHtml = (mainMatch ? mainMatch[2] : noScripts).replace(
+      /<(nav|header|footer|aside|form)\b[^>]*>[\s\S]*?<\/\1>/gi,
+      " ",
+    );
+    const textContent = contentHtml
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim();
 
-    result.content_length = textContent.length;
+    // content_length stays a whole-page proxy (a page-size signal).
+    const fullText = noScripts
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    result.content_length = fullText.length;
     result.word_count = textContent
       .split(/\s+/)
       .filter((w) => w.length > 0).length;
