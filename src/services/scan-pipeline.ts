@@ -362,10 +362,21 @@ export async function runScanPipeline(
       }
     }
 
-    // 7. Backlinks.
-    logger.info("analysis", "Checking for backlinks...");
-    const backlinksFound = await checkAndStoreBacklinks(projectId, url);
-    logger.info("analysis", `Discovered ${backlinksFound} backlinks`);
+    // 7. Backlinks (disabled by default).
+    // The current check only fetches the sites we link OUT to and looks for a
+    // link back — i.e. reciprocal links, a tiny biased slice of real backlinks —
+    // for ~40s of wall-clock per scan and near-zero useful results. Real backlink
+    // data needs Google Search Console or a third-party index, not a crawl of our
+    // own outbound links, so it's off until then. Set ENABLE_BACKLINK_CHECK=true
+    // to re-enable the experimental checker.
+    let backlinksFound = 0;
+    if (process.env.ENABLE_BACKLINK_CHECK === "true") {
+      logger.info("analysis", "Checking for backlinks (experimental)...");
+      backlinksFound = await checkAndStoreBacklinks(projectId, url);
+      logger.info("analysis", `Discovered ${backlinksFound} backlinks`);
+    } else {
+      logger.info("analysis", "Backlink check skipped (work in progress)");
+    }
 
     // 8. Mode-specific scoring / analysis.
     const totalIssues = issuesFound + siteIssuesFound;
