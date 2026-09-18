@@ -327,24 +327,29 @@ async function resolvePageIds(
   const supabase = getSupabaseServiceClient();
   const map = new Map<string, string>();
 
-  // Supabase .in() has a practical limit, so batch the lookups
-  const batchSize = 200;
-  for (let i = 0; i < urls.length; i += batchSize) {
-    const batch = urls.slice(i, i + batchSize);
+  // Resolve by paging through the project's own pages rather than sending the
+  // URL list as an `.in(url, [...])` filter. PostgREST puts that filter in the
+  // request URL, and a few hundred long URLs overflow the server's URI limit
+  // ("URI too long"), which silently dropped a batch of pages — and every issue
+  // on them. The project's page set is exactly what we need to map anyway.
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
     const { data, error } = await supabase
       .from("pages")
       .select("id, url")
       .eq("project_id", projectId)
-      .in("url", batch);
+      .range(from, from + pageSize - 1);
 
     if (error) {
       console.error("Error resolving page IDs:", error);
-      continue;
+      break;
     }
 
     for (const row of data ?? []) {
       map.set(row.url, row.id);
     }
+
+    if (!data || data.length < pageSize) break;
   }
 
   return map;

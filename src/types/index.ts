@@ -168,6 +168,10 @@ export interface ScanResult {
   schema_source?: "server" | "client" | "both" | "none";
   // Favicon URL declared in the page head (<link rel="...icon...">), if any.
   favicon_url?: string | null;
+  // True when the site served an incomplete TLS certificate chain (a missing
+  // intermediate). We recover by relaxing chain verification for the fetch, but
+  // it is a real trust/compatibility problem worth reporting.
+  tls_chain_incomplete?: boolean;
   scanned_at: string;
   errors?: string[];
   warnings?: string[];

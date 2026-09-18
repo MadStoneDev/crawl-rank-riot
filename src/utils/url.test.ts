@@ -75,3 +75,28 @@ describe("UrlProcessor.normalize param folding", () => {
     expect(up.normalize(`${BASE}/search?id=5`)).toBe(`${BASE}/search?id=5`);
   });
 });
+
+describe("UrlProcessor.shouldExclude — calendar feeds & event views", () => {
+  const up = new UrlProcessor(BASE);
+
+  it("excludes iCal feed exports in both modes", () => {
+    for (const mode of ["seo", "audit"] as const) {
+      expect(up.shouldExclude(`${BASE}/events/2026-09-19?ical=1`, [], mode)).toBe(true);
+      expect(up.shouldExclude(`${BASE}/events/month/2026-10?outlook-ical=1`, [], mode)).toBe(true);
+    }
+  });
+
+  it("excludes The Events Calendar date/view filters", () => {
+    expect(up.shouldExclude(`${BASE}/events/list?tribe-bar-date=2026-08-01`)).toBe(true);
+    expect(up.shouldExclude(`${BASE}/events/list?eventDisplay=past`)).toBe(true);
+  });
+
+  it("still crawls the main events page and real event day pages", () => {
+    expect(up.shouldExclude(`${BASE}/events`)).toBe(false);
+    expect(up.shouldExclude(`${BASE}/events/2026-09-19`)).toBe(false);
+  });
+
+  it("does not exclude an ordinary content page", () => {
+    expect(up.shouldExclude(`${BASE}/about`)).toBe(false);
+  });
+});

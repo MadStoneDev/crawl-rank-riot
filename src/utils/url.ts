@@ -620,6 +620,20 @@ export class UrlProcessor {
 
       if (nonPageExtensions.test(pathname)) return true;
 
+      // Calendar feed exports (The Events Calendar / iCal / Outlook) — always
+      // excluded in both modes. These return a non-HTML .ics feed, and a plugin
+      // like The Events Calendar emits one ?ical / ?outlook-ical variant for
+      // every event, day and month view. Left in, they multiply the crawl by a
+      // large, unbounded factor (and each one fails as "not HTML"), which is the
+      // single biggest cause of a slow crawl on an events-heavy WordPress site.
+      if (queryString && /[?&](ical|outlook-ical|ics)=/i.test(queryString)) return true;
+
+      // The Events Calendar's date/view filters (?tribe-bar-date=…,
+      // ?eventDisplay=past|list|month) are duplicate listing views of the same
+      // events, generated without bound into past and future. Skip the
+      // parameterised views; the main /events page is still crawled.
+      if (queryString && /[?&](tribe-bar-date|eventDisplay|tribe_event_display)=/i.test(queryString)) return true;
+
       // Infrastructure paths — always excluded
       const infrastructurePatterns = [
         /\/(wp-admin|wp-includes|wp-content\/plugins)\//i,

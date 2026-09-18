@@ -1082,6 +1082,10 @@ export class Scanner {
 
     const maxRetries = 3;
     let lastError: Error | null = null;
+    // Flipped on when the site presents an incomplete certificate chain, so the
+    // next attempt retries with TLS chain verification relaxed instead of
+    // failing all retries and forcing every page down the slow headless path.
+    let insecureTLS = false;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -1118,7 +1122,7 @@ export class Scanner {
             },
             redirect: "manual",
             signal: controller.signal,
-          }, { useProxy });
+          }, { useProxy, insecureTLS });
 
           if (response.status >= 300 && response.status < 400) {
             const location = response.headers.get("location");
@@ -1221,6 +1225,25 @@ export class Scanner {
         const detail = rootCause
           ? `${rootCause.code || rootCause.name || ""} ${rootCause.message || ""}`.trim()
           : lastError.message;
+
+        // Incomplete certificate chain (missing intermediate): the site's TLS is
+        // otherwise valid but Node can't build the chain. Retry once with chain
+        // verification relaxed rather than burning all retries + a headless pass.
+        const tlsChainError =
+          /UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT|SELF_SIGNED_CERT_IN_CHAIN|CERT_UNTRUSTED/i.test(
+            String(rootCause?.code || ""),
+          ) ||
+          /unable to verify the first certificate|self.signed certificate in certificate chain/i.test(
+            detail,
+          );
+        if (tlsChainError && !insecureTLS) {
+          insecureTLS = true;
+          result.tls_chain_incomplete = true;
+          console.log(
+            `🔐 Incomplete TLS certificate chain for ${url} — retrying without chain verification`,
+          );
+          continue; // immediate retry, no backoff
+        }
 
         // Retry on network errors
         if (attempt < maxRetries) {
