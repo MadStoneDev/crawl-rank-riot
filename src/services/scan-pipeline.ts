@@ -3,6 +3,7 @@ import { storeScanResults } from "./database";
 import { getSupabaseServiceClient } from "./database/client";
 import { detectAndStoreIssues } from "./issue-detector";
 import { checkAndStoreBacklinks } from "./backlink-checker";
+import { isCancelled, clearCancel } from "./scan-cancellation";
 import { AuditAnalyzer } from "./audit-analyzer";
 import { storeAuditResults } from "./audit-database";
 import { analyzeSiteLevelData } from "./site-analyzer";
@@ -295,6 +296,19 @@ export async function runScanPipeline(
   try {
     // 1. Crawl.
     const scanResults = await crawler.crawl(url, options);
+
+    // 1b. Cancelled? Stop here — mark the scan cancelled and leave the previous
+    // scan's stored data untouched (don't store this partial crawl).
+    if (isCancelled(scanId)) {
+      clearCancel(scanId);
+      const supabase = getSupabaseServiceClient();
+      await supabase
+        .from("scans")
+        .update({ status: "cancelled", completed_at: new Date().toISOString() })
+        .eq("id", scanId);
+      logger.info("complete", "Scan cancelled by user");
+      return;
+    }
 
     // 2. Store pages/links (guarded against wiping data on a partial crawl).
     logger.info("store", `Storing ${scanResults.length} pages in database...`);

@@ -8,6 +8,7 @@ import {
 import { AuthenticatedRequest } from "../middleware/auth";
 import { parseProjectSettings } from "../utils/project-settings";
 import { runScanPipeline } from "../services/scan-pipeline";
+import { requestCancel } from "../services/scan-cancellation";
 
 const router = Router();
 
@@ -380,5 +381,66 @@ router.get(
   },
 );
 
+
+/**
+ * POST /api/scan/:scanId/cancel - Stop an in-progress scan.
+ * Flags the scan for cancellation (the crawl loop exits at the next batch and
+ * the pipeline finalises it as "cancelled") and marks it cancelled in the DB so
+ * the UI updates immediately.
+ */
+router.post(
+  "/scan/:scanId/cancel",
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { scanId } = req.params;
+      const supabase = getSupabaseServiceClient();
+
+      const { data: scan, error: scanError } = await supabase
+        .from("scans")
+        .select("id, project_id, status")
+        .eq("id", scanId)
+        .single();
+
+      if (scanError || !scan) {
+        return next(
+          new AppError("Scan not found", "SCAN_NOT_FOUND", scanError, 404),
+        );
+      }
+
+      // Authorization: the scan must belong to a project owned by the caller.
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.id;
+      const { data: project, error: projectError } = await supabase
+        .from("projects")
+        .select("id, user_id")
+        .eq("id", scan.project_id)
+        .single();
+
+      if (projectError || !project || project.user_id !== userId) {
+        return next(
+          new AppError(
+            "You do not have permission to cancel this scan",
+            "FORBIDDEN",
+            undefined,
+            403,
+          ),
+        );
+      }
+
+      // Signal the running crawl to stop, and reflect it immediately.
+      requestCancel(scanId);
+      if (scan.status === "in_progress" || scan.status === "pending") {
+        await supabase
+          .from("scans")
+          .update({ status: "cancelled", completed_at: new Date().toISOString() })
+          .eq("id", scanId);
+      }
+
+      res.json(createSuccessResponse({ scanId, cancelled: true }));
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 export default router;

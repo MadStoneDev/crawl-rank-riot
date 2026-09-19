@@ -4,6 +4,7 @@ import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
 import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser";
 import { ScanLogger } from "./scan-logger";
+import { isCancelled } from "./scan-cancellation";
 import { proxyFetch, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 
@@ -337,7 +338,8 @@ export class WebCrawler {
     while (
       this.queue.length > 0 &&
       this.results.length < maxPages &&
-      Date.now() - startTime < timeout
+      Date.now() - startTime < timeout &&
+      !isCancelled(this.scanId)
     ) {
       // Get next batch of URLs to process
       const batch = this.getNextBatch(
