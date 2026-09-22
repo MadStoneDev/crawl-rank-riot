@@ -599,10 +599,13 @@ function analyzePageIssues(
         { url: result.url, title: result.title, length: titleLen },
       );
     } else if (titleLen < 30) {
+      // Low severity: 30 is the "aim for" length, but many perfectly clear
+      // titles sit in the 15–29 range (e.g. "About Us | Brand"). Flag it as an
+      // advisory nudge, not a medium problem, so it doesn't dominate findings.
       addIssue(
         "title_too_short",
-        "medium",
-        `Title tag is too short (${titleLen} characters, recommended min 30)`,
+        "low",
+        `Title tag is short (${titleLen} characters, aim for 30–60)`,
         { url: result.url, title: result.title, length: titleLen },
       );
     }
