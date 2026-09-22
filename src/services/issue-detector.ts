@@ -598,11 +598,11 @@ function analyzePageIssues(
         `Title tag is too long (${titleLen} characters, recommended max 60)`,
         { url: result.url, title: result.title, length: titleLen },
       );
-    } else if (titleLen < 10) {
+    } else if (titleLen < 30) {
       addIssue(
         "title_too_short",
         "medium",
-        `Title tag is too short (${titleLen} characters, recommended min 10)`,
+        `Title tag is too short (${titleLen} characters, recommended min 30)`,
         { url: result.url, title: result.title, length: titleLen },
       );
     }
@@ -779,7 +779,7 @@ function analyzePageIssues(
     // answer under its H1. Fire only when there is genuinely no lead paragraph,
     // to avoid penalising pages that merely structure their intro differently.
     if (
-      result.word_count >= 300 &&
+      result.word_count >= 500 &&
       result.h1s &&
       result.h1s.length > 0 &&
       (result.lead_paragraph_words ?? 20) < 20
@@ -1044,16 +1044,16 @@ function analyzePageIssues(
     }
   }
 
-  // Oversized images (> 200KB)
+  // Oversized images (> 400KB)
   if (result.images && result.images.length > 0) {
     const oversized = result.images.filter(
-      (img) => img.file_size_bytes && img.file_size_bytes > 200_000,
+      (img) => img.file_size_bytes && img.file_size_bytes > 400_000,
     );
     if (oversized.length > 0) {
       addIssue(
         "oversized_images",
         "medium",
-        `${oversized.length} image(s) exceed 200 KB`,
+        `${oversized.length} image(s) exceed 400 KB`,
         {
           url: result.url,
           images: oversized.slice(0, 5).map((img) => ({
@@ -1122,10 +1122,15 @@ function analyzePageIssues(
     );
   }
 
-  // Keyword not in title
+  // Keyword not in title — only on substantial content pages, and only when the
+  // top keyword is genuinely significant (not a short/incidental word), to avoid
+  // firing on every page for an auto-derived generic term.
   if (
     result.keywords &&
     result.keywords.length > 0 &&
+    result.keywords[0].count >= 3 &&
+    result.keywords[0].word.length >= 4 &&
+    result.word_count >= 300 &&
     result.title &&
     result.title.trim().length > 0
   ) {
