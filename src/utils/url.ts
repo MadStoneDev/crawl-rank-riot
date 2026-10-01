@@ -779,3 +779,38 @@ export class UrlProcessor {
     }
   }
 }
+
+/**
+ * Normalise a URL for self-comparison: lowercase host, strip trailing slashes,
+ * drop default ports and the fragment, keep the query. Returns null if the URL
+ * can't be parsed (even after resolving against the optional base).
+ */
+export function normalizeForSelfCompare(
+  url: string,
+  base?: string,
+): string | null {
+  try {
+    const parsed = base ? new URL(url, base) : new URL(url);
+    const host = parsed.host.toLowerCase();
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.protocol}//${host}${path}${parsed.search}`.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when a canonical href points at the page's own URL. Critically, a
+ * relative canonical (e.g. "/about") is resolved against the page URL before
+ * comparison — otherwise a valid self-canonical reads as a mismatch (P0.3).
+ */
+export function isSelfCanonical(
+  canonical: string | null | undefined,
+  pageUrl: string,
+): boolean {
+  if (!canonical) return false;
+  const a = normalizeForSelfCompare(canonical, pageUrl);
+  const b = normalizeForSelfCompare(pageUrl);
+  if (a === null || b === null) return canonical === pageUrl;
+  return a === b;
+}

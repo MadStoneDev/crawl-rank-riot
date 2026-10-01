@@ -1,7 +1,48 @@
 import { describe, it, expect } from "vitest";
-import { classifyPageType, isContentPage, UrlProcessor } from "./url";
+import {
+  classifyPageType,
+  isContentPage,
+  isSelfCanonical,
+  UrlProcessor,
+} from "./url";
 
 const BASE = "https://blubookkeepers.com";
+
+describe("isSelfCanonical (P0.3)", () => {
+  it("treats a relative canonical that resolves to the page as self", () => {
+    // The DIRT fixture: /, /about, /contact used relative canonicals and were
+    // falsely flagged as mismatches.
+    expect(isSelfCanonical("/about", "https://thedirtagency.com/about")).toBe(true);
+    expect(isSelfCanonical("/", "https://thedirtagency.com/")).toBe(true);
+    expect(isSelfCanonical("/contact", "https://thedirtagency.com/contact")).toBe(true);
+  });
+
+  it("treats an absolute self canonical as self", () => {
+    expect(
+      isSelfCanonical(
+        "https://thedirtagency.com/newsletter",
+        "https://thedirtagency.com/newsletter",
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores trailing slash, host case and fragment", () => {
+    expect(isSelfCanonical("/about/", "https://EXAMPLE.com/about")).toBe(true);
+    expect(isSelfCanonical("/about#top", "https://example.com/about")).toBe(true);
+  });
+
+  it("flags a genuine mismatch", () => {
+    expect(isSelfCanonical("/other", "https://example.com/about")).toBe(false);
+    expect(
+      isSelfCanonical("https://example.com/", "https://example.com/about"),
+    ).toBe(false);
+  });
+
+  it("returns false for a null/empty canonical", () => {
+    expect(isSelfCanonical(null, "https://example.com/about")).toBe(false);
+    expect(isSelfCanonical("", "https://example.com/about")).toBe(false);
+  });
+});
 
 describe("classifyPageType", () => {
   it("treats ordinary content paths as content", () => {

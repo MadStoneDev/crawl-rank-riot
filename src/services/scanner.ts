@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { decodeHTML } from "entities";
 import { ScanResult } from "../types";
-import { UrlProcessor, isPublicUrl } from "../utils/url";
+import { UrlProcessor, isPublicUrl, isSelfCanonical } from "../utils/url";
 import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders, detectPlatformFromHtml, platformNeedsHeadless } from "../utils/browser";
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
@@ -1927,19 +1927,9 @@ export class Scanner {
    * Check if the canonical URL matches the page's own URL (normalized comparison).
    */
   private checkCanonicalIsSelf(canonical: string | null, pageUrl: string): boolean {
-    if (!canonical) return false;
-    try {
-      const normalizeForComparison = (u: string): string => {
-        const parsed = new URL(u);
-        // Normalize: lowercase host, remove trailing slash, remove default ports
-        let normalized = parsed.protocol + "//" + parsed.host.toLowerCase() + parsed.pathname.replace(/\/+$/, "") + parsed.search;
-        return normalized.toLowerCase();
-      };
-      return normalizeForComparison(canonical) === normalizeForComparison(pageUrl);
-    } catch {
-      // If URL parsing fails, do simple string comparison
-      return canonical === pageUrl;
-    }
+    // Resolves relative canonicals against the page URL before comparing, so a
+    // self-referential relative canonical (href="/about") isn't a false mismatch.
+    return isSelfCanonical(canonical, pageUrl);
   }
 
   /**
