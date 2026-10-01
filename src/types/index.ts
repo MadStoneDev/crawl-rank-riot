@@ -70,6 +70,9 @@ export interface ScanResult {
   images: Array<{
     src: string;
     alt: string;
+    // Distinguishes a genuinely missing alt attribute (an issue) from a
+    // deliberate alt="" on a decorative image (correct, not an issue).
+    alt_state?: "absent" | "empty" | "present";
     dimensions?: {
       width: number;
       height: number;

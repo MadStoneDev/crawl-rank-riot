@@ -920,8 +920,13 @@ function analyzePageIssues(
   }
 
   if (result.images && result.images.length > 0) {
-    const missingAlt = result.images.filter(
-      (img) => !img.alt || img.alt.trim() === "",
+    // Only a genuinely missing alt attribute is an issue. alt="" is the correct
+    // signal for decorative images and must not be flagged. (alt_state is set by
+    // the scanner; fall back to the old heuristic for pre-upgrade scan data.)
+    const missingAlt = result.images.filter((img) =>
+      img.alt_state
+        ? img.alt_state === "absent"
+        : !img.alt || img.alt.trim() === "",
     );
     if (missingAlt.length > 0) {
       addIssue(

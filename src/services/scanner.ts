@@ -898,6 +898,9 @@ export class Scanner {
         return Array.from(document.querySelectorAll("img")).map((img) => ({
           src: img.src,
           alt: img.alt || "",
+          // img.alt returns "" for BOTH a missing attribute and alt="", so
+          // capture attribute presence explicitly to tell them apart.
+          hasAlt: img.hasAttribute("alt"),
           width: img.naturalWidth || img.width || 0,
           height: img.naturalHeight || img.height || 0,
           loading: img.getAttribute("loading") || "",
@@ -913,6 +916,11 @@ export class Scanner {
           result.images.push({
             src: resolvedUrl,
             alt: img.alt,
+            alt_state: !img.hasAlt
+              ? "absent"
+              : img.alt.trim() === ""
+                ? "empty"
+                : "present",
             dimensions: { width: img.width, height: img.height },
             loading: img.loading,
             srcset: img.srcset || undefined,
@@ -1688,9 +1696,19 @@ export class Scanner {
         const loadingMatch = match[0].match(/loading=["']([^"']*)["']/i);
         const srcsetMatch = match[0].match(/srcset=["']([^"']*)["']/i);
 
+        const altValue = altMatch ? decodeHTML(altMatch[1]) : "";
+        // No alt attribute at all is the real issue; alt="" is a valid
+        // decorative-image signal, not a missing-alt problem.
+        const altState: "absent" | "empty" | "present" = !altMatch
+          ? "absent"
+          : altValue.trim() === ""
+            ? "empty"
+            : "present";
+
         result.images.push({
           src: resolvedUrl,
-          alt: altMatch ? decodeHTML(altMatch[1]) : "",
+          alt: altValue,
+          alt_state: altState,
           dimensions: {
             width: widthMatch ? parseInt(widthMatch[1], 10) : 0,
             height: heightMatch ? parseInt(heightMatch[1], 10) : 0,
