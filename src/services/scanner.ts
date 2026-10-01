@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { decodeHTML } from "entities";
 import { ScanResult } from "../types";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
 import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders, detectPlatformFromHtml, platformNeedsHeadless } from "../utils/browser";
@@ -598,14 +599,8 @@ export class Scanner {
   private cleanTitle(title: string): string {
     if (!title) return "";
 
-    // Decode HTML entities
-    const decoded = title
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&nbsp;/g, " ");
+    // Decode HTML entities (named + numeric) via a proper decoder.
+    const decoded = decodeHTML(title);
 
     // Common site name patterns to remove (only at end of title)
     // These are typically brand suffixes like "Product Name | Brand" or "Page - Company Name"
@@ -1278,7 +1273,8 @@ export class Scanner {
       /<meta[^>]*content=["'](.*?)["'][^>]*name=["']description["']/i,
     );
     if (metaMatch) {
-      result.meta_description = metaMatch[1];
+      // Decode entities before storing so length checks and display are accurate.
+      result.meta_description = decodeHTML(metaMatch[1]).trim();
     }
 
     // Extract the declared favicon: any <link> whose rel contains "icon"
@@ -1290,7 +1286,8 @@ export class Scanner {
       if (/rel=["'][^"']*icon[^"']*["']/i.test(tag)) {
         const href = tag.match(/href=["']([^"']+)["']/i);
         if (href) {
-          result.favicon_url = urlProcessor.resolve(result.url, href[1]) || href[1];
+          const decodedHref = decodeHTML(href[1]);
+          result.favicon_url = urlProcessor.resolve(result.url, decodedHref) || decodedHref;
           break;
         }
       }
@@ -1302,7 +1299,7 @@ export class Scanner {
       const headings = [];
       let match;
       while ((match = regex.exec(html)) !== null) {
-        const text = match[1].replace(/<[^>]+>/g, "").trim();
+        const text = decodeHTML(match[1].replace(/<[^>]+>/g, "")).trim();
         if (text.length > 0) {
           headings.push(text);
         }
@@ -1337,14 +1334,15 @@ export class Scanner {
       /<(nav|header|footer|aside|form)\b[^>]*>[\s\S]*?<\/\1>/gi,
       " ",
     );
-    const textContent = contentHtml
-      .replace(/<[^>]+>/g, " ")
+    // Strip tags, then decode entities, then collapse whitespace so word count,
+    // readability, the content hash and the keyword tokeniser all operate on
+    // real text (not "&rsquo;" → the bogus keyword "rsquo").
+    const textContent = decodeHTML(contentHtml.replace(/<[^>]+>/g, " "))
       .replace(/\s+/g, " ")
       .trim();
 
     // content_length stays a whole-page proxy (a page-size signal).
-    const fullText = noScripts
-      .replace(/<[^>]+>/g, " ")
+    const fullText = decodeHTML(noScripts.replace(/<[^>]+>/g, " "))
       .replace(/\s+/g, " ")
       .trim();
     result.content_length = fullText.length;
@@ -1357,8 +1355,7 @@ export class Scanner {
       contentHtml.split(/<h1\b[^>]*>[\s\S]*?<\/h1>/i)[1] ?? contentHtml;
     const firstP = afterH1.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i);
     result.lead_paragraph_words = firstP
-      ? firstP[1]
-          .replace(/<[^>]+>/g, " ")
+      ? decodeHTML(firstP[1].replace(/<[^>]+>/g, " "))
           .replace(/\s+/g, " ")
           .trim()
           .split(/\s+/)
@@ -1618,8 +1615,8 @@ export class Scanner {
     let match;
 
     while ((match = linkRegex.exec(html)) !== null) {
-      const href = match[1];
-      const text = match[2].replace(/<[^>]+>/g, "").trim();
+      const href = decodeHTML(match[1]);
+      const text = decodeHTML(match[2].replace(/<[^>]+>/g, "")).trim();
 
       const hrefLower = (href || "").trim().toLowerCase();
       if (
@@ -1676,7 +1673,10 @@ export class Scanner {
     let match;
 
     while ((match = imgRegex.exec(html)) !== null) {
-      const src = match[1];
+      // Decode entities first: a Next.js src like
+      // /_next/image?url=%2F...&amp;w=3840 must become ...&w=3840 before URL
+      // resolution, or the size fetch hits a malformed (&amp%3B) query.
+      const src = decodeHTML(match[1]);
 
       try {
         const resolvedUrl = urlProcessor.resolve(result.url, src);
@@ -1690,7 +1690,7 @@ export class Scanner {
 
         result.images.push({
           src: resolvedUrl,
-          alt: altMatch ? altMatch[1] : "",
+          alt: altMatch ? decodeHTML(altMatch[1]) : "",
           dimensions: {
             width: widthMatch ? parseInt(widthMatch[1], 10) : 0,
             height: heightMatch ? parseInt(heightMatch[1], 10) : 0,
@@ -1709,7 +1709,7 @@ export class Scanner {
     const canonicalMatch = html.match(
       /<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']*)["']/i,
     );
-    return canonicalMatch ? canonicalMatch[1] : null;
+    return canonicalMatch ? decodeHTML(canonicalMatch[1]) : null;
   }
 
   private hasRobotsNoindex(html: string): boolean {
@@ -1809,10 +1809,18 @@ export class Scanner {
       "where", "while", "would", "other", "still", "between", "should", "through",
     ]);
 
+    // Safety net: even though text is entity-decoded upstream, never let an
+    // HTML entity name leak through as a "keyword" (e.g. rsquo, nbsp, amp).
+    const entityNames = new Set([
+      "amp", "lt", "gt", "quot", "apos", "nbsp", "rsquo", "lsquo", "rdquo",
+      "ldquo", "ndash", "mdash", "hellip", "copy", "reg", "trade", "deg",
+      "middot", "bull", "dagger", "laquo", "raquo", "hearts", "frac",
+    ]);
+
     const words = text.toLowerCase().match(/[\p{L}]{4,}/gu) || [];
     const freq = new Map<string, number>();
     for (const word of words) {
-      if (!stopWords.has(word)) {
+      if (!stopWords.has(word) && !entityNames.has(word)) {
         freq.set(word, (freq.get(word) || 0) + 1);
       }
     }
