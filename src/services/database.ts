@@ -3,6 +3,12 @@ import { Tables } from "../database.types";
 import { getSupabaseServiceClient } from "./database/client";
 import { proxyFetch } from "../utils/proxy";
 import { isPublicUrl, classifyPageType } from "../utils/url";
+import { classifyLinkStatus, shouldRetryWithBrowserUa } from "../utils/link-status";
+
+// A realistic browser UA used only to re-probe links that bot-block our crawler
+// UA, so we can tell "blocked" from genuinely "broken".
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 type Page = Tables<`pages`>;
 
@@ -48,7 +54,26 @@ async function checkExternalLinkStatuses(
             headers: { "User-Agent": ua, Range: "bytes=0-0" },
           });
         }
-        results.set(url, { status: resp.status, broken: resp.status >= 400 });
+        // 403/429/999 often just mean the target blocks our crawler UA. Re-probe
+        // once with a browser UA + GET before deciding it's blocked vs. broken.
+        if (shouldRetryWithBrowserUa(resp.status)) {
+          try {
+            resp = await proxyFetch(url, {
+              method: "GET",
+              redirect: "follow",
+              signal: controller.signal,
+              headers: { "User-Agent": BROWSER_UA, Range: "bytes=0-0" },
+            });
+          } catch {
+            // keep the original response for classification
+          }
+        }
+        // Only genuinely dead links count as broken; bot-blocked/rate-limited
+        // targets (classified "blocked") are not broken.
+        results.set(url, {
+          status: resp.status,
+          broken: classifyLinkStatus(resp.status) === "broken",
+        });
       } finally {
         clearTimeout(timer);
       }
@@ -318,7 +343,9 @@ export async function storeScanResults(
           const destResult = deduplicatedResults.find(r => r.url === link.url);
           if (destResult) {
             httpStatus = destResult.status;
-            isBroken = destResult.status >= 400;
+            // A crawled internal page returning 403/429 etc. is blocked, not a
+            // broken link (P0.4).
+            isBroken = classifyLinkStatus(destResult.status) === "broken";
           } else {
             httpStatus = 200;
             isBroken = false;
