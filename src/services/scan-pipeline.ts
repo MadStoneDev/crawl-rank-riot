@@ -1,7 +1,7 @@
 import { WebCrawler } from "./crawler";
 import { storeScanResults } from "./database";
 import { getSupabaseServiceClient } from "./database/client";
-import { detectAndStoreIssues, computeCanonicalisedVariants } from "./issue-detector";
+import { detectAndStoreIssues, computeCanonicalisedVariants, DetectedIssue } from "./issue-detector";
 import { checkAndStoreBacklinks } from "./backlink-checker";
 import { isCancelled, clearCancel } from "./scan-cancellation";
 import { AuditAnalyzer } from "./audit-analyzer";
@@ -443,13 +443,10 @@ export async function runScanPipeline(
       logger.error("analysis", `Site-level analysis failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    // 5. Page-level issues.
-    logger.info("analysis", "Detecting issues...");
-    const issuesFound = await detectAndStoreIssues(scanResults, projectId, scanId);
-    logger.info("analysis", `Found ${issuesFound} page-level issues`);
-
-    // 6. Site-level issues (needs the homepage page id).
-    let siteIssuesFound = 0;
+    // 5. Build site-level issues first (needs the homepage page id), then detect
+    // page issues and reconcile BOTH together so site issues get a fingerprint /
+    // identity and are counted by Compare (P1.1).
+    let siteIssues: DetectedIssue[] = [];
     if (siteLevelData) {
       try {
         const supabase = getSupabaseServiceClient();
@@ -461,17 +458,29 @@ export async function runScanPipeline(
           .limit(1)
           .single();
 
-        siteIssuesFound = await detectSiteLevelIssues(
+        siteIssues = detectSiteLevelIssues(
           siteLevelData,
           projectId,
           scanId,
           homepagePage?.id || null,
         );
-        logger.info("analysis", `Found ${siteIssuesFound} site-level issues`);
       } catch (error) {
         logger.error("analysis", `Site-level issue detection failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    const siteIssuesFound = siteIssues.length;
+
+    logger.info("analysis", "Detecting issues...");
+    const issuesFound = await detectAndStoreIssues(
+      scanResults,
+      projectId,
+      scanId,
+      siteIssues,
+    );
+    logger.info(
+      "analysis",
+      `Found ${issuesFound} issues (${siteIssuesFound} site-level)`,
+    );
 
     // 7. Backlinks (disabled by default).
     // The current check only fetches the sites we link OUT to and looks for a
@@ -489,8 +498,10 @@ export async function runScanPipeline(
       logger.info("analysis", "Backlink check skipped (work in progress)");
     }
 
-    // 8. Mode-specific scoring / analysis.
-    const totalIssues = issuesFound + siteIssuesFound;
+    // 8. Mode-specific scoring / analysis. issuesFound already includes the
+    // site-level issues (reconciled together), so don't add them again.
+    const totalIssues = issuesFound;
+    void siteIssuesFound;
     const totalLinksScanned = scanResults.reduce(
       (sum, page) => sum + page.internal_links.length + page.external_links.length,
       0,

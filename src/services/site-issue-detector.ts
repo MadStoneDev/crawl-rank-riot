@@ -1,8 +1,7 @@
 import { SiteLevelData } from "../types";
 import { Json } from "../database.types";
-import { getSupabaseServiceClient } from "./database/client";
 
-interface SiteIssue {
+export interface SiteIssue {
   project_id: string;
   page_id: string;
   scan_id: string;
@@ -12,17 +11,23 @@ interface SiteIssue {
   details: Json | null;
 }
 
-export async function detectSiteLevelIssues(
+/**
+ * Build site-level issues (llms.txt / robots.txt / sitemap). Returns them so the
+ * caller can run them through the SAME fingerprinted reconcile as page issues —
+ * previously these were inserted raw with no fingerprint, so they had no stable
+ * identity and were missed by Compare's set-diff (P1.1 off-by-one).
+ */
+export function detectSiteLevelIssues(
   siteLevelData: SiteLevelData,
   projectId: string,
   scanId: string,
   homepagePageId: string | null,
-): Promise<number> {
+): SiteIssue[] {
   const issues: SiteIssue[] = [];
 
   if (!homepagePageId) {
     console.log("No homepage page ID found, skipping site-level issues");
-    return 0;
+    return issues;
   }
 
   const addIssue = (
@@ -127,20 +132,5 @@ export async function detectSiteLevelIssues(
     }
   }
 
-  if (issues.length === 0) {
-    return 0;
-  }
-
-  const supabase = getSupabaseServiceClient();
-  const { error } = await supabase.from("issues").insert(issues);
-
-  if (error) {
-    console.error("Error inserting site-level issues:", error);
-    return 0;
-  }
-
-  console.log(
-    `Site-level issue detection: ${issues.length} issues found for project ${projectId}`,
-  );
-  return issues.length;
+  return issues;
 }

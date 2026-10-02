@@ -37,7 +37,7 @@ export function computeCanonicalisedVariants(results: ScanResult[]): Set<string>
 
 type IssueSeverity = "critical" | "high" | "medium" | "low";
 
-interface DetectedIssue {
+export interface DetectedIssue {
   project_id: string;
   page_id: string;
   scan_id: string;
@@ -72,6 +72,9 @@ export async function detectAndStoreIssues(
   results: ScanResult[],
   projectId: string,
   scanId: string,
+  // Site-level issues (llms.txt/robots/sitemap) are reconciled together with
+  // page issues so they get a stable fingerprint/identity too (P1.1).
+  siteIssues: DetectedIssue[] = [],
 ): Promise<number> {
   const supabase = getSupabaseServiceClient();
 
@@ -266,6 +269,10 @@ export async function detectAndStoreIssues(
         }
       }
     }
+
+    // Site-level issues (llms.txt/robots/sitemap), reconciled alongside page
+    // issues so they get a fingerprint/identity and are counted by Compare (P1.1).
+    if (siteIssues.length > 0) allIssues.push(...siteIssues);
 
     // Step 4: Reconcile against existing issues by fingerprint, giving each
     // issue a persistent identity across scans (first-seen, last-seen, age,
