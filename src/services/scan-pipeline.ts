@@ -1,7 +1,7 @@
 import { WebCrawler } from "./crawler";
 import { storeScanResults } from "./database";
 import { getSupabaseServiceClient } from "./database/client";
-import { detectAndStoreIssues } from "./issue-detector";
+import { detectAndStoreIssues, computeCanonicalisedVariants } from "./issue-detector";
 import { checkAndStoreBacklinks } from "./backlink-checker";
 import { isCancelled, clearCancel } from "./scan-cancellation";
 import { AuditAnalyzer } from "./audit-analyzer";
@@ -67,10 +67,62 @@ type ScanStrategy = (ctx: ScanContext) => Promise<ModeResult>;
  * crawl is forced to 0 by the scorer. Writes the full report to scan_scores and
  * a flat copy to summary_stats.seo_score.
  */
+/**
+ * Load open-issue critical/high counts (site-wide and per page URL) for score
+ * capping. Issues are stored before the strategy runs, so this reflects this
+ * scan. Dismissed/fixed issues are excluded.
+ */
+async function loadIssueSeverity(projectId: string): Promise<{
+  site: { critical: number; high: number };
+  perPage: Record<string, { critical: number; high: number }>;
+}> {
+  const site = { critical: 0, high: 0 };
+  const perPage: Record<string, { critical: number; high: number }> = {};
+  try {
+    const supabase = getSupabaseServiceClient();
+    const [{ data: issueRows }, { data: pageRows }] = await Promise.all([
+      supabase
+        .from("issues")
+        .select("severity, page_id")
+        .eq("project_id", projectId)
+        .eq("is_fixed", false)
+        .eq("dismissed", false),
+      supabase.from("pages").select("id, url").eq("project_id", projectId),
+    ]);
+    const idToUrl = new Map((pageRows ?? []).map((p) => [p.id as string, p.url as string]));
+    for (const row of issueRows ?? []) {
+      const sev = (row.severity || "").toLowerCase();
+      if (sev !== "critical" && sev !== "high") continue;
+      site[sev]++;
+      const url = row.page_id ? idToUrl.get(row.page_id as string) : undefined;
+      if (url) {
+        const pp = (perPage[url] ??= { critical: 0, high: 0 });
+        pp[sev]++;
+      }
+    }
+  } catch {
+    // Non-fatal: fall back to uncapped scoring.
+  }
+  return { site, perPage };
+}
+
 const seoStrategy: ScanStrategy = async (ctx): Promise<ModeResult> => {
   const { scanResults, botProtection, scanId, projectId, logger } = ctx;
 
-  const scoreReport = computeScoreReport(scanResults, { blocked: !!botProtection });
+  // Canonicalised variants inherit their canonical's state and raise no findings
+  // of their own — exclude them from the scored page set so they neither pad nor
+  // dilute the score (P0 follow-up).
+  const variants = computeCanonicalisedVariants(scanResults);
+  const scoredResults = scanResults.filter((r) => !variants.has(r.url));
+
+  // Open-issue severity (already stored by this point) caps the score so a site
+  // with an open critical/high can't read as healthy (P1.2).
+  const severity = await loadIssueSeverity(projectId);
+
+  const scoreReport = computeScoreReport(scoredResults, {
+    blocked: !!botProtection,
+    severity,
+  });
   const seoScore = {
     technical: scoreReport.categories.technical.score,
     content: scoreReport.categories.content.score,

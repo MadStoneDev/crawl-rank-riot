@@ -40,6 +40,51 @@ describe("computeScoreReport", () => {
     });
   });
 
+  it("caps the overall score at 79 when an open critical issue exists (P1.2)", () => {
+    const page = makeOptimizedPage({ url: "https://site.com/x" });
+    const uncapped = computeScoreReport([page]);
+    expect(uncapped.overall).toBe(100);
+
+    const capped = computeScoreReport([page], {
+      severity: { site: { critical: 1, high: 0 } },
+    });
+    expect(capped.overall).toBe(79);
+    expect(capped.capped).toBe("critical");
+  });
+
+  it("caps the overall score at 89 for a high (but not critical) issue", () => {
+    const report = computeScoreReport([makeOptimizedPage()], {
+      severity: { site: { critical: 0, high: 2 } },
+    });
+    expect(report.overall).toBe(89);
+    expect(report.capped).toBe("high");
+  });
+
+  it("removing the critical issue lifts the cap", () => {
+    const page = makeOptimizedPage();
+    const stillHigh = computeScoreReport([page], {
+      severity: { site: { critical: 0, high: 1 } },
+    });
+    expect(stillHigh.overall).toBe(89);
+    const clean = computeScoreReport([page], {
+      severity: { site: { critical: 0, high: 0 } },
+    });
+    expect(clean.overall).toBe(100);
+    expect(clean.capped).toBe(null);
+  });
+
+  it("caps a per-page score and records cappedBy", () => {
+    const page = makeOptimizedPage({ url: "https://site.com/p" });
+    const report = computeScoreReport([page], {
+      severity: {
+        site: { critical: 1, high: 0 },
+        perPage: { "https://site.com/p": { critical: 1, high: 0 } },
+      },
+    });
+    expect(report.pages["https://site.com/p"].score).toBeLessThanOrEqual(79);
+    expect(report.pages["https://site.com/p"].cappedBy).toBe("critical");
+  });
+
   it("records the actual offending URLs on a failing check", () => {
     const good = makeOptimizedPage({ url: "https://site.com/good" });
     const noTitle = makeOptimizedPage({ url: "https://site.com/bad", title: undefined });

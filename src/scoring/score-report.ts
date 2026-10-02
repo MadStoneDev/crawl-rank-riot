@@ -15,7 +15,28 @@ import { ScanResult } from "../types";
  */
 
 /** Bump when the scoring math changes. Persisted so we know how a scan was scored. */
-export const SCORE_VERSION = 1;
+export const SCORE_VERSION = 2;
+
+/** Score caps when open issues of a given severity exist (P1.2). */
+const CRITICAL_CAP = 79;
+const HIGH_CAP = 89;
+
+export type CapSeverity = "critical" | "high" | null;
+
+/** The worst capping severity given open critical/high counts. */
+function worstCap(counts?: { critical: number; high: number }): CapSeverity {
+  if (!counts) return null;
+  if (counts.critical > 0) return "critical";
+  if (counts.high > 0) return "high";
+  return null;
+}
+
+/** Apply the severity cap to a raw score. */
+function applyCap(score: number, cap: CapSeverity): number {
+  if (cap === "critical") return Math.min(score, CRITICAL_CAP);
+  if (cap === "high") return Math.min(score, HIGH_CAP);
+  return score;
+}
 
 /** How many offending URLs to retain per failing check (keeps the JSON bounded). */
 const MAX_AFFECTED_URLS = 50;
@@ -47,6 +68,8 @@ export interface CategoryScore {
 export interface PageScore {
   score: number; // 0-100
   checks: CheckResult[];
+  /** Set when an open critical/high issue on this page capped the score (P1.2). */
+  cappedBy?: CapSeverity;
 }
 
 export interface ScoreReport {
@@ -61,6 +84,8 @@ export interface ScoreReport {
   /** Per-page scores keyed by URL. */
   pages: Record<string, PageScore>;
   blocked: boolean;
+  /** Set when open critical/high issues capped the overall score (P1.2). */
+  capped?: CapSeverity;
 }
 
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
@@ -119,7 +144,7 @@ function pageCheck(
 }
 
 /** Per-page score = share of that page's own applicable checks that pass. */
-function scorePage(r: ScanResult): PageScore {
+function scorePage(r: ScanResult, cap: CapSeverity = null): PageScore {
   const checks: CheckResult[] = [];
   const single = (id: string, label: string, ok: boolean): void => {
     checks.push({ id, label, status: ok ? "pass" : "fail", passed: ok ? 1 : 0, total: 1, affectedUrls: ok ? [] : [r.url] });
@@ -153,12 +178,21 @@ function scorePage(r: ScanResult): PageScore {
 
   const scored = checks.filter((c) => c.status !== "na");
   const passedCount = scored.filter((c) => c.status === "pass").length;
-  return { score: clamp(pct(passedCount, scored.length)), checks };
+  const raw = clamp(pct(passedCount, scored.length));
+  return { score: applyCap(raw, cap), checks, cappedBy: cap };
 }
 
 export function computeScoreReport(
   results: ScanResult[],
-  opts: { blocked?: boolean } = {},
+  opts: {
+    blocked?: boolean;
+    /** Open-issue severity counts used to cap scores (P1.2). */
+    severity?: {
+      site: { critical: number; high: number };
+      /** Per-page counts keyed by page URL. */
+      perPage?: Record<string, { critical: number; high: number }>;
+    };
+  } = {},
 ): ScoreReport {
   const blocked = !!opts.blocked;
 
@@ -230,10 +264,17 @@ export function computeScoreReport(
       return sum + pct(passed, AEO_SIGNALS.length);
     }, 0) / total;
 
-  const overall = clamp((technicalRaw + contentRaw + mediaRaw + aeoRaw) / 4);
+  // Cap the overall by the worst open-issue severity site-wide: a site with an
+  // open critical can't read as "healthy" (P1.2).
+  const siteCap = worstCap(opts.severity?.site);
+  const overall = applyCap(
+    clamp((technicalRaw + contentRaw + mediaRaw + aeoRaw) / 4),
+    siteCap,
+  );
 
+  const perPage = opts.severity?.perPage ?? {};
   const pages: Record<string, PageScore> = {};
-  for (const r of results) pages[r.url] = scorePage(r);
+  for (const r of results) pages[r.url] = scorePage(r, worstCap(perPage[r.url]));
 
   return {
     version: SCORE_VERSION,
@@ -246,5 +287,6 @@ export function computeScoreReport(
     },
     pages,
     blocked,
+    capped: siteCap,
   };
 }

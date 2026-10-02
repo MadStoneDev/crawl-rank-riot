@@ -10,7 +10,7 @@ import { isContentPage, isSelfCanonical, normalizeForSelfCompare } from "../util
  * canonical_mismatch signals are expected and must not be raised as issues (P0
  * gap #4). Returns the set of such variant URLs.
  */
-function computeCanonicalisedVariants(results: ScanResult[]): Set<string> {
+export function computeCanonicalisedVariants(results: ScanResult[]): Set<string> {
   const byNorm = new Map<string, ScanResult>();
   for (const r of results) {
     const n = normalizeForSelfCompare(r.url);
