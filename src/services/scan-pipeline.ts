@@ -178,7 +178,7 @@ export async function createScanSnapshot(
 
     const { data: issues } = await supabase
       .from("issues")
-      .select("severity")
+      .select("severity, fingerprint, issue_type, dismissed")
       .eq("project_id", projectId)
       .eq("scan_id", scanId);
 
@@ -192,6 +192,17 @@ export async function createScanSnapshot(
       }
     }
     const totalIssues = issueCounts.critical + issueCounts.high + issueCounts.medium + issueCounts.low;
+
+    // Per-scan identity data so Compare can diff two scans by fingerprint set
+    // (fixed / new / unchanged), rather than subtracting totals (P1.1). Exclude
+    // dismissed issues from the comparable set.
+    const openRows = (issues ?? []).filter((r) => !r.dismissed);
+    const issueFingerprints = Array.from(
+      new Set(openRows.map((r) => r.fingerprint).filter((f): f is string => !!f)),
+    );
+    const issueTypesPresent = Array.from(
+      new Set(openRows.map((r) => r.issue_type).filter((t): t is string => !!t)),
+    );
 
     const { count: totalPages } = await supabase
       .from("pages")
@@ -212,6 +223,18 @@ export async function createScanSnapshot(
       .eq("project_id", projectId)
       .eq("is_broken", true);
 
+    // Crawled page ids let Compare classify a vanished issue as "page gone".
+    // Capped so a very large crawl doesn't bloat the snapshot JSON.
+    let crawledPageIds: string[] | undefined;
+    if ((totalPages ?? 0) <= 5000) {
+      const { data: pageRows } = await supabase
+        .from("pages")
+        .select("id")
+        .eq("project_id", projectId)
+        .like("url", "http%");
+      crawledPageIds = (pageRows ?? []).map((p) => p.id as string);
+    }
+
     // Reuse the canonical score passed in from the strategy. A bot-blocked crawl
     // arrives here already forced to 0, so there is no separate blocked branch.
     const avgSeoScore = Math.max(0, Math.min(100, Math.round(overallScore)));
@@ -231,6 +254,11 @@ export async function createScanSnapshot(
         medium: issueCounts.medium,
         low: issueCounts.low,
       },
+      // Identity data for Compare's fingerprint set-diff (P1.1).
+      issueFingerprints,
+      issueTypesPresent,
+      ...(crawledPageIds ? { crawledPageIds } : {}),
+      checkVersion: CHECK_VERSION,
       scan: {
         id: scanId,
         status: "completed",
