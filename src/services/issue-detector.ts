@@ -1,7 +1,39 @@
 import { ScanResult } from "../types";
 import { Json } from "../database.types";
 import { getSupabaseServiceClient } from "./database/client";
-import { isContentPage } from "../utils/url";
+import { isContentPage, isSelfCanonical, normalizeForSelfCompare } from "../utils/url";
+
+/**
+ * A "canonicalised variant" is a crawled URL whose canonical points at ANOTHER
+ * crawled, indexable page (e.g. /quote?service=x → /quote). This is correct SEO
+ * setup, so the variant's duplicate-title/meta/content, thin-content, orphan and
+ * canonical_mismatch signals are expected and must not be raised as issues (P0
+ * gap #4). Returns the set of such variant URLs.
+ */
+function computeCanonicalisedVariants(results: ScanResult[]): Set<string> {
+  const byNorm = new Map<string, ScanResult>();
+  for (const r of results) {
+    const n = normalizeForSelfCompare(r.url);
+    if (n) byNorm.set(n, r);
+  }
+  const variants = new Set<string>();
+  for (const r of results) {
+    if (!r.canonical_url) continue;
+    if (isSelfCanonical(r.canonical_url, r.url)) continue; // self canonical
+    const targetNorm = normalizeForSelfCompare(r.canonical_url, r.url);
+    if (!targetNorm) continue;
+    const target = byNorm.get(targetNorm);
+    // Only a valid canonicalisation when the target was crawled, is indexable,
+    // and returned OK. Otherwise the canonical is genuinely suspect → keep the
+    // canonical_mismatch signal.
+    const targetOk =
+      !!target &&
+      target.is_indexable !== false &&
+      (target.status == null || (target.status >= 200 && target.status < 300));
+    if (targetOk) variants.add(r.url);
+  }
+  return variants;
+}
 
 type IssueSeverity = "critical" | "high" | "medium" | "low";
 
@@ -69,6 +101,10 @@ export async function detectAndStoreIssues(
     // Step 2: Fetch broken internal links for this project
     const brokenLinks = await fetchBrokenLinks(projectId);
 
+    // Pages that are canonicalised variants of another crawled page — excluded
+    // from duplicate/thin/orphan/canonical-mismatch checks (P0 gap #4).
+    const canonicalisedVariants = computeCanonicalisedVariants(results);
+
     // Step 3: Detect issues for each page
     const allIssues: DetectedIssue[] = [];
 
@@ -78,7 +114,13 @@ export async function detectAndStoreIssues(
         continue;
       }
 
-      const pageIssues = analyzePageIssues(result, projectId, pageId, scanId);
+      const pageIssues = analyzePageIssues(
+        result,
+        projectId,
+        pageId,
+        scanId,
+        canonicalisedVariants.has(result.url),
+      );
       allIssues.push(...pageIssues);
     }
 
@@ -88,6 +130,7 @@ export async function detectAndStoreIssues(
       pageIdMap,
       projectId,
       scanId,
+      canonicalisedVariants,
     );
     allIssues.push(...crossPageIssues);
 
@@ -114,6 +157,8 @@ export async function detectAndStoreIssues(
         // navigation, not in-content links; flagging them as orphans is noise
         // (they were the bulk of false orphans on real sites).
         if (!isContentPage(result.url)) continue;
+        // A canonicalised variant (e.g. /quote?x → /quote) isn't a real orphan.
+        if (canonicalisedVariants.has(result.url)) continue;
         const pageId = pageIdMap.get(result.url);
         if (!pageId) continue;
         if (!pagesWithInbound.has(pageId)) {
@@ -392,6 +437,7 @@ function detectCrossPageDuplicates(
   pageIdMap: Map<string, string>,
   projectId: string,
   scanId: string,
+  canonicalisedVariants: Set<string>,
 ): DetectedIssue[] {
   const issues: DetectedIssue[] = [];
 
@@ -403,6 +449,9 @@ function detectCrossPageDuplicates(
     // Paginated archives (/blog/page/2) and taxonomy pages share a title by
     // design; that is not a content duplicate-title problem, so exclude them.
     if (!isContentPage(result.url)) continue;
+    // Canonicalised variants (e.g. /quote?x → /quote) share title/meta/content
+    // with their canonical by design — not a duplicate (P0 gap #4).
+    if (canonicalisedVariants.has(result.url)) continue;
     const title = result.title?.trim();
     if (!title) continue;
     const existing = titleMap.get(title) || [];
@@ -435,6 +484,7 @@ function detectCrossPageDuplicates(
     const pageId = pageIdMap.get(result.url);
     if (!pageId || !result.content_hash) continue;
     if (result.word_count < 50) continue;
+    if (canonicalisedVariants.has(result.url)) continue;
     const existing = hashMap.get(result.content_hash) || [];
     existing.push({ url: result.url, pageId });
     hashMap.set(result.content_hash, existing);
@@ -463,6 +513,7 @@ function detectCrossPageDuplicates(
   for (const result of results) {
     const pageId = pageIdMap.get(result.url);
     if (!pageId) continue;
+    if (canonicalisedVariants.has(result.url)) continue;
     const desc = result.meta_description?.trim();
     if (!desc) continue;
     const existing = descMap.get(desc) || [];
@@ -500,6 +551,7 @@ function analyzePageIssues(
   projectId: string,
   pageId: string,
   scanId: string,
+  isCanonicalisedVariant: boolean = false,
 ): DetectedIssue[] {
   const issues: DetectedIssue[] = [];
 
@@ -644,7 +696,8 @@ function analyzePageIssues(
   if (
     result.word_count < 300 &&
     !result.has_robots_noindex &&
-    isContentPage(result.url)
+    isContentPage(result.url) &&
+    !isCanonicalisedVariant
   ) {
     addIssue(
       "thin_content",
@@ -991,10 +1044,13 @@ function analyzePageIssues(
     );
   }
 
-  // Canonical mismatch
+  // Canonical mismatch — but NOT when this page is a valid canonicalised variant
+  // (its canonical points to another crawled, indexable page). That's correct
+  // SEO, not a mismatch (P0 gap #4).
   if (
     result.canonical_url != null &&
-    result.canonical_is_self === false
+    result.canonical_is_self === false &&
+    !isCanonicalisedVariant
   ) {
     addIssue(
       "canonical_mismatch",
