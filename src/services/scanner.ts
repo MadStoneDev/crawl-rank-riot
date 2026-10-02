@@ -7,6 +7,17 @@ import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/pro
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
 
+/** Decode HTML entities in every value of a string record (OG / Twitter tags). */
+function decodeStringRecord(
+  record: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(record)) {
+    out[k] = typeof v === "string" ? decodeHTML(v) : v;
+  }
+  return out;
+}
+
 export class Scanner {
   private userAgent = USER_AGENT;
 
@@ -343,8 +354,8 @@ export class Scanner {
 
     // Extract meta tags
     const metaTags = await this.extractMetaTags(page);
-    result.open_graph = metaTags.openGraph;
-    result.twitter_card = metaTags.twitterCard;
+    result.open_graph = decodeStringRecord(metaTags.openGraph);
+    result.twitter_card = decodeStringRecord(metaTags.twitterCard);
     result.canonical_url = metaTags.canonical;
     result.is_indexable = metaTags.isIndexable;
     result.has_robots_noindex = metaTags.hasRobotsNoindex;
@@ -1395,10 +1406,10 @@ export class Scanner {
     const ogRegexAlt = /<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:([^"']+)["'][^>]*>/gi;
     let ogMatch;
     while ((ogMatch = ogRegex.exec(html)) !== null) {
-      result.open_graph[ogMatch[1]] = ogMatch[2];
+      result.open_graph[ogMatch[1]] = decodeHTML(ogMatch[2]);
     }
     while ((ogMatch = ogRegexAlt.exec(html)) !== null) {
-      result.open_graph[ogMatch[2]] = ogMatch[1];
+      result.open_graph[ogMatch[2]] = decodeHTML(ogMatch[1]);
     }
 
     // Extract Twitter Card tags
@@ -1406,10 +1417,10 @@ export class Scanner {
     const twRegexAlt = /<meta[^>]*content=["']([^"']*)["'][^>]*name=["']twitter:([^"']+)["'][^>]*>/gi;
     let twMatch;
     while ((twMatch = twRegex.exec(html)) !== null) {
-      result.twitter_card[twMatch[1]] = twMatch[2];
+      result.twitter_card[twMatch[1]] = decodeHTML(twMatch[2]);
     }
     while ((twMatch = twRegexAlt.exec(html)) !== null) {
-      result.twitter_card[twMatch[2]] = twMatch[1];
+      result.twitter_card[twMatch[2]] = decodeHTML(twMatch[1]);
     }
 
     // Extract JSON-LD structured data
@@ -1714,7 +1725,7 @@ export class Scanner {
             height: heightMatch ? parseInt(heightMatch[1], 10) : 0,
           },
           loading: loadingMatch ? loadingMatch[1] : "",
-          srcset: srcsetMatch ? srcsetMatch[1] : undefined,
+          srcset: srcsetMatch ? decodeHTML(srcsetMatch[1]) : undefined,
           format: this.deriveImageFormat(resolvedUrl),
         });
       } catch (error) {
