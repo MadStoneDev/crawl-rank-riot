@@ -3,6 +3,8 @@ import {
   classifyLinkStatus,
   isBlockedStatus,
   shouldRetryWithBrowserUa,
+  classifyFetchError,
+  fetchErrorIsBroken,
 } from "./link-status";
 
 describe("classifyLinkStatus (P0.4)", () => {
@@ -43,5 +45,27 @@ describe("classifyLinkStatus (P0.4)", () => {
     expect(shouldRetryWithBrowserUa(999)).toBe(true);
     expect(shouldRetryWithBrowserUa(503)).toBe(false); // 503 isn't UA-related
     expect(shouldRetryWithBrowserUa(404)).toBe(false);
+  });
+});
+
+describe("classifyFetchError (P0 follow-up #2)", () => {
+  it("maps error codes to reasons", () => {
+    expect(classifyFetchError({ cause: { code: "ENOTFOUND" } })).toBe("dns_not_found");
+    expect(classifyFetchError({ cause: { code: "EAI_AGAIN" } })).toBe("dns_not_found");
+    expect(classifyFetchError({ cause: { code: "ECONNREFUSED" } })).toBe("connection_refused");
+    expect(classifyFetchError({ name: "AbortError" })).toBe("timeout");
+    expect(classifyFetchError({ cause: { code: "UND_ERR_CONNECT_TIMEOUT" } })).toBe("timeout");
+    expect(classifyFetchError({ cause: { code: "DEPTH_ZERO_SELF_SIGNED_CERT" } })).toBe("tls_error");
+    expect(classifyFetchError({ cause: { code: "ERR_TLS_CERT_ALTNAME_INVALID" } })).toBe("tls_error");
+    expect(classifyFetchError({ code: "CERT_HAS_EXPIRED" })).toBe("tls_error");
+    expect(classifyFetchError(new Error("boom"))).toBe("network_error");
+  });
+
+  it("only dns_not_found and connection_refused are broken", () => {
+    expect(fetchErrorIsBroken("dns_not_found")).toBe(true);
+    expect(fetchErrorIsBroken("connection_refused")).toBe(true);
+    expect(fetchErrorIsBroken("timeout")).toBe(false);
+    expect(fetchErrorIsBroken("tls_error")).toBe(false);
+    expect(fetchErrorIsBroken("network_error")).toBe(false);
   });
 });

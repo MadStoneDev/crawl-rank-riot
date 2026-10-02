@@ -3,7 +3,12 @@ import { Tables } from "../database.types";
 import { getSupabaseServiceClient } from "./database/client";
 import { proxyFetch } from "../utils/proxy";
 import { isPublicUrl, classifyPageType } from "../utils/url";
-import { classifyLinkStatus, shouldRetryWithBrowserUa } from "../utils/link-status";
+import {
+  classifyLinkStatus,
+  shouldRetryWithBrowserUa,
+  classifyFetchError,
+  fetchErrorIsBroken,
+} from "../utils/link-status";
 
 // A realistic browser UA used only to re-probe links that bot-block our crawler
 // UA, so we can tell "blocked" from genuinely "broken".
@@ -24,62 +29,94 @@ const EXTERNAL_CHECK_CAP = 500;
  */
 async function checkExternalLinkStatuses(
   urls: string[],
-): Promise<Map<string, { status: number | null; broken: boolean }>> {
-  const results = new Map<string, { status: number | null; broken: boolean }>();
+): Promise<Map<string, { status: number | null; broken: boolean; error?: string | null }>> {
+  const results = new Map<
+    string,
+    { status: number | null; broken: boolean; error?: string | null }
+  >();
   const queue = [...urls];
   const ua = process.env.CRAWLER_USER_AGENT || "RankRiotBot";
 
-  const checkOne = async (url: string): Promise<void> => {
+  // One probe attempt. Resolves to the final HTTP status, or throws on a
+  // network error (caller classifies and may retry).
+  const probe = async (url: string): Promise<number> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EXTERNAL_CHECK_TIMEOUT_MS);
     try {
-      if (!(await isPublicUrl(url))) {
-        // Can't safely probe a private/reserved address — don't flag it broken.
-        results.set(url, { status: null, broken: false });
-        return;
-      }
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), EXTERNAL_CHECK_TIMEOUT_MS);
-      try {
-        let resp = await proxyFetch(url, {
-          method: "HEAD",
+      let resp = await proxyFetch(url, {
+        method: "HEAD",
+        redirect: "follow",
+        signal: controller.signal,
+        headers: { "User-Agent": ua },
+      });
+      // Some servers reject HEAD (405/501) — retry with a minimal GET.
+      if (resp.status === 405 || resp.status === 501) {
+        resp = await proxyFetch(url, {
+          method: "GET",
           redirect: "follow",
           signal: controller.signal,
-          headers: { "User-Agent": ua },
+          headers: { "User-Agent": ua, Range: "bytes=0-0" },
         });
-        // Some servers reject HEAD (405/501) — retry with a minimal GET.
-        if (resp.status === 405 || resp.status === 501) {
+      }
+      // 403/429/999 often just mean the target blocks our crawler UA. Re-probe
+      // once with a browser UA + GET before deciding it's blocked vs. broken.
+      if (shouldRetryWithBrowserUa(resp.status)) {
+        try {
           resp = await proxyFetch(url, {
             method: "GET",
             redirect: "follow",
             signal: controller.signal,
-            headers: { "User-Agent": ua, Range: "bytes=0-0" },
+            headers: { "User-Agent": BROWSER_UA, Range: "bytes=0-0" },
           });
+        } catch {
+          // keep the original response for classification
         }
-        // 403/429/999 often just mean the target blocks our crawler UA. Re-probe
-        // once with a browser UA + GET before deciding it's blocked vs. broken.
-        if (shouldRetryWithBrowserUa(resp.status)) {
-          try {
-            resp = await proxyFetch(url, {
-              method: "GET",
-              redirect: "follow",
-              signal: controller.signal,
-              headers: { "User-Agent": BROWSER_UA, Range: "bytes=0-0" },
-            });
-          } catch {
-            // keep the original response for classification
-          }
-        }
-        // Only genuinely dead links count as broken; bot-blocked/rate-limited
-        // targets (classified "blocked") are not broken.
-        results.set(url, {
-          status: resp.status,
-          broken: classifyLinkStatus(resp.status) === "broken",
-        });
-      } finally {
-        clearTimeout(timer);
       }
-    } catch {
-      // DNS failure / connection refused / timeout — treat as unreachable.
-      results.set(url, { status: 0, broken: true });
+      return resp.status;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const checkOne = async (url: string): Promise<void> => {
+    if (!(await isPublicUrl(url))) {
+      // Can't safely probe a private/reserved address — don't flag it broken.
+      results.set(url, { status: null, broken: false, error: null });
+      return;
+    }
+    try {
+      const status = await probe(url);
+      // Only genuinely dead links count as broken; bot-blocked/rate-limited
+      // targets (classified "blocked") are not broken.
+      results.set(url, {
+        status,
+        broken: classifyLinkStatus(status) === "broken",
+        error: null,
+      });
+    } catch (err) {
+      let reason = classifyFetchError(err);
+      // Timeouts are often transient — retry once before classifying.
+      if (reason === "timeout") {
+        try {
+          const status = await probe(url);
+          results.set(url, {
+            status,
+            broken: classifyLinkStatus(status) === "broken",
+            error: null,
+          });
+          return;
+        } catch (err2) {
+          reason = classifyFetchError(err2);
+        }
+      }
+      // DNS-not-found / connection-refused are broken; timeout / TLS / other
+      // network errors are "couldn't verify" (not broken). Reason recorded so
+      // the UI can show why instead of a bare status 0 (P0 follow-up #2).
+      results.set(url, {
+        status: 0,
+        broken: fetchErrorIsBroken(reason),
+        error: reason,
+      });
     }
   };
 
@@ -366,6 +403,7 @@ export async function storeScanResults(
           is_followed: !link.rel_attributes?.includes("nofollow"),
           http_status: httpStatus,
           is_broken: isBroken,
+          link_error: null,
         });
       }
 
@@ -384,6 +422,7 @@ export async function storeScanResults(
           is_followed: !link.rel_attributes?.includes("nofollow"),
           http_status: null,
           is_broken: false,
+          link_error: null,
         });
       }
     }
@@ -432,6 +471,7 @@ export async function storeScanResults(
             if (s) {
               link.http_status = s.status;
               link.is_broken = s.broken;
+              link.link_error = s.error ?? null;
             }
           }
         }

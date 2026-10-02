@@ -35,3 +35,43 @@ export function shouldRetryWithBrowserUa(
 ): boolean {
   return status === 403 || status === 429 || status === 999;
 }
+
+// Why a link probe threw (status 0 otherwise hides the cause). Only
+// dns_not_found and connection_refused mean the link is genuinely broken;
+// timeout and TLS problems mean "couldn't verify" (P0 follow-up #2).
+export type FetchErrorReason =
+  | "dns_not_found"
+  | "connection_refused"
+  | "timeout"
+  | "tls_error"
+  | "network_error";
+
+export function classifyFetchError(err: unknown): FetchErrorReason {
+  const e = err as { name?: string; code?: string; cause?: { code?: string } };
+  const code = (e?.cause?.code || e?.code || "").toString().toUpperCase();
+  if (
+    e?.name === "AbortError" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "UND_ERR_HEADERS_TIMEOUT" ||
+    code === "ETIMEDOUT"
+  ) {
+    return "timeout";
+  }
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "dns_not_found";
+  if (code === "ECONNREFUSED") return "connection_refused";
+  if (
+    code.startsWith("ERR_TLS") ||
+    code.startsWith("ERR_SSL") ||
+    code.includes("CERT") ||
+    code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
+    code === "DEPTH_ZERO_SELF_SIGNED_CERT"
+  ) {
+    return "tls_error";
+  }
+  return "network_error";
+}
+
+/** True only for reasons that mean the link is genuinely dead. */
+export function fetchErrorIsBroken(reason: FetchErrorReason): boolean {
+  return reason === "dns_not_found" || reason === "connection_refused";
+}
