@@ -5,6 +5,7 @@ import {
   shouldRetryWithBrowserUa,
   classifyFetchError,
   fetchErrorIsBroken,
+  extractErrorCode,
 } from "./link-status";
 
 describe("classifyLinkStatus (P0.4)", () => {
@@ -67,5 +68,24 @@ describe("classifyFetchError (P0 follow-up #2)", () => {
     expect(fetchErrorIsBroken("timeout")).toBe(false);
     expect(fetchErrorIsBroken("tls_error")).toBe(false);
     expect(fetchErrorIsBroken("network_error")).toBe(false);
+  });
+
+  it("catches cert-verification codes that don't contain 'CERT' (cadeaurable regression)", () => {
+    // Incomplete chain the crawler's CA store can't verify — classified TLS
+    // (couldn't verify), never broken.
+    expect(classifyFetchError({ cause: { code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" } })).toBe("tls_error");
+    expect(classifyFetchError({ cause: { code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" } })).toBe("tls_error");
+    expect(classifyFetchError({ cause: { code: "EPROTO" } })).toBe("tls_error");
+    expect(fetchErrorIsBroken(classifyFetchError({ cause: { code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" } }))).toBe(false);
+  });
+
+  it("does not mislabel a reset/timeout as TLS", () => {
+    expect(classifyFetchError({ cause: { code: "ECONNRESET" } })).toBe("network_error");
+    expect(classifyFetchError({ name: "AbortError" })).toBe("timeout");
+  });
+
+  it("extractErrorCode pulls the most specific code", () => {
+    expect(extractErrorCode({ cause: { code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" } })).toBe("UNABLE_TO_VERIFY_LEAF_SIGNATURE");
+    expect(extractErrorCode({ code: "ETIMEDOUT" })).toBe("ETIMEDOUT");
   });
 });

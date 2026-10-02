@@ -46,9 +46,31 @@ export type FetchErrorReason =
   | "tls_error"
   | "network_error";
 
+// Known OpenSSL/Node TLS-verification error codes that don't contain "CERT"
+// (so the substring check alone would miss them).
+const TLS_CODES = new Set([
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "EPROTO", // TLS handshake/protocol failure
+  "ERR_SSL_WRONG_VERSION_NUMBER",
+]);
+
+/** Extract the most specific raw error code from a thrown fetch/undici error. */
+export function extractErrorCode(err: unknown): string {
+  const e = err as {
+    name?: string;
+    code?: string;
+    cause?: { code?: string; name?: string };
+  };
+  return (e?.cause?.code || e?.code || e?.cause?.name || e?.name || "").toString();
+}
+
 export function classifyFetchError(err: unknown): FetchErrorReason {
   const e = err as { name?: string; code?: string; cause?: { code?: string } };
-  const code = (e?.cause?.code || e?.code || "").toString().toUpperCase();
+  const code = extractErrorCode(err).toUpperCase();
   if (
     e?.name === "AbortError" ||
     code === "UND_ERR_CONNECT_TIMEOUT" ||
@@ -63,8 +85,7 @@ export function classifyFetchError(err: unknown): FetchErrorReason {
     code.startsWith("ERR_TLS") ||
     code.startsWith("ERR_SSL") ||
     code.includes("CERT") ||
-    code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
-    code === "DEPTH_ZERO_SELF_SIGNED_CERT"
+    TLS_CODES.has(code)
   ) {
     return "tls_error";
   }

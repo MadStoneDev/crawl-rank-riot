@@ -8,6 +8,7 @@ import {
   shouldRetryWithBrowserUa,
   classifyFetchError,
   fetchErrorIsBroken,
+  extractErrorCode,
 } from "../utils/link-status";
 
 // A realistic browser UA used only to re-probe links that bot-block our crawler
@@ -95,6 +96,7 @@ async function checkExternalLinkStatuses(
       });
     } catch (err) {
       let reason = classifyFetchError(err);
+      let rawCode = extractErrorCode(err);
       // Timeouts are often transient — retry once before classifying.
       if (reason === "timeout") {
         try {
@@ -107,15 +109,22 @@ async function checkExternalLinkStatuses(
           return;
         } catch (err2) {
           reason = classifyFetchError(err2);
+          rawCode = extractErrorCode(err2);
         }
       }
+      // Log the raw code so a false positive (e.g. an incomplete cert chain the
+      // crawler's CA store can't verify, which browsers fetch via AIA) can be
+      // diagnosed from the crawler logs.
+      console.warn(
+        `🔗 External link probe failed: ${url} → ${reason}${rawCode ? ` (${rawCode})` : ""}`,
+      );
       // DNS-not-found / connection-refused are broken; timeout / TLS / other
-      // network errors are "couldn't verify" (not broken). Reason recorded so
-      // the UI can show why instead of a bare status 0 (P0 follow-up #2).
+      // network errors are "couldn't verify" (not broken). Store reason + raw
+      // code so the UI/export can show why instead of a bare status 0 (P0 f-up #2).
       results.set(url, {
         status: 0,
         broken: fetchErrorIsBroken(reason),
-        error: reason,
+        error: rawCode ? `${reason}:${rawCode}` : reason,
       });
     }
   };
