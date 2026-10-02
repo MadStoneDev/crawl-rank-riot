@@ -114,13 +114,13 @@ export async function detectAndStoreIssues(
         continue;
       }
 
-      const pageIssues = analyzePageIssues(
-        result,
-        projectId,
-        pageId,
-        scanId,
-        canonicalisedVariants.has(result.url),
-      );
+      // A canonicalised variant (e.g. /quote?x → /quote) inherits the base
+      // page's findings and raises none of its own — otherwise every page-level
+      // check (heading hierarchy, image dimensions, URL structure, …) is
+      // double-counted against the variant and its canonical (P0 gap #4 / f-up).
+      if (canonicalisedVariants.has(result.url)) continue;
+
+      const pageIssues = analyzePageIssues(result, projectId, pageId, scanId);
       allIssues.push(...pageIssues);
     }
 
@@ -551,7 +551,6 @@ function analyzePageIssues(
   projectId: string,
   pageId: string,
   scanId: string,
-  isCanonicalisedVariant: boolean = false,
 ): DetectedIssue[] {
   const issues: DetectedIssue[] = [];
 
@@ -696,8 +695,7 @@ function analyzePageIssues(
   if (
     result.word_count < 300 &&
     !result.has_robots_noindex &&
-    isContentPage(result.url) &&
-    !isCanonicalisedVariant
+    isContentPage(result.url)
   ) {
     addIssue(
       "thin_content",
@@ -1044,13 +1042,12 @@ function analyzePageIssues(
     );
   }
 
-  // Canonical mismatch — but NOT when this page is a valid canonicalised variant
-  // (its canonical points to another crawled, indexable page). That's correct
-  // SEO, not a mismatch (P0 gap #4).
+  // Canonical mismatch. Canonicalised variants never reach this function (they
+  // raise no page-level findings), so a non-self canonical here means the target
+  // wasn't a crawled/indexable page — a genuine mismatch worth flagging.
   if (
     result.canonical_url != null &&
-    result.canonical_is_self === false &&
-    !isCanonicalisedVariant
+    result.canonical_is_self === false
   ) {
     addIssue(
       "canonical_mismatch",
