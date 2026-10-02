@@ -12,6 +12,7 @@ import { ScanLogger } from "./scan-logger";
 import { computeNextScanAt } from "../utils/scheduler";
 import { detectBotBlock, BotProtectionInfo } from "../utils/bot-block";
 import { computeScoreReport } from "../scoring/score-report";
+import { CRAWLER_VERSION, CHECK_VERSION } from "../config/versions";
 import { ScanResult, SiteLevelData } from "../types";
 
 /**
@@ -262,6 +263,9 @@ async function markScanFailed(scanId: string, errorMessage: string): Promise<voi
         .update({
           status: "failed",
           completed_at: new Date().toISOString(),
+          failure_reason: errorMessage,
+          crawler_version: CRAWLER_VERSION,
+          check_version: CHECK_VERSION,
           summary_stats: {
             error_message: errorMessage,
             failed_at: new Date().toISOString(),
@@ -307,6 +311,19 @@ export async function runScanPipeline(
         .update({ status: "cancelled", completed_at: new Date().toISOString() })
         .eq("id", scanId);
       logger.info("complete", "Scan cancelled by user");
+      return;
+    }
+
+    // 1c. A crawl that produced zero usable pages is a FAILED scan, not a clean
+    // site (P0.5). Marking it "completed" makes the UI show Health 0 / "no open
+    // fixes — everything's clean" for a site that was never actually read. Fail
+    // with a reason and leave any previous scan's data untouched.
+    if (scanResults.length === 0) {
+      const reason = crawler.botBlockedHomepage
+        ? "The crawler was blocked by bot protection before it could read any pages. Allowlist RankRiotBot and rescan."
+        : "No pages could be crawled. The start URL may be unreachable, redirect off-site, return a non-HTML response, or return an HTTP error. Check the URL and rescan.";
+      await markScanFailed(scanId, reason);
+      logger.error("complete", `Scan failed (0 pages): ${reason}`);
       return;
     }
 
@@ -442,6 +459,10 @@ export async function runScanPipeline(
         pages_scanned: scanResults.length,
         links_scanned: totalLinksScanned,
         issues_found: totalIssues,
+        // Stamp the crawler/check version so the app can flag results produced
+        // by a superseded version and offer a rescan (P0.6).
+        crawler_version: CRAWLER_VERSION,
+        check_version: CHECK_VERSION,
         summary_stats: JSON.parse(JSON.stringify(mergedStats)),
       })
       .eq("id", scanId);

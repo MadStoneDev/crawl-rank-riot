@@ -884,6 +884,9 @@ export type Database = {
           updated_at: string | null
           last_progress_update: string | null
           scan_type: string | null
+          failure_reason: string | null
+          crawler_version: string | null
+          check_version: string | null
         }
         Insert: {
           id?: string
@@ -899,6 +902,9 @@ export type Database = {
           updated_at?: string | null
           last_progress_update?: string | null
           scan_type?: string | null
+          failure_reason?: string | null
+          crawler_version?: string | null
+          check_version?: string | null
         }
         Update: {
           id?: string
@@ -914,6 +920,9 @@ export type Database = {
           updated_at?: string | null
           last_progress_update?: string | null
           scan_type?: string | null
+          failure_reason?: string | null
+          crawler_version?: string | null
+          check_version?: string | null
         }
         Relationships: [
           {
