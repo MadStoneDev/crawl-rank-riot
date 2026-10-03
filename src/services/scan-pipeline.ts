@@ -12,6 +12,7 @@ import { ScanLogger } from "./scan-logger";
 import { computeNextScanAt } from "../utils/scheduler";
 import { detectBotBlock, BotProtectionInfo } from "../utils/bot-block";
 import { computeScoreReport } from "../scoring/score-report";
+import { computeWeightedScore, IssueAggregate } from "../scoring/weighted-score";
 import { CRAWLER_VERSION, CHECK_VERSION } from "../config/versions";
 import { ScanResult, SiteLevelData } from "../types";
 
@@ -67,23 +68,29 @@ type ScanStrategy = (ctx: ScanContext) => Promise<ModeResult>;
  * crawl is forced to 0 by the scorer. Writes the full report to scan_scores and
  * a flat copy to summary_stats.seo_score.
  */
+type SeverityName = "critical" | "high" | "medium" | "low";
+const SEVERITY_RANK: Record<SeverityName, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+
 /**
- * Load open-issue critical/high counts (site-wide and per page URL) for score
- * capping. Issues are stored before the strategy runs, so this reflects this
- * scan. Dismissed/fixed issues are excluded.
+ * Load open-issue data for scoring: per-page critical/high counts (for per-page
+ * caps) and per-issue-type aggregates (for the severity × volume model, P1.2).
+ * Issues are stored before the strategy runs, so this reflects this scan.
  */
-async function loadIssueSeverity(projectId: string): Promise<{
+async function loadIssueData(projectId: string): Promise<{
   site: { critical: number; high: number };
   perPage: Record<string, { critical: number; high: number }>;
+  aggregates: IssueAggregate[];
 }> {
   const site = { critical: 0, high: 0 };
   const perPage: Record<string, { critical: number; high: number }> = {};
+  // Per issue type: worst severity + the set of distinct affected pages.
+  const byType = new Map<string, { severity: SeverityName; pages: Set<string> }>();
   try {
     const supabase = getSupabaseServiceClient();
     const [{ data: issueRows }, { data: pageRows }] = await Promise.all([
       supabase
         .from("issues")
-        .select("severity, page_id")
+        .select("issue_type, severity, page_id")
         .eq("project_id", projectId)
         .eq("is_fixed", false)
         .eq("dismissed", false),
@@ -91,19 +98,29 @@ async function loadIssueSeverity(projectId: string): Promise<{
     ]);
     const idToUrl = new Map((pageRows ?? []).map((p) => [p.id as string, p.url as string]));
     for (const row of issueRows ?? []) {
-      const sev = (row.severity || "").toLowerCase();
-      if (sev !== "critical" && sev !== "high") continue;
-      site[sev]++;
-      const url = row.page_id ? idToUrl.get(row.page_id as string) : undefined;
-      if (url) {
-        const pp = (perPage[url] ??= { critical: 0, high: 0 });
-        pp[sev]++;
+      const sev = (row.severity || "low").toLowerCase() as SeverityName;
+      if (sev === "critical" || sev === "high") {
+        site[sev]++;
+        const url = row.page_id ? idToUrl.get(row.page_id as string) : undefined;
+        if (url) {
+          const pp = (perPage[url] ??= { critical: 0, high: 0 });
+          pp[sev]++;
+        }
       }
+      const type = row.issue_type as string;
+      if (!type) continue;
+      const entry = byType.get(type) ?? { severity: sev, pages: new Set<string>() };
+      if ((SEVERITY_RANK[sev] ?? 0) > (SEVERITY_RANK[entry.severity] ?? 0)) entry.severity = sev;
+      if (row.page_id) entry.pages.add(row.page_id as string);
+      byType.set(type, entry);
     }
   } catch {
-    // Non-fatal: fall back to uncapped scoring.
+    // Non-fatal: fall back to an unpenalised/uncapped score.
   }
-  return { site, perPage };
+  const aggregates: IssueAggregate[] = Array.from(byType.entries()).map(
+    ([issueType, v]) => ({ issueType, severity: v.severity, affectedPages: v.pages.size }),
+  );
+  return { site, perPage, aggregates };
 }
 
 const seoStrategy: ScanStrategy = async (ctx): Promise<ModeResult> => {
@@ -115,14 +132,32 @@ const seoStrategy: ScanStrategy = async (ctx): Promise<ModeResult> => {
   const variants = computeCanonicalisedVariants(scanResults);
   const scoredResults = scanResults.filter((r) => !variants.has(r.url));
 
-  // Open-issue severity (already stored by this point) caps the score so a site
-  // with an open critical/high can't read as healthy (P1.2).
-  const severity = await loadIssueSeverity(projectId);
+  // Open-issue data (already stored by this point): per-page caps + per-type
+  // aggregates for the severity × volume model (P1.2).
+  const { site, perPage, aggregates } = await loadIssueData(projectId);
 
   const scoreReport = computeScoreReport(scoredResults, {
     blocked: !!botProtection,
-    severity,
+    severity: { site, perPage },
   });
+
+  // Authoritative overall/category numbers come from the weighted model; the
+  // pass-rate checks in scoreReport stay for the per-check display. A blocked /
+  // empty crawl keeps the scorer's forced 0.
+  const scoredPages = scoredResults.length;
+  if (!botProtection && scoredPages > 0) {
+    const weighted = computeWeightedScore(aggregates, scoredPages);
+    scoreReport.overall = weighted.overall;
+    scoreReport.categories.technical.score = weighted.categories.technical;
+    scoreReport.categories.content.score = weighted.categories.content;
+    scoreReport.categories.media.score = weighted.categories.media;
+    scoreReport.categories.aeo.score = weighted.categories.aeo;
+    scoreReport.capped = weighted.capped;
+    // Attach the deduction breakdown + model marker for transparency (P1.2).
+    scoreReport.deductions = weighted.deductions;
+    scoreReport.scoreModel = "weighted-v1";
+  }
+
   const seoScore = {
     technical: scoreReport.categories.technical.score,
     content: scoreReport.categories.content.score,

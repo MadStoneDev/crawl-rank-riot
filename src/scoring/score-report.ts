@@ -15,7 +15,7 @@ import { ScanResult } from "../types";
  */
 
 /** Bump when the scoring math changes. Persisted so we know how a scan was scored. */
-export const SCORE_VERSION = 2;
+export const SCORE_VERSION = 3;
 
 /** Score caps when open issues of a given severity exist (P1.2). */
 const CRITICAL_CAP = 79;
@@ -86,6 +86,22 @@ export interface ScoreReport {
   blocked: boolean;
   /** Set when open critical/high issues capped the overall score (P1.2). */
   capped?: CapSeverity;
+  /** Per-issue-type deductions behind the overall score (weighted model, P1.2). */
+  deductions?: ScoreDeduction[];
+  /** Which scoring model produced overall/category numbers. */
+  scoreModel?: string;
+}
+
+/** A single deduction for the "How is this calculated?" breakdown (P1.2). */
+export interface ScoreDeduction {
+  issueType: string;
+  category: "technical" | "content" | "media" | "aeo";
+  severity: "critical" | "high" | "medium" | "low";
+  affectedPages: number;
+  scoredPages: number;
+  share: number;
+  penalty: number;
+  siteLevel: boolean;
 }
 
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
