@@ -875,8 +875,18 @@ export function analyzePageIssues(
   }
 
   // Structured data validation
-  if (result.structured_data && result.structured_data.length > 0) {
+  if (
+    (result.structured_data && result.structured_data.length > 0) ||
+    result.has_invalid_structured_data
+  ) {
     const sdIssues: string[] = [];
+
+    // Malformed JSON-LD that couldn't be parsed at all (P-03). parse-html sets
+    // this flag independently of structured_data, so a block that fails to parse
+    // is reported even when nothing parseable survived.
+    if (result.has_invalid_structured_data) {
+      sdIssues.push("One or more JSON-LD blocks are malformed and could not be parsed");
+    }
 
     // A pure { "@id": "..." } object references another node; it is not a node
     // itself and must not be expected to carry @type.
@@ -959,7 +969,7 @@ export function analyzePageIssues(
     };
 
     const nodes: any[] = [];
-    for (const sd of result.structured_data) collectNodes(sd, nodes);
+    for (const sd of result.structured_data ?? []) collectNodes(sd, nodes);
     for (const node of nodes) validateNode(node);
 
     if (sdIssues.length > 0) {
@@ -1066,6 +1076,19 @@ export function analyzePageIssues(
         url: result.url,
         issues: result.url_issues,
       },
+    );
+  }
+
+  // Multiple conflicting canonicals (CN-01): the page declares more than one
+  // distinct canonical target (across <link rel=canonical> tags and the HTTP
+  // Link header). Search engines may ignore all of them, so the page can drop
+  // out of the index entirely — flag it high.
+  if (result.canonical_urls && result.canonical_urls.length > 1) {
+    addIssue(
+      "multiple_canonical",
+      "high",
+      `Page declares ${result.canonical_urls.length} conflicting canonical URLs; search engines may ignore all of them.`,
+      { url: result.url, canonical_urls: result.canonical_urls },
     );
   }
 

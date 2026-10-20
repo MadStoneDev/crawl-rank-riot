@@ -135,3 +135,31 @@ describe("analyzePageIssues — temporary redirects (R-01)", () => {
     expect(types({})).not.toContain("temporary_redirect");
   });
 });
+
+describe("analyzePageIssues — canonical & structured-data signals", () => {
+  it("CN-01: flags multiple conflicting canonicals", () => {
+    const issues = types({
+      canonical_url: "https://example.com/a",
+      canonical_is_self: false,
+      canonical_urls: ["https://example.com/a", "https://example.com/b"],
+    });
+    expect(issues).toContain("multiple_canonical");
+  });
+
+  it("does NOT flag multiple_canonical when there is a single canonical", () => {
+    const issues = types({
+      canonical_url: "https://example.com/doc",
+      canonical_is_self: true,
+      canonical_urls: ["https://example.com/doc"],
+    });
+    expect(issues).not.toContain("multiple_canonical");
+  });
+
+  it("P-03: flags malformed JSON-LD even when nothing parsed", () => {
+    const issues = types({
+      structured_data: [],
+      has_invalid_structured_data: true,
+    });
+    expect(issues).toContain("invalid_structured_data");
+  });
+});
