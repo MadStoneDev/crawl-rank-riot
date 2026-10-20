@@ -1033,6 +1033,7 @@ export class Scanner {
 
         // Track redirect chain by following redirects manually
         const redirectChain: string[] = [];
+        const redirectHops: { from: string; status: number; to: string }[] = [];
         let currentUrl = url;
         let response: Response | null = null;
         const maxRedirects = 10;
@@ -1067,11 +1068,16 @@ export class Scanner {
             if (location) {
               redirectChain.push(currentUrl);
               // Resolve relative redirect URLs
+              let nextUrl: string;
               try {
-                currentUrl = new URL(location, currentUrl).href;
+                nextUrl = new URL(location, currentUrl).href;
               } catch {
-                currentUrl = location;
+                nextUrl = location;
               }
+              // Record this hop's status so 301/308 (permanent) can be told
+              // apart from 302/303/307 (temporary) later (R-01).
+              redirectHops.push({ from: currentUrl, status: response.status, to: nextUrl });
+              currentUrl = nextUrl;
               continue;
             }
           }
@@ -1088,6 +1094,9 @@ export class Scanner {
         // Store the redirect chain (only if there were redirects)
         if (redirectChain.length > 0) {
           result.redirect_chain = redirectChain;
+        }
+        if (redirectHops.length > 0) {
+          result.redirect_hops = redirectHops;
         }
 
         result.status = response.status;

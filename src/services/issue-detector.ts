@@ -1196,6 +1196,21 @@ export function analyzePageIssues(
     );
   }
 
+  // Temporary redirect (R-01): the page is reached through a 302/303/307 rather
+  // than a permanent 301/308. A permanent move served temporarily keeps the old
+  // URL indexed and dilutes the ranking signals that should flow to the target.
+  const tempHops = (result.redirect_hops ?? []).filter(
+    (h) => h.status === 302 || h.status === 303 || h.status === 307,
+  );
+  if (result.is_redirect && tempHops.length > 0) {
+    addIssue(
+      "temporary_redirect",
+      "low",
+      `Page is reached via a temporary redirect (HTTP ${tempHops[0].status}). If the move is permanent, use a 301 so the destination inherits the original URL's ranking signals.`,
+      { url: result.url, hops: result.redirect_hops },
+    );
+  }
+
   // Poor readability
   if (result.readability_score !== undefined && result.readability_score < 30 && result.word_count > 100) {
     addIssue(

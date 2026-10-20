@@ -41,6 +41,7 @@ export const ISSUE_CATEGORY: Record<string, ScoreCategory> = {
   server_error: "technical",
   redirect_chain: "technical",
   redirect_loop: "technical",
+  temporary_redirect: "technical",
   mixed_content: "technical",
   missing_security_headers: "technical",
   missing_viewport_meta: "technical",

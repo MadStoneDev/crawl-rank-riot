@@ -99,3 +99,39 @@ describe("analyzePageIssues — non-HTML resources (S-02)", () => {
     expect(issues).toContain("missing_h1");
   });
 });
+
+describe("analyzePageIssues — temporary redirects (R-01)", () => {
+  it("flags a page reached via a 302", () => {
+    const issues = types({
+      is_redirect: true,
+      redirect_hops: [
+        { from: "https://example.com/old", status: 302, to: "https://example.com/doc" },
+      ],
+    });
+    expect(issues).toContain("temporary_redirect");
+  });
+
+  it("flags 303 and 307 too", () => {
+    for (const status of [303, 307]) {
+      const issues = types({
+        is_redirect: true,
+        redirect_hops: [{ from: "https://example.com/old", status, to: "https://example.com/doc" }],
+      });
+      expect(issues).toContain("temporary_redirect");
+    }
+  });
+
+  it("does NOT flag a permanent 301/308 redirect", () => {
+    for (const status of [301, 308]) {
+      const issues = types({
+        is_redirect: true,
+        redirect_hops: [{ from: "https://example.com/old", status, to: "https://example.com/doc" }],
+      });
+      expect(issues).not.toContain("temporary_redirect");
+    }
+  });
+
+  it("does NOT flag a page that was not redirected", () => {
+    expect(types({})).not.toContain("temporary_redirect");
+  });
+});
