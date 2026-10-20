@@ -29,6 +29,10 @@ export interface ScanResult {
   url: string;
   status: number;
   title?: string;
+  // Verbatim <title> is stored in `title` (P-01). This is an optional derived
+  // display form with brand/suffix noise stripped — never used for length
+  // checks or as the stored title.
+  title_cleaned?: string;
   meta_description?: string;
   depth: number;
 
@@ -48,6 +52,12 @@ export interface ScanResult {
 
   // Meta information
   canonical_url: string | null;
+  // All distinct canonical targets found (resolved absolute). >1 means the page
+  // declares conflicting canonicals (CN-01). `canonical_url` is the first.
+  canonical_urls?: string[];
+  // True when a <script type="application/ld+json"> block failed to parse
+  // (malformed JSON), as opposed to no structured data at all (P-03).
+  has_invalid_structured_data?: boolean;
   is_indexable: boolean;
   has_robots_noindex: boolean;
   has_robots_nofollow: boolean;
