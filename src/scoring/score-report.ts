@@ -61,7 +61,20 @@ export interface CheckResult {
 }
 
 export interface CategoryScore {
+  /**
+   * The headline health score for this category. End to end this is the
+   * weighted-model number (severity × volume); the pass-rate model fills it at
+   * compute time and scan-pipeline overwrites it with the weighted value
+   * (SC-01). Always read this as the "health" axis.
+   */
   score: number; // 0-100
+  /**
+   * The share of this category's checks that pass (0-100) — a DIFFERENT axis
+   * from `score`. Kept separate and persisted so the UI can show "health 100"
+   * and "199/200 checks passed" without implying they're the same number
+   * (SC-01). The `checks[]` rows below belong to this axis, not to `score`.
+   */
+  passRate: number; // 0-100
   checks: CheckResult[];
 }
 
@@ -74,7 +87,13 @@ export interface PageScore {
 
 export interface ScoreReport {
   version: number;
+  /** Headline health score (weighted model end to end, SC-01). */
   overall: number;
+  /**
+   * Overall check pass-rate (0-100) — the other axis, distinct from `overall`.
+   * Persisted so the UI can present the two without conflating them (SC-01).
+   */
+  overallPassRate?: number;
   categories: {
     technical: CategoryScore;
     content: CategoryScore;
@@ -215,10 +234,11 @@ export function computeScoreReport(
   if (blocked || results.length === 0) {
     // A blocked crawl (or an empty one) never reached real content. Force 0 and
     // record empty checks rather than implying health.
-    const empty = (): CategoryScore => ({ score: 0, checks: [] });
+    const empty = (): CategoryScore => ({ score: 0, passRate: 0, checks: [] });
     return {
       version: SCORE_VERSION,
       overall: 0,
+      overallPassRate: 0,
       categories: { technical: empty(), content: empty(), media: empty(), aeo: empty() },
       pages: {},
       blocked,
@@ -292,14 +312,18 @@ export function computeScoreReport(
   const pages: Record<string, PageScore> = {};
   for (const r of results) pages[r.url] = scorePage(r, worstCap(perPage[r.url]));
 
+  // At compute time both axes hold the pass-rate; scan-pipeline overwrites the
+  // `score`/`overall` axis with the weighted model and leaves the passRate
+  // axis intact (SC-01).
   return {
     version: SCORE_VERSION,
     overall,
+    overallPassRate: overall,
     categories: {
-      technical: { score: clamp(technicalRaw), checks: techChecks },
-      content: { score: clamp(contentRaw), checks: contentChecks },
-      media: { score: clamp(mediaRaw), checks: mediaChecks },
-      aeo: { score: clamp(aeoRaw), checks: aeoChecks },
+      technical: { score: clamp(technicalRaw), passRate: clamp(technicalRaw), checks: techChecks },
+      content: { score: clamp(contentRaw), passRate: clamp(contentRaw), checks: contentChecks },
+      media: { score: clamp(mediaRaw), passRate: clamp(mediaRaw), checks: mediaChecks },
+      aeo: { score: clamp(aeoRaw), passRate: clamp(aeoRaw), checks: aeoChecks },
     },
     pages,
     blocked,
