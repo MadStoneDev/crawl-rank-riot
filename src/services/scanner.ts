@@ -6,7 +6,7 @@ import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders,
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
-import { extractFromHtml, deriveCleanTitle } from "./extract/parse-html";
+import { extractFromHtml, deriveCleanTitle, isHtmlContentType } from "./extract/parse-html";
 import { isSoft404 } from "./extract/soft404";
 
 /** Decode HTML entities in every value of a string record (OG / Twitter tags). */
@@ -1123,8 +1123,12 @@ export class Scanner {
           continue;
         }
 
-        if (!result.content_type.includes("text/html")) {
+        // Non-HTML resource (PDF, image, feed, JSON …): record it for
+        // broken-link/redirect tracking but don't parse it or score it as a
+        // page (S-02). XHTML is HTML and still parsed (E-03).
+        if (!isHtmlContentType(result.content_type)) {
           clearTimeout(timeoutId);
+          result.is_non_html = true;
           result.load_time_ms = Date.now() - fetchStart;
           return result;
         }

@@ -128,9 +128,13 @@ const seoStrategy: ScanStrategy = async (ctx): Promise<ModeResult> => {
 
   // Canonicalised variants inherit their canonical's state and raise no findings
   // of their own — exclude them from the scored page set so they neither pad nor
-  // dilute the score (P0 follow-up).
+  // dilute the score (P0 follow-up). Non-HTML resources (PDF, image, feed …)
+  // aren't pages and raise no page findings, so they're excluded too (S-02):
+  // leaving them in would pad the denominator and understate every issue share.
   const variants = computeCanonicalisedVariants(scanResults);
-  const scoredResults = scanResults.filter((r) => !variants.has(r.url));
+  const scoredResults = scanResults.filter(
+    (r) => !variants.has(r.url) && !r.is_non_html,
+  );
 
   // Open-issue data (already stored by this point): per-page caps + per-type
   // aggregates for the severity × volume model (P1.2).

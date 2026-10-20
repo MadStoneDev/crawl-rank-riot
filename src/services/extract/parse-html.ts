@@ -44,6 +44,18 @@ export function deriveCleanTitle(title: string): string {
   return cleaned.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * True when a Content-Type names an HTML document we should parse (E-03).
+ * Accepts `text/html` and `application/xhtml+xml` (XHTML served by some CMSes
+ * and app frameworks); everything else (PDF, image, JSON, RSS/Atom, plain
+ * text …) is a non-HTML resource (S-02).
+ */
+export function isHtmlContentType(contentType: string | undefined | null): boolean {
+  if (!contentType) return false;
+  const type = contentType.split(";", 1)[0].trim().toLowerCase();
+  return type === "text/html" || type === "application/xhtml+xml";
+}
+
 /** Parse a meta-robots / X-Robots-Tag directive list into noindex/nofollow. */
 export function parseRobotsContent(content: string | undefined | null): {
   noindex: boolean;

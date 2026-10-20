@@ -106,6 +106,11 @@ export interface ScanResult {
   redirected_from?: string;
   redirect_chain?: string[];
   content_type: string;
+  // True when the response is a non-HTML resource (PDF, image, feed, JSON …)
+  // that returned 2xx (S-02). It is tracked for broken-link/redirect purposes
+  // but is not a "page": no HTML content checks run and it is excluded from the
+  // scored page set.
+  is_non_html?: boolean;
   // True when a 2xx response is really a "page not found" page (soft 404, S-01).
   soft_404?: boolean;
   size_bytes: number;

@@ -553,7 +553,7 @@ function detectCrossPageDuplicates(
 /**
  * Analyze a single page's scan result and return all detected issues.
  */
-function analyzePageIssues(
+export function analyzePageIssues(
   result: ScanResult,
   projectId: string,
   pageId: string,
@@ -593,6 +593,14 @@ function analyzePageIssues(
     addIssue("not_found", "critical", "Page returned HTTP 404 Not Found", {
       url: result.url,
     });
+  }
+
+  // Non-HTML resources (PDF, image, feed, JSON …) are not pages: the HTML
+  // content/SEO/media/AEO checks below don't apply, so running them would raise
+  // phantom "missing title/H1/meta" findings on a linked PDF (S-02). Status
+  // issues above (404/5xx) still fire so a broken non-HTML link is caught.
+  if (result.is_non_html) {
+    return issues;
   }
 
   // ── HIGH ──────────────────────────────────────────────────────────────

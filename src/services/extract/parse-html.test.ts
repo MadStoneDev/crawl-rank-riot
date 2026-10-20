@@ -5,6 +5,7 @@ import {
   collectSchemaTypes,
   deriveCleanTitle,
   checkHeadingOrder,
+  isHtmlContentType,
 } from "./parse-html";
 
 const BASE = "https://example.com/page";
@@ -12,6 +13,28 @@ const parse = (body: string, url = BASE) =>
   extractFromHtml(`<!doctype html><html><head></head><body>${body}</body></html>`, url);
 const doc = (head: string, body = "", url = BASE) =>
   extractFromHtml(`<!doctype html><html><head>${head}</head><body>${body}</body></html>`, url);
+
+describe("isHtmlContentType (E-03/S-02)", () => {
+  it("accepts text/html with and without a charset param", () => {
+    expect(isHtmlContentType("text/html")).toBe(true);
+    expect(isHtmlContentType("text/html; charset=utf-8")).toBe(true);
+    expect(isHtmlContentType("TEXT/HTML;charset=ISO-8859-1")).toBe(true);
+  });
+  it("E-03: accepts application/xhtml+xml", () => {
+    expect(isHtmlContentType("application/xhtml+xml")).toBe(true);
+    expect(isHtmlContentType("application/xhtml+xml; charset=utf-8")).toBe(true);
+  });
+  it("S-02: rejects non-HTML resources", () => {
+    expect(isHtmlContentType("application/pdf")).toBe(false);
+    expect(isHtmlContentType("image/png")).toBe(false);
+    expect(isHtmlContentType("application/json")).toBe(false);
+    expect(isHtmlContentType("application/rss+xml")).toBe(false);
+    expect(isHtmlContentType("text/plain")).toBe(false);
+    expect(isHtmlContentType("")).toBe(false);
+    expect(isHtmlContentType(null)).toBe(false);
+    expect(isHtmlContentType(undefined)).toBe(false);
+  });
+});
 
 describe("parseRobotsContent", () => {
   it("RB-05: 'none' means noindex + nofollow", () => {
