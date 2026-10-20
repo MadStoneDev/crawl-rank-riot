@@ -554,15 +554,23 @@ export class AuditAnalyzer {
     let score = 100;
     const findings: string[] = [];
 
-    // Calculate averages
-    const validLoadTimes = this.scanResults.filter((r) => r.load_time_ms > 0);
+    // Calculate averages. Timing is only comparable within one scan method:
+    // headless navigation blocks images/fonts/media, so its load/first-byte
+    // times exclude the heaviest resources and must not be averaged with HTTP
+    // timings (PF-02). Prefer HTTP-timed pages; fall back to headless only if a
+    // scan was entirely headless (so the number is at least internally
+    // consistent, never a mix).
+    const httpTimed = this.scanResults.filter((r) => r.scan_method === "http");
+    const timingBasis = httpTimed.length > 0 ? httpTimed : this.scanResults;
+
+    const validLoadTimes = timingBasis.filter((r) => r.load_time_ms > 0);
     const avgLoadTime =
       validLoadTimes.length > 0
         ? validLoadTimes.reduce((sum, r) => sum + r.load_time_ms, 0) /
           validLoadTimes.length
         : 0;
 
-    const validFBT = this.scanResults.filter((r) => r.first_byte_time_ms > 0);
+    const validFBT = timingBasis.filter((r) => r.first_byte_time_ms > 0);
     const avgFirstByteTime =
       validFBT.length > 0
         ? validFBT.reduce((sum, r) => sum + r.first_byte_time_ms, 0) /

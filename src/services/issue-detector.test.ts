@@ -163,3 +163,17 @@ describe("analyzePageIssues — canonical & structured-data signals", () => {
     expect(issues).toContain("invalid_structured_data");
   });
 });
+
+describe("analyzePageIssues — load-time method gating (PF-02)", () => {
+  it("flags slow_page for an HTTP-timed page over the threshold", () => {
+    expect(types({ scan_method: "http", load_time_ms: 4200 })).toContain("slow_page");
+  });
+
+  it("does NOT flag slow_page for a headless page (media blocked, not comparable)", () => {
+    expect(types({ scan_method: "headless", load_time_ms: 4200 })).not.toContain("slow_page");
+  });
+
+  it("does NOT flag a fast HTTP page", () => {
+    expect(types({ scan_method: "http", load_time_ms: 800 })).not.toContain("slow_page");
+  });
+});

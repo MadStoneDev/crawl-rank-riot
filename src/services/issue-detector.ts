@@ -233,7 +233,12 @@ export async function detectAndStoreIssues(
     // noise on a slow host (every page fires); instead report ONE issue when
     // the site-wide MEDIAN first-byte time is slow. This is server response
     // time, not page weight, and is usually a single infrastructure fix.
+    // Only HTTP-timed pages: headless TTFB is measured from a different vantage
+    // (navigation start, media blocked) and must not be averaged with HTTP
+    // first-byte times (PF-02). The site-wide median already smooths per-page
+    // sampling noise (PF-01).
     const ttfbs = results
+      .filter((r) => r.scan_method === "http")
       .map((r) => r.first_byte_time_ms)
       .filter((v): v is number => typeof v === "number" && v > 0)
       .sort((a, b) => a - b);
@@ -997,13 +1002,19 @@ export function analyzePageIssues(
     );
   }
 
-  if (result.load_time_ms > 3000) {
+  // Only flag load time for HTTP-timed pages (PF-02): headless navigation
+  // blocks images/fonts/media, so its load_time_ms excludes the heaviest
+  // resources and isn't comparable to a full HTTP body download — flagging it
+  // would be inconsistent (the same template is flagged on one page, not on
+  // another, purely by scan method). This is a crawler-side lab measurement,
+  // not field data (PF-01).
+  if (result.scan_method === "http" && result.load_time_ms > 3000) {
     const loadTimeSec = (result.load_time_ms / 1000).toFixed(2);
     addIssue(
       "slow_page",
       "low",
-      `Page load time is ${loadTimeSec}s (recommended max 3s)`,
-      { url: result.url, load_time_ms: result.load_time_ms },
+      `Page load time is ${loadTimeSec}s measured crawler-side (recommended max 3s). This is a lab measurement — confirm against field data (CrUX/Search Console).`,
+      { url: result.url, load_time_ms: result.load_time_ms, timing_method: "http" },
     );
   }
 
