@@ -14,6 +14,22 @@ const BROWSER_USER_AGENT = USER_AGENT;
 /** Never let a hostile/absurd Crawl-delay stall a scan indefinitely (RB-02). */
 const MAX_ROBOTS_CRAWL_DELAY_MS = 30_000;
 
+/**
+ * Per-batch concurrency to use (PL-02). When the host declares a Crawl-delay we
+ * serialise requests (cap 1) and let the per-URL delay space them, so we never
+ * fire a burst of parallel requests at a host that explicitly asked us to slow
+ * down. With no Crawl-delay the configured global concurrency applies — a
+ * single-origin scan at the default of 3 is gentle, and this keeps scan times
+ * unchanged for the common case.
+ */
+export function effectiveConcurrency(
+  maxConcurrent: number,
+  crawlDelayMs: number,
+): number {
+  if (crawlDelayMs > 0) return 1;
+  return Math.max(1, maxConcurrent);
+}
+
 export class WebCrawler {
   private scanner: Scanner;
   private urlProcessor: UrlProcessor;
@@ -368,9 +384,13 @@ export class WebCrawler {
       Date.now() - startTime < timeout &&
       !isCancelled(this.scanId)
     ) {
-      // Get next batch of URLs to process
+      // Get next batch of URLs to process. Crawl-delay hosts are served one at
+      // a time so politeness spacing isn't undone by a parallel burst (PL-02).
       const batch = this.getNextBatch(
-        Math.min(this.maxConcurrentRequests, this.queue.length),
+        Math.min(
+          effectiveConcurrency(this.maxConcurrentRequests, this.robotsCrawlDelayMs),
+          this.queue.length,
+        ),
       );
 
       if (batch.length === 0) {
