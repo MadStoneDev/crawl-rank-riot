@@ -2,6 +2,7 @@ import { SiteLevelData, ScanResult } from "../types";
 import { isPublicUrl } from "../utils/url";
 import { proxyFetch } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
+import { parseRobots, isPathAllowed, type RobotsTxt } from "../utils/robots";
 
 const AI_BOT_USER_AGENTS = [
   "GPTBot",
@@ -120,6 +121,33 @@ async function fetchLlmsTxt(
   }
 }
 
+/**
+ * Classify each known AI bot as blocked / explicitly-allowed under these
+ * robots rules (RB-03). A bot is "blocked" when it cannot fetch the site root
+ * (the matcher applies the bot's own group over `*`, with Allow overrides and
+ * wildcards). A bot is listed as "allowed" only when robots.txt addresses it by
+ * name (its own group) and does not block it — an absent bot is neither.
+ */
+export function classifyAiBots(
+  robots: RobotsTxt,
+  origin: string,
+  result: { ai_bots_blocked: string[]; ai_bots_allowed: string[] },
+): void {
+  const root = `${origin}/`;
+  for (const botName of AI_BOT_USER_AGENTS) {
+    const token = botName.toLowerCase();
+    const allowed = isPathAllowed(robots, root, [botName]);
+    const hasOwnGroup = robots.groups.some((g) =>
+      g.agents.some((a) => a !== "*" && token.startsWith(a)),
+    );
+    if (!allowed) {
+      result.ai_bots_blocked.push(botName);
+    } else if (hasOwnGroup) {
+      result.ai_bots_allowed.push(botName);
+    }
+  }
+}
+
 async function fetchAndParseRobotsTxt(
   origin: string,
 ): Promise<NonNullable<SiteLevelData["robots_txt"]>> {
@@ -155,87 +183,24 @@ async function fetchAndParseRobotsTxt(
     result.exists = true;
     result.content = content.slice(0, 10000);
 
-    const lines = content.split("\n").map((l) => l.trim());
-    let currentUserAgent: string | null = null;
-    const agentDirectives = new Map<
-      string,
-      { allow: string[]; disallow: string[] }
-    >();
+    // Parse + evaluate with the shared robots matcher (RB-03) so the AI-bot
+    // verdict uses real group selection (a specific bot group overrides `*`),
+    // Allow/Disallow longest-match and `*`/`$` wildcards — not a naive
+    // "Disallow: / present" substring test that mis-reported bots as blocked
+    // when their own group allowed them.
+    const robots = parseRobots(content);
+    result.sitemap_urls.push(...robots.sitemaps);
 
-    for (const line of lines) {
-      if (line.startsWith("#") || !line) continue;
+    classifyAiBots(robots, origin, result);
 
-      const lowerLine = line.toLowerCase();
-
-      if (lowerLine.startsWith("sitemap:")) {
-        const url = line.slice(8).trim();
-        if (url) result.sitemap_urls.push(url);
-        continue;
-      }
-
-      if (lowerLine.startsWith("user-agent:")) {
-        currentUserAgent = line.slice(11).trim();
-        if (!agentDirectives.has(currentUserAgent)) {
-          agentDirectives.set(currentUserAgent, {
-            allow: [],
-            disallow: [],
-          });
-        }
-        continue;
-      }
-
-      if (!currentUserAgent) continue;
-
-      const directives = agentDirectives.get(currentUserAgent)!;
-
-      if (lowerLine.startsWith("disallow:")) {
-        const path = line.slice(9).trim();
-        if (path) directives.disallow.push(path);
-      } else if (lowerLine.startsWith("allow:")) {
-        const path = line.slice(6).trim();
-        if (path) directives.allow.push(path);
-      }
-    }
-
-    for (const botName of AI_BOT_USER_AGENTS) {
-      const botNameLower = botName.toLowerCase();
-      let isBlocked = false;
-
-      for (const [agent, directives] of agentDirectives) {
-        if (agent.toLowerCase() === botNameLower || agent === "*") {
-          const hasDisallowAll = directives.disallow.includes("/");
-          const hasAllowAll = directives.allow.includes("/");
-
-          if (agent.toLowerCase() === botNameLower) {
-            if (hasDisallowAll && !hasAllowAll) {
-              isBlocked = true;
-            }
-            break;
-          }
-
-          if (agent === "*" && hasDisallowAll && !hasAllowAll) {
-            isBlocked = true;
-          }
-        }
-      }
-
-      if (isBlocked) {
-        result.ai_bots_blocked.push(botName);
-      } else {
-        const hasExplicitEntry = Array.from(agentDirectives.keys()).some(
-          (a) => a.toLowerCase() === botNameLower,
-        );
-        if (hasExplicitEntry) {
-          result.ai_bots_allowed.push(botName);
-        }
-      }
-    }
-
-    for (const [agent, directives] of agentDirectives) {
-      if (directives.disallow.length > 0) {
+    for (const group of robots.groups) {
+      const disallowPaths = group.rules
+        .filter((r) => r.type === "disallow")
+        .map((r) => r.path);
+      if (disallowPaths.length > 0) {
         result.blocked_paths.push({
-          user_agent: agent,
-          paths: directives.disallow,
+          user_agent: group.agents.join(", "),
+          paths: disallowPaths,
         });
       }
     }
