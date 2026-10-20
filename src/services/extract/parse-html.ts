@@ -108,6 +108,33 @@ export function decodeHtmlBody(
   }
 }
 
+/**
+ * Extract a `rel="canonical"` target from an HTTP `Link` response header,
+ * resolved absolute against the page URL (CN-05). A Link header may carry
+ * several comma-separated link-values (`<u1>; rel="preload", <u2>; rel=canonical`);
+ * we return the first whose rel set contains `canonical`, or null.
+ */
+export function parseLinkHeaderCanonical(
+  linkHeader: string | undefined | null,
+  baseUrl: string,
+): string | null {
+  if (!linkHeader) return null;
+  const re = /<([^>]*)>\s*;\s*([^,]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(linkHeader)) !== null) {
+    const uri = m[1].trim();
+    const rel = /rel\s*=\s*"?([^";]+)"?/i.exec(m[2]);
+    if (rel && rel[1].toLowerCase().split(/\s+/).includes("canonical")) {
+      try {
+        return new URL(uri, baseUrl).href;
+      } catch {
+        return uri;
+      }
+    }
+  }
+  return null;
+}
+
 /** Parse a meta-robots / X-Robots-Tag directive list into noindex/nofollow. */
 export function parseRobotsContent(content: string | undefined | null): {
   noindex: boolean;

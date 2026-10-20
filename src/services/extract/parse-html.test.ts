@@ -7,6 +7,7 @@ import {
   checkHeadingOrder,
   isHtmlContentType,
   decodeHtmlBody,
+  parseLinkHeaderCanonical,
 } from "./parse-html";
 
 const BASE = "https://example.com/page";
@@ -72,6 +73,35 @@ describe("decodeHtmlBody charset handling (P-07)", () => {
     expect(decodeHtmlBody(big, "text/html", 10)).toBe("AAAAAAAAAA");
     // Under the cap, the whole body is returned unchanged.
     expect(decodeHtmlBody(big, "text/html", 1000).length).toBe(100);
+  });
+});
+
+describe("parseLinkHeaderCanonical (CN-05)", () => {
+  const base = "https://example.com/page";
+  it("extracts an absolute canonical from the Link header", () => {
+    expect(
+      parseLinkHeaderCanonical('<https://example.com/real>; rel="canonical"', base),
+    ).toBe("https://example.com/real");
+  });
+  it("resolves a relative canonical against the page URL", () => {
+    expect(parseLinkHeaderCanonical("</real>; rel=canonical", base)).toBe(
+      "https://example.com/real",
+    );
+  });
+  it("picks the canonical out of a multi-value Link header", () => {
+    const header =
+      '<https://example.com/style.css>; rel=preload; as=style, <https://example.com/real>; rel="canonical"';
+    expect(parseLinkHeaderCanonical(header, base)).toBe("https://example.com/real");
+  });
+  it("matches canonical within a space-separated rel set", () => {
+    expect(
+      parseLinkHeaderCanonical('<https://example.com/real>; rel="canonical next"', base),
+    ).toBe("https://example.com/real");
+  });
+  it("returns null when there is no canonical rel, or no header", () => {
+    expect(parseLinkHeaderCanonical('<https://example.com/x>; rel="next"', base)).toBeNull();
+    expect(parseLinkHeaderCanonical(null, base)).toBeNull();
+    expect(parseLinkHeaderCanonical("", base)).toBeNull();
   });
 });
 

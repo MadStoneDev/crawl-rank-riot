@@ -6,7 +6,7 @@ import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders,
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
-import { extractFromHtml, deriveCleanTitle, isHtmlContentType, decodeHtmlBody } from "./extract/parse-html";
+import { extractFromHtml, deriveCleanTitle, isHtmlContentType, decodeHtmlBody, parseLinkHeaderCanonical } from "./extract/parse-html";
 import { isSoft404 } from "./extract/soft404";
 
 /** Decode HTML entities in every value of a string record (OG / Twitter tags). */
@@ -1166,6 +1166,25 @@ export class Scanner {
         }
 
         await this.processHtml(result, html, urlProcessor);
+
+        // Canonical declared in the HTTP `Link` header (CN-05). Merge it with
+        // any HTML <link rel=canonical>: a header canonical and a differing HTML
+        // one are conflicting signals, surfaced via canonical_urls (CN-01).
+        const headerCanonical = parseLinkHeaderCanonical(
+          response.headers.get("link"),
+          result.url,
+        );
+        if (headerCanonical) {
+          const set = new Set(result.canonical_urls ?? []);
+          if (result.canonical_url) set.add(result.canonical_url);
+          set.add(headerCanonical);
+          result.canonical_urls = [...set];
+          if (!result.canonical_url) {
+            result.canonical_url = headerCanonical;
+            result.canonical_is_self = isSelfCanonical(headerCanonical, result.url);
+          }
+        }
+
         result.scan_method = "http";
         // Attach raw HTML temporarily for platform detection in scan()
         (result as any)._rawHtml = html;
