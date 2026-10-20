@@ -95,6 +95,10 @@ export interface ScanResult {
       height: number;
     };
     file_size_bytes?: number;
+    // True when we did not determine this image's byte size (beyond the per-page
+    // probe cap, or the HEAD failed). Keeps "size unknown" distinct from "small"
+    // so size-dependent checks never treat an unprobed image as fine (L-04).
+    file_size_unknown?: boolean;
     loading?: string;
     srcset?: string;
     format?: string;

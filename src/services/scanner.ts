@@ -1642,15 +1642,21 @@ export class Scanner {
    */
   private async fetchImageFileSizes(
     images: ScanResult["images"],
-    limit: number = 10,
+    limit: number = 20,
   ): Promise<void> {
+    // Images beyond the probe cap are size-unknown, not "fine" (L-04).
+    for (const img of images.slice(limit)) img.file_size_unknown = true;
+
     const toCheck = images.slice(0, limit);
     const promises = toCheck.map(async (img) => {
       try {
         // SSRF guard: img.src comes from the scanned page, so it could point at
         // a private/internal host. Only HEAD public URLs (same guard the primary
         // fetch uses).
-        if (!(await isPublicUrl(img.src))) return;
+        if (!(await isPublicUrl(img.src))) {
+          img.file_size_unknown = true;
+          return;
+        }
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
         const resp = await proxyFetch(img.src, {
@@ -1664,9 +1670,13 @@ export class Scanner {
         const cl = resp.headers.get("content-length");
         if (cl) {
           img.file_size_bytes = parseInt(cl, 10);
+        } else {
+          // 200 with no Content-Length (chunked/streamed) — size still unknown.
+          img.file_size_unknown = true;
         }
       } catch {
-        // Skip — file size unknown
+        // HEAD failed — file size unknown, not confirmed small.
+        img.file_size_unknown = true;
       }
     });
     await Promise.allSettled(promises);

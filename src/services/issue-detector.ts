@@ -1171,6 +1171,10 @@ export function analyzePageIssues(
     const oversized = result.images.filter(
       (img) => img.file_size_bytes && img.file_size_bytes > 400_000,
     );
+    // Images whose size we couldn't determine (beyond the probe cap or a failed
+    // HEAD) are not counted as oversized, but we surface the count so the result
+    // isn't read as "all images verified small" (L-04).
+    const uncheckedSize = result.images.filter((img) => img.file_size_unknown).length;
     if (oversized.length > 0) {
       addIssue(
         "oversized_images",
@@ -1178,6 +1182,7 @@ export function analyzePageIssues(
         `${oversized.length} image(s) exceed 400 KB`,
         {
           url: result.url,
+          unchecked_images: uncheckedSize,
           images: oversized.slice(0, 5).map((img) => ({
             src: img.src,
             size_kb: Math.round((img.file_size_bytes || 0) / 1024),
