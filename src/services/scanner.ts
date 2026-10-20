@@ -6,7 +6,7 @@ import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders,
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
-import { extractFromHtml } from "./extract/parse-html";
+import { extractFromHtml, deriveCleanTitle } from "./extract/parse-html";
 
 /** Decode HTML entities in every value of a string record (OG / Twitter tags). */
 function decodeStringRecord(
@@ -327,8 +327,10 @@ export class Scanner {
     result: ScanResult,
     urlProcessor: UrlProcessor,
   ): Promise<void> {
-    // Extract title with multiple fallbacks
-    result.title = await this.extractTitle(page);
+    // Title stored verbatim (P-01); cleaned form is a separate derived field.
+    const rawTitle = await this.extractTitleVerbatim(page);
+    result.title = rawTitle;
+    result.title_cleaned = deriveCleanTitle(rawTitle);
 
     // Extract meta description
     result.meta_description = await this.extractMetaDescription(page);
@@ -524,115 +526,28 @@ export class Scanner {
     result.scan_method = "headless";
   }
 
-  private async extractTitle(page: Page): Promise<string> {
+  /**
+   * The page's title, VERBATIM (P-01). document.title is already the parsed,
+   * entity-decoded <title>. Fall back to og:title then the first H1 only when
+   * there is no <title>. No brand-suffix stripping and no payment-provider
+   * filtering of a real title — the cleaned form is a separate derived field
+   * (title_cleaned). Matches the HTTP path's extractFromHtml title behaviour.
+   */
+  private async extractTitleVerbatim(page: Page): Promise<string> {
     try {
-      // Multiple strategies to get the correct title
-      const titleStrategies = [
-        // Strategy 1: Page title
-        () => page.title(),
-
-        // Strategy 2: Open Graph title
-        () =>
-          page.$eval('meta[property="og:title"]', (el) =>
-            el.getAttribute("content"),
-          ),
-
-        // Strategy 3: First meaningful H1
-        () => page.$eval("h1", (el) => el.textContent?.trim()),
-
-        // Strategy 4: Twitter title
-        () =>
-          page.$eval('meta[name="twitter:title"]', (el) =>
-            el.getAttribute("content"),
-          ),
-
-        // Strategy 5: Product-specific selectors for e-commerce
-        () =>
-          page.$eval(
-            ".product-title, .product-name, [data-product-title]",
-            (el) => el.textContent?.trim(),
-          ),
-
-        // Strategy 6: Page-specific selectors
-        () =>
-          page.$eval(
-            ".page-title, .hero-title, h1.title",
-            (el) => el.textContent?.trim(),
-          ),
-      ];
-
-      for (const strategy of titleStrategies) {
-        try {
-          const title = await strategy();
-          if (title && this.isValidTitle(title)) {
-            return this.cleanTitle(title);
-          }
-        } catch (e) {
-          // Try next strategy
-          continue;
-        }
-      }
-
-      // Fallback to page title even if it seems invalid
-      const fallbackTitle = await page.title();
-      return this.cleanTitle(fallbackTitle);
-    } catch (error) {
-      console.error("Error extracting title:", error);
+      const docTitle = ((await page.title()) || "").trim();
+      if (docTitle) return docTitle;
+      const og = await page
+        .$eval('meta[property="og:title"]', (el) => el.getAttribute("content"))
+        .catch(() => null);
+      if (og && og.trim()) return og.trim();
+      const h1 = await page
+        .$eval("h1", (el) => el.textContent?.trim() || "")
+        .catch(() => null);
+      return (h1 || "").trim();
+    } catch {
       return "";
     }
-  }
-
-  private isValidTitle(title: string): boolean {
-    if (!title || title.length < 2) return false;
-
-    // Check for payment provider titles that shouldn't be page titles
-    const paymentProviders = [
-      "American Express",
-      "Visa",
-      "MasterCard",
-      "PayPal",
-      "Apple Pay",
-      "Google Pay",
-      "Stripe",
-      "Shop Pay",
-      "Klarna",
-      "Afterpay",
-      "Sezzle",
-    ];
-
-    const trimmedTitle = title.trim();
-    return !paymentProviders.some(
-      (provider) =>
-        trimmedTitle === provider ||
-        trimmedTitle.toLowerCase() === provider.toLowerCase(),
-    );
-  }
-
-  private cleanTitle(title: string): string {
-    if (!title) return "";
-
-    // Decode HTML entities (named + numeric) via a proper decoder.
-    const decoded = decodeHTML(title);
-
-    // Common site name patterns to remove (only at end of title)
-    // These are typically brand suffixes like "Product Name | Brand" or "Page - Company Name"
-    const siteNamePatterns = [
-      /\s*[|–—]\s*(?:Official\s+)?(?:Site|Website|Home|Shop|Store|Online).*$/i,
-      /\s*[|–—]\s*(?:Buy|Order|Get|Shop)\s+.*$/i,
-      /\s*[|–—]\s*(?:Free Shipping|Fast Delivery).*$/i,
-    ];
-
-    let cleaned = decoded.trim();
-
-    // Only apply site name removal if it looks like a suffix pattern
-    for (const pattern of siteNamePatterns) {
-      cleaned = cleaned.replace(pattern, "");
-    }
-
-    // Remove excessive whitespace
-    cleaned = cleaned.replace(/\s+/g, " ").trim();
-
-    return cleaned;
   }
 
   private async extractMetaDescription(page: Page): Promise<string> {
