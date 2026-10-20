@@ -115,6 +115,13 @@ describe("UrlProcessor.normalize param folding", () => {
   it("keeps a meaningful, valued param", () => {
     expect(up.normalize(`${BASE}/search?id=5`)).toBe(`${BASE}/search?id=5`);
   });
+
+  it("U-02: sorts params so order variants canonicalise to one URL", () => {
+    expect(up.normalize(`${BASE}/p?b=2&a=1`)).toBe(`${BASE}/p?a=1&b=2`);
+    expect(up.normalize(`${BASE}/p?size=l&color=red`)).toBe(
+      up.normalize(`${BASE}/p?color=red&size=l`),
+    );
+  });
 });
 
 describe("UrlProcessor.shouldExclude — calendar feeds & event views", () => {

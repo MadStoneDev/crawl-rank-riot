@@ -513,6 +513,11 @@ export class UrlProcessor {
         }
       }
 
+      // U-02: sort the remaining params into a canonical order so that
+      // "?a=1&b=2" and "?b=2&a=1" normalise to the same URL — otherwise the
+      // identical page is crawled twice and flagged as its own duplicate.
+      urlObj.searchParams.sort();
+
       // Clean up trailing slash consistency
       if (urlObj.pathname.endsWith("/") && urlObj.pathname.length > 1) {
         urlObj.pathname = urlObj.pathname.slice(0, -1);
