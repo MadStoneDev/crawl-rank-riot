@@ -6,6 +6,7 @@ import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders,
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
+import { extractFromHtml } from "./extract/parse-html";
 
 /** Decode HTML entities in every value of a string record (OG / Twitter tags). */
 function decodeStringRecord(
@@ -1282,306 +1283,69 @@ export class Scanner {
     html: string,
     urlProcessor: UrlProcessor,
   ): Promise<void> {
-    // Extract title with fallbacks
-    result.title = this.extractTitleFromHtml(html);
+    // Single DOM-string extraction path (P-06): cheerio parses the raw HTML and
+    // fills every DOM-derivable field, with the parser-level correctness fixes
+    // baked in (see src/services/extract/parse-html.ts). Replaces the old
+    // per-field regex extraction that lived here.
+    const parsed = extractFromHtml(html, result.url);
 
-    // Extract meta description (handle both attribute orders)
-    const metaMatch = html.match(
-      /<meta[^>]*name=["']description["'][^>]*content=["'](.*?)["']/i,
-    ) || html.match(
-      /<meta[^>]*content=["'](.*?)["'][^>]*name=["']description["']/i,
-    );
-    if (metaMatch) {
-      // Decode entities before storing so length checks and display are accurate.
-      result.meta_description = decodeHTML(metaMatch[1]).trim();
-    }
+    result.title = parsed.title ?? "";
+    result.title_cleaned = parsed.title_cleaned;
+    if (parsed.meta_description !== undefined) result.meta_description = parsed.meta_description;
+    result.favicon_url = parsed.favicon_url ?? null;
 
-    // Extract the declared favicon: any <link> whose rel contains "icon"
-    // (icon, shortcut icon, apple-touch-icon, mask-icon), in any attribute order.
-    const linkTagRegex = /<link\b[^>]*>/gi;
-    let linkTag: RegExpExecArray | null;
-    while ((linkTag = linkTagRegex.exec(html)) !== null) {
-      const tag = linkTag[0];
-      if (/rel=["'][^"']*icon[^"']*["']/i.test(tag)) {
-        const href = tag.match(/href=["']([^"']+)["']/i);
-        if (href) {
-          const decodedHref = decodeHTML(href[1]);
-          result.favicon_url = urlProcessor.resolve(result.url, decodedHref) || decodedHref;
-          break;
-        }
-      }
-    }
+    result.h1s = parsed.h1s ?? [];
+    result.h2s = parsed.h2s ?? [];
+    result.h3s = parsed.h3s ?? [];
+    result.h4s = parsed.h4s ?? [];
+    result.h5s = parsed.h5s ?? [];
+    result.h6s = parsed.h6s ?? [];
+    result.heading_hierarchy_valid = parsed.heading_hierarchy_valid ?? true;
+    result.heading_hierarchy_issues = parsed.heading_hierarchy_issues ?? [];
 
-    // Extract headings using regex
-    const extractHeadings = (tag: string) => {
-      const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi");
-      const headings = [];
-      let match;
-      while ((match = regex.exec(html)) !== null) {
-        const text = decodeHTML(match[1].replace(/<[^>]+>/g, "")).trim();
-        if (text.length > 0) {
-          headings.push(text);
-        }
-      }
-      return headings;
-    };
+    result.internal_links = parsed.internal_links ?? [];
+    result.external_links = parsed.external_links ?? [];
+    result.images = parsed.images ?? [];
 
-    result.h1s = extractHeadings("h1");
-    result.h2s = extractHeadings("h2");
-    result.h3s = extractHeadings("h3");
-    result.h4s = extractHeadings("h4");
-    result.h5s = extractHeadings("h5");
-    result.h6s = extractHeadings("h6");
+    result.content_length = parsed.content_length ?? 0;
+    result.word_count = parsed.word_count ?? 0;
+    result.lead_paragraph_words = parsed.lead_paragraph_words ?? 0;
+    result.content_hash = parsed.content_hash;
+    result.readability_score = parsed.readability_score;
+    result.keywords = parsed.keywords ?? [];
 
-    // Extract and process links
-    this.extractLinksFromHtml(html, result, urlProcessor);
+    result.canonical_url = parsed.canonical_url ?? null;
+    result.canonical_urls = parsed.canonical_urls;
+    result.canonical_is_self = isSelfCanonical(result.canonical_url, result.url);
 
-    // Extract images
-    this.extractImagesFromHtml(html, result, urlProcessor);
+    // Robots: merge the meta signal with any X-Robots-Tag header already applied
+    // in httpScan (header noindex must not be cleared by a permissive meta).
+    result.has_robots_noindex = result.has_robots_noindex || !!parsed.meta_noindex;
+    result.has_robots_nofollow = result.has_robots_nofollow || !!parsed.meta_nofollow;
+    result.is_indexable = !result.has_robots_noindex;
 
-    // Content-area text: exclude nav/header/footer/aside boilerplate so word
-    // count, readability and the duplicate-content hash reflect real content,
-    // not a Divi header+footer shared across every page (which alone reads as
-    // ~150 words and falsely flags real pages as thin).
-    const noScripts = html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "");
-    const mainMatch = noScripts.match(
-      /<(main|article)\b[^>]*>([\s\S]*?)<\/\1>/i,
-    );
-    const contentHtml = (mainMatch ? mainMatch[2] : noScripts).replace(
-      /<(nav|header|footer|aside|form)\b[^>]*>[\s\S]*?<\/\1>/gi,
-      " ",
-    );
-    // Strip tags, then decode entities, then collapse whitespace so word count,
-    // readability, the content hash and the keyword tokeniser all operate on
-    // real text (not "&rsquo;" → the bogus keyword "rsquo").
-    const textContent = decodeHTML(contentHtml.replace(/<[^>]+>/g, " "))
-      .replace(/\s+/g, " ")
-      .trim();
+    result.open_graph = parsed.open_graph ?? {};
+    result.twitter_card = parsed.twitter_card ?? {};
+    result.structured_data = parsed.structured_data ?? [];
+    result.schema_types = parsed.schema_types ?? [];
+    result.has_invalid_structured_data = parsed.has_invalid_structured_data;
 
-    // content_length stays a whole-page proxy (a page-size signal).
-    const fullText = decodeHTML(noScripts.replace(/<[^>]+>/g, " "))
-      .replace(/\s+/g, " ")
-      .trim();
-    result.content_length = fullText.length;
-    result.word_count = textContent
-      .split(/\s+/)
-      .filter((w) => w.length > 0).length;
+    result.script_srcs = parsed.script_srcs ?? [];
+    result.js_count = parsed.js_count ?? 0;
+    result.stylesheet_hrefs = parsed.stylesheet_hrefs ?? [];
+    result.css_count = parsed.css_count ?? 0;
 
-    // Answer block: first substantial <p> after the H1 in the content area.
-    const afterH1 =
-      contentHtml.split(/<h1\b[^>]*>[\s\S]*?<\/h1>/i)[1] ?? contentHtml;
-    const firstP = afterH1.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i);
-    result.lead_paragraph_words = firstP
-      ? decodeHTML(firstP[1].replace(/<[^>]+>/g, " "))
-          .replace(/\s+/g, " ")
-          .trim()
-          .split(/\s+/)
-          .filter((w) => w.length > 0).length
-      : 0;
+    result.has_viewport_meta = parsed.has_viewport_meta ?? false;
+    result.has_mixed_content = parsed.has_mixed_content ?? false;
+    result.hreflang_tags = parsed.hreflang_tags ?? [];
+    result.url_issues = parsed.url_issues ?? [];
+    result.has_contact_form = parsed.has_contact_form ?? false;
+    result.cls_risk_images = parsed.cls_risk_images ?? 0;
+    result.accessibility = parsed.accessibility;
+    result.has_cookie_consent = parsed.has_cookie_consent ?? false;
+    result.resource_hints = parsed.resource_hints;
 
-    result.content_hash = this.computeContentHash(textContent);
-    result.readability_score = this.computeReadabilityScore(textContent);
-
-    // Extract keywords from page content
-    result.keywords = this.extractKeywords(textContent);
-
-    // Extract meta tags (merge with header-based detection, don't override)
-    result.canonical_url = this.extractCanonicalFromHtml(html);
-    if (this.hasRobotsNoindex(html)) {
-      result.has_robots_noindex = true;
-      result.is_indexable = false;
-    }
-    if (this.hasRobotsNofollow(html)) {
-      result.has_robots_nofollow = true;
-    }
-    // Set indexable to true only if not already set to false by headers or meta
-    if (result.is_indexable === undefined || result.is_indexable === null) {
-      result.is_indexable = !result.has_robots_noindex;
-    }
-
-    // Extract Open Graph tags
-    const ogRegex = /<meta[^>]*property=["']og:([^"']+)["'][^>]*content=["']([^"']*)["'][^>]*>/gi;
-    const ogRegexAlt = /<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:([^"']+)["'][^>]*>/gi;
-    let ogMatch;
-    while ((ogMatch = ogRegex.exec(html)) !== null) {
-      result.open_graph[ogMatch[1]] = decodeHTML(ogMatch[2]);
-    }
-    while ((ogMatch = ogRegexAlt.exec(html)) !== null) {
-      result.open_graph[ogMatch[2]] = decodeHTML(ogMatch[1]);
-    }
-
-    // Extract Twitter Card tags
-    const twRegex = /<meta[^>]*name=["']twitter:([^"']+)["'][^>]*content=["']([^"']*)["'][^>]*>/gi;
-    const twRegexAlt = /<meta[^>]*content=["']([^"']*)["'][^>]*name=["']twitter:([^"']+)["'][^>]*>/gi;
-    let twMatch;
-    while ((twMatch = twRegex.exec(html)) !== null) {
-      result.twitter_card[twMatch[1]] = decodeHTML(twMatch[2]);
-    }
-    while ((twMatch = twRegexAlt.exec(html)) !== null) {
-      result.twitter_card[twMatch[2]] = decodeHTML(twMatch[1]);
-    }
-
-    // Extract JSON-LD structured data
-    const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-    let jsonLdMatch;
-    while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null) {
-      try {
-        const data = JSON.parse(jsonLdMatch[1].trim());
-        result.structured_data.push(data);
-        if (data["@type"]) {
-          const types = Array.isArray(data["@type"]) ? data["@type"] : [data["@type"]];
-          result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
-        }
-        if (data["@graph"] && Array.isArray(data["@graph"])) {
-          for (const item of data["@graph"]) {
-            if (item["@type"]) {
-              const types = Array.isArray(item["@type"]) ? item["@type"] : [item["@type"]];
-              result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
-            }
-          }
-        }
-        if (Array.isArray(data) && data.length > 0 && data[0]["@type"]) {
-          const types = Array.isArray(data[0]["@type"]) ? data[0]["@type"] : [data[0]["@type"]];
-          result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
-        }
-      } catch (e) {
-        // Invalid JSON-LD, skip
-      }
-    }
-    // Deduplicate schema types
-    result.schema_types = [...new Set(result.schema_types)];
-
-    // Capture the real <script src> and <link rel=stylesheet href> URLs so the
-    // audit tech-stack analysis can detect frameworks/CMSs from actual bundle
-    // paths (e.g. /_next/static/, wp-content, cdn.shopify.com) rather than
-    // guessing from anchor hrefs. Counts derive from the captured URLs.
-    const scriptSrcs: string[] = [];
-    const scriptSrcRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
-    let scriptMatch: RegExpExecArray | null;
-    while ((scriptMatch = scriptSrcRe.exec(html)) !== null) {
-      scriptSrcs.push(scriptMatch[1]);
-    }
-    result.script_srcs = scriptSrcs;
-    result.js_count = scriptSrcs.length;
-
-    const stylesheetHrefs: string[] = [];
-    const linkTagRe = /<link\b[^>]*>/gi;
-    let linkMatch: RegExpExecArray | null;
-    while ((linkMatch = linkTagRe.exec(html)) !== null) {
-      const tag = linkMatch[0];
-      if (/\brel\s*=\s*["']stylesheet["']/i.test(tag)) {
-        const href = tag.match(/\bhref\s*=\s*["']([^"']+)["']/i);
-        if (href) stylesheetHrefs.push(href[1]);
-      }
-    }
-    result.stylesheet_hrefs = stylesheetHrefs;
-    result.css_count = stylesheetHrefs.length;
-
-    // Check for viewport meta tag
-    result.has_viewport_meta = /<meta[^>]*name=["']viewport["']/i.test(html);
-
-    // Check for mixed content (HTTPS page with HTTP resources)
-    if (result.url.startsWith("https://")) {
-      const mixedContentPatterns = [
-        /<img[^>]*src=["']http:\/\//i,
-        /<script[^>]*src=["']http:\/\//i,
-        /<link[^>]*href=["']http:\/\//i,
-        /<iframe[^>]*src=["']http:\/\//i,
-        /<video[^>]*src=["']http:\/\//i,
-        /<audio[^>]*src=["']http:\/\//i,
-        /<source[^>]*src=["']http:\/\//i,
-        /<object[^>]*data=["']http:\/\//i,
-        /<embed[^>]*src=["']http:\/\//i,
-      ];
-      result.has_mixed_content = mixedContentPatterns.some((pattern) => pattern.test(html));
-    } else {
-      result.has_mixed_content = false;
-    }
-
-    // Extract hreflang tags
-    const hreflangRegex = /<link[^>]*rel=["']alternate["'][^>]*hreflang=["']([^"']*)["'][^>]*href=["']([^"']*)["'][^>]*>/gi;
-    const hreflangRegexAlt = /<link[^>]*hreflang=["']([^"']*)["'][^>]*rel=["']alternate["'][^>]*href=["']([^"']*)["'][^>]*>/gi;
-    const hreflangRegexAlt2 = /<link[^>]*href=["']([^"']*)["'][^>]*rel=["']alternate["'][^>]*hreflang=["']([^"']*)["'][^>]*>/gi;
-    result.hreflang_tags = [];
-    let hreflangMatch;
-    while ((hreflangMatch = hreflangRegex.exec(html)) !== null) {
-      result.hreflang_tags.push({ lang: hreflangMatch[1], url: hreflangMatch[2] });
-    }
-    while ((hreflangMatch = hreflangRegexAlt.exec(html)) !== null) {
-      result.hreflang_tags.push({ lang: hreflangMatch[1], url: hreflangMatch[2] });
-    }
-    while ((hreflangMatch = hreflangRegexAlt2.exec(html)) !== null) {
-      result.hreflang_tags.push({ lang: hreflangMatch[2], url: hreflangMatch[1] });
-    }
-
-    // Check canonical_is_self
-    result.canonical_is_self = this.checkCanonicalIsSelf(result.canonical_url, result.url);
-
-    // Check URL issues
-    result.url_issues = this.analyzeUrlIssues(result.url);
-
-    // Check heading hierarchy
-    const hierarchyResult = this.checkHeadingHierarchy(result);
-    result.heading_hierarchy_valid = hierarchyResult.valid;
-    result.heading_hierarchy_issues = hierarchyResult.issues;
-
-    // Detect contact forms
-    result.has_contact_form = this.detectContactForm(html);
-
-    // CLS risk: images without explicit width/height
-    result.cls_risk_images = (() => {
-      const imgRegex = /<img\s[^>]*>/gi;
-      let count = 0;
-      let m;
-      while ((m = imgRegex.exec(html)) !== null) {
-        const tag = m[0];
-        if (!(/width=["']?\d/.test(tag) && /height=["']?\d/.test(tag))) count++;
-      }
-      return count;
-    })();
-
-    // Accessibility (limited via regex)
-    result.accessibility = {
-      html_lang: (html.match(/<html[^>]*\slang=["']([^"']+)["']/i) || [])[1] || undefined,
-      form_labels_missing: 0,
-      aria_landmarks: (() => {
-        const landmarks = new Set<string>();
-        if (/<nav[\s>]/i.test(html)) landmarks.add("nav");
-        if (/<main[\s>]/i.test(html)) landmarks.add("main");
-        if (/<header[\s>]/i.test(html)) landmarks.add("header");
-        if (/<footer[\s>]/i.test(html)) landmarks.add("footer");
-        if (/<aside[\s>]/i.test(html)) landmarks.add("aside");
-        return [...landmarks];
-      })(),
-      has_skip_nav: /href=["']#[^"']*["'][^>]*>[^<]*(skip|jump to)/i.test(html),
-      tabindex_misuse: 0,
-    };
-
-    // Cookie consent detection
-    result.has_cookie_consent = /cookie[-_]?(banner|consent|notice|policy|popup)|gdpr|onetrust|cookiebot|cc-banner/i.test(html);
-
-    // Resource hints
-    result.resource_hints = (() => {
-      const extract = (rel: string) => {
-        const re = new RegExp(`<link[^>]*rel=["']${rel}["'][^>]*href=["']([^"']+)["']`, "gi");
-        const reAlt = new RegExp(`<link[^>]*href=["']([^"']+)["'][^>]*rel=["']${rel}["']`, "gi");
-        const urls: string[] = [];
-        let m;
-        while ((m = re.exec(html)) !== null) urls.push(m[1]);
-        while ((m = reAlt.exec(html)) !== null) urls.push(m[1]);
-        return urls;
-      };
-      return {
-        preconnect: extract("preconnect"),
-        preload: extract("preload"),
-        prefetch: extract("prefetch"),
-        dns_prefetch: extract("dns-prefetch"),
-      };
-    })();
-
-    // Fetch image file sizes (background, non-blocking)
+    // Network step (not pure): probe image file sizes.
     await this.fetchImageFileSizes(result.images);
   }
 
