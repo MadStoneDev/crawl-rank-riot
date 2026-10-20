@@ -44,6 +44,35 @@ describe("isSelfCanonical (P0.3)", () => {
   });
 });
 
+describe("tracking-param stripping (U-04) + self-compare (CN-04)", () => {
+  const up = new UrlProcessor(BASE);
+
+  it("U-04: strips the extended click-ID set but keeps real params", () => {
+    expect(up.normalize(`${BASE}/p?gbraid=1&wbraid=2&ttclid=3&utm_id=4&id=9`)).toBe(
+      `${BASE}/p?id=9`,
+    );
+  });
+
+  it("U-04: does NOT strip ref by default (per-project, default off)", () => {
+    expect(up.normalize(`${BASE}/p?ref=partner`)).toBe(`${BASE}/p?ref=partner`);
+  });
+
+  it("U-04: strips ref when the project opts in", () => {
+    const upRef = new UrlProcessor(BASE, { stripRef: true });
+    expect(upRef.normalize(`${BASE}/p?ref=partner`)).toBe(`${BASE}/p`);
+  });
+
+  it("CN-04: a canonical with tracking params is self vs the cleaned page URL", () => {
+    expect(
+      isSelfCanonical(`${BASE}/p?utm_source=x`, `${BASE}/p`),
+    ).toBe(true);
+  });
+
+  it("CN-04: param order doesn't cause a self-canonical mismatch", () => {
+    expect(isSelfCanonical(`${BASE}/p?b=2&a=1`, `${BASE}/p?a=1&b=2`)).toBe(true);
+  });
+});
+
 describe("classifyPageType", () => {
   it("treats ordinary content paths as content", () => {
     expect(classifyPageType(`${BASE}/`)).toBe("content");

@@ -163,13 +163,51 @@ export function isContentPage(url: string): boolean {
   return classifyPageType(url) === "content";
 }
 
+/**
+ * Query params that carry no page identity — analytics/ad click IDs and
+ * campaign tags. Stripped during normalisation so the same page isn't crawled
+ * once per tracking variant (U-02/U-04). `ref` is deliberately NOT here: some
+ * sites use it as a real content param, so it is stripped only when a project
+ * opts in (U-04, default off).
+ */
+export const TRACKING_PARAMS: readonly string[] = [
+  "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "utm_id",
+  "fbclid", "gclid", "gclsrc", "dclid", "gbraid", "wbraid", "msclkid", "yclid",
+  "ttclid", "twclid", "li_fat_id", "igshid", "mc_cid", "mc_eid", "_ga", "_gl",
+  "_hsenc", "_hsmi", "srsltid", "vero_id", "oly_enc_id", "oly_anon_id",
+  "et_blog", // Divi theme pagination artifact
+];
+
+/**
+ * Strip non-identity query params in place, drop empty-valued params, and sort
+ * the remainder into a canonical order (U-02/U-04). Shared by `normalize` and
+ * `normalizeForSelfCompare` so both sides of a self-canonical comparison are
+ * cleaned identically (CN-04).
+ */
+export function stripNonIdentityParams(
+  sp: URLSearchParams,
+  opts?: { stripRef?: boolean },
+): void {
+  for (const p of TRACKING_PARAMS) sp.delete(p);
+  if (opts?.stripRef) sp.delete("ref");
+  // Drop empty-valued params (e.g. "?et_blog=", "?ref="): almost always
+  // tracking/theme artifacts that otherwise produce a phantom duplicate.
+  for (const key of Array.from(sp.keys())) {
+    if (sp.get(key) === "") sp.delete(key);
+  }
+  sp.sort();
+}
+
 export class UrlProcessor {
   private baseUrl: string;
   private baseDomain: string;
   private preferredWwwFormat: "www" | "non-www" | "unknown" = "unknown";
+  /** Strip the `ref` query param during normalisation (U-04, per-project, default off). */
+  private stripRef: boolean;
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, opts?: { stripRef?: boolean }) {
     this.baseUrl = this.normalizeBasic(baseUrl);
+    this.stripRef = !!opts?.stripRef;
     try {
       const url = new URL(this.baseUrl);
       this.baseDomain = url.hostname.toLowerCase();
@@ -476,47 +514,9 @@ export class UrlProcessor {
       // Clean up the URL
       urlObj.hash = ""; // Remove fragments
 
-      // Remove common tracking parameters
-      const trackingParams = [
-        "utm_source",
-        "utm_medium",
-        "utm_campaign",
-        "utm_content",
-        "utm_term",
-        "fbclid",
-        "gclid",
-        "gclsrc",
-        "dclid",
-        "msclkid",
-        "yclid",
-        "ref",
-        "_ga",
-        "mc_cid",
-        "mc_eid",
-        "igshid",
-        "_hsenc",
-        "_hsmi",
-        "et_blog", // Divi theme pagination artifact
-      ];
-
-      trackingParams.forEach((param) => {
-        urlObj.searchParams.delete(param);
-      });
-
-      // Drop empty-valued params (e.g. "?et_blog=", "?ref="). These are almost
-      // always tracking/theme artifacts and otherwise produce a phantom
-      // duplicate of the same page — crawled twice, then flagged as a false
-      // canonical mismatch / duplicate title.
-      for (const key of Array.from(urlObj.searchParams.keys())) {
-        if (urlObj.searchParams.get(key) === "") {
-          urlObj.searchParams.delete(key);
-        }
-      }
-
-      // U-02: sort the remaining params into a canonical order so that
-      // "?a=1&b=2" and "?b=2&a=1" normalise to the same URL — otherwise the
-      // identical page is crawled twice and flagged as its own duplicate.
-      urlObj.searchParams.sort();
+      // Strip tracking params, drop empty-valued params, and sort the rest into
+      // a canonical order (U-02/U-04). `ref` only when this project opts in.
+      stripNonIdentityParams(urlObj.searchParams, { stripRef: this.stripRef });
 
       // Clean up trailing slash consistency
       if (urlObj.pathname.endsWith("/") && urlObj.pathname.length > 1) {
@@ -809,7 +809,14 @@ export function normalizeForSelfCompare(
     const parsed = base ? new URL(url, base) : new URL(url);
     const host = parsed.host.toLowerCase();
     const path = parsed.pathname.replace(/\/+$/, "");
-    return `${parsed.protocol}//${host}${path}${parsed.search}`.toLowerCase();
+    // Strip tracking params + sort on BOTH sides so a page whose URL was cleaned
+    // by normalize() ("/p?utm_source=x" → "/p") isn't reported as a canonical
+    // mismatch against its own raw canonical href, and so param order doesn't
+    // matter (CN-04).
+    stripNonIdentityParams(parsed.searchParams);
+    const search = parsed.searchParams.toString();
+    const query = search ? `?${search}` : "";
+    return `${parsed.protocol}//${host}${path}${query}`.toLowerCase();
   } catch {
     return null;
   }
