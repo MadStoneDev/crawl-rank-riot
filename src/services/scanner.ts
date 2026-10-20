@@ -24,6 +24,44 @@ function decodeStringRecord(
  * fraction of this; the cap only guards against pathological runaway documents. */
 const MAX_HTML_BYTES = 10 * 1024 * 1024; // 10 MB
 
+/**
+ * Below this HTTP word count, a page on a client-rendered platform is assumed
+ * to be a shell (nav + cookie banner) rather than real content, so we escalate
+ * to headless (J-01). Real content pages on these platforms comfortably exceed
+ * it; the "keep HTTP unless headless is better" guard downstream protects the
+ * rare genuinely-thin page from a worse headless result.
+ */
+const SPA_SHELL_WORD_COUNT = 200;
+
+/**
+ * Decide whether an HTTP scan result is too poor to trust and should be
+ * re-fetched with a headless browser. Pure so it is unit-testable (J-01).
+ */
+export function needsHeadlessEscalation(
+  result: Pick<ScanResult, "title" | "content_type" | "content_length" | "word_count">,
+  platform: string | null,
+): boolean {
+  // No title at all — likely JS-rendered SPA.
+  if (!result.title || result.title.length < 3) return true;
+
+  const isHtml = !!result.content_type?.includes("text/html");
+
+  // Almost no text content — page body is probably rendered by JS.
+  if (isHtml && (result.content_length ?? 0) < 500 && (result.word_count ?? 0) < 5) {
+    return true;
+  }
+
+  // Client-rendered platform (Shopify/Squarespace/Wix/SPA …): a shell can clear
+  // the thin-content bar above with just nav + a cookie notice while hiding the
+  // real, client-rendered content, links and schema. Escalate unless the HTTP
+  // response already captured substantial content (J-01).
+  if (isHtml && platformNeedsHeadless(platform) && (result.word_count ?? 0) < SPA_SHELL_WORD_COUNT) {
+    return true;
+  }
+
+  return false;
+}
+
 export class Scanner {
   private userAgent = USER_AGENT;
 
@@ -84,7 +122,7 @@ export class Scanner {
     // Platform detection alone is not enough — if HTTP got good data, keep it.
     // Never escalate bot challenges to headless — if HTTP got blocked, headless will too.
     const isBotChallenge = !!(result as any)._isBotChallenge;
-    const httpResultsArePoor = !isBotChallenge && this.needsHeadlessVerification(result);
+    const httpResultsArePoor = !isBotChallenge && this.needsHeadlessVerification(result, detectedPlatform);
 
     if (isBotChallenge) {
       console.log(`🛡️ Bot challenge detected via HTTP for ${url} — skipping headless (will be blocked too)`);
@@ -1000,14 +1038,11 @@ export class Scanner {
     return false;
   }
 
-  private needsHeadlessVerification(result: ScanResult): boolean {
-    // No title at all — likely JS-rendered SPA
-    if (!result.title || result.title.length < 3) return true;
-
-    // Almost no text content — page body is probably rendered by JS
-    if (result.content_type?.includes("text/html") && result.content_length < 500 && result.word_count < 5) return true;
-
-    return false;
+  private needsHeadlessVerification(
+    result: ScanResult,
+    platform?: string | null,
+  ): boolean {
+    return needsHeadlessEscalation(result, platform ?? null);
   }
 
   private async httpScan(
