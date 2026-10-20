@@ -37,6 +37,7 @@ export const ISSUE_CATEGORY: Record<string, ScoreCategory> = {
   // technical
   broken_internal_link: "technical",
   not_found: "technical",
+  soft_404: "technical",
   server_error: "technical",
   redirect_chain: "technical",
   redirect_loop: "technical",

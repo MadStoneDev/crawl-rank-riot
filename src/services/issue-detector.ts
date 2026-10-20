@@ -597,6 +597,18 @@ function analyzePageIssues(
 
   // ── HIGH ──────────────────────────────────────────────────────────────
 
+  // Soft 404 (S-01): a 2xx response whose content reads as "page not found".
+  // Search engines should see a 404/410; served as 200 it pollutes the index
+  // and is counted as a healthy page everywhere else.
+  if (result.soft_404) {
+    addIssue(
+      "soft_404",
+      "high",
+      "Page returns HTTP 200 but its content reads as a 'page not found' page (soft 404). It should return HTTP 404 or 410 instead.",
+      { url: result.url, status_code: result.status, title: result.title },
+    );
+  }
+
   if (!result.title || result.title.trim() === "") {
     addIssue("missing_title", "high", "Page is missing a title tag", {
       url: result.url,

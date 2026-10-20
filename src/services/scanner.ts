@@ -7,6 +7,7 @@ import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/pro
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
 import { extractFromHtml, deriveCleanTitle } from "./extract/parse-html";
+import { isSoft404 } from "./extract/soft404";
 
 /** Decode HTML entities in every value of a string record (OG / Twitter tags). */
 function decodeStringRecord(
@@ -521,6 +522,9 @@ export class Scanner {
         dns_prefetch: get("dns-prefetch"),
       };
     });
+
+    // Soft-404: a 2xx response whose title/H1 reads as "not found" (S-01).
+    result.soft_404 = isSoft404(result.status, result.title, result.h1s);
 
     // Mark as headless scan
     result.scan_method = "headless";
@@ -1259,6 +1263,9 @@ export class Scanner {
     result.accessibility = parsed.accessibility;
     result.has_cookie_consent = parsed.has_cookie_consent ?? false;
     result.resource_hints = parsed.resource_hints;
+
+    // Soft-404: a 2xx response whose title/H1 reads as "not found" (S-01).
+    result.soft_404 = isSoft404(result.status, result.title, result.h1s);
 
     // Network step (not pure): probe image file sizes.
     await this.fetchImageFileSizes(result.images);

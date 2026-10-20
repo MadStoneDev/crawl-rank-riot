@@ -106,6 +106,8 @@ export interface ScanResult {
   redirected_from?: string;
   redirect_chain?: string[];
   content_type: string;
+  // True when a 2xx response is really a "page not found" page (soft 404, S-01).
+  soft_404?: boolean;
   size_bytes: number;
   load_time_ms: number;
   first_byte_time_ms: number;
