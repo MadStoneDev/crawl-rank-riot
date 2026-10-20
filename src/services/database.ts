@@ -190,7 +190,16 @@ export async function storeScanResults(
       bogusPages.forEach((p) => existingUrlSet.delete(p.url));
     }
 
-    // STEP 2: Deduplicate results by URL (keep the first occurrence)
+    // STEP 2: Deduplicate results by URL (keep the first occurrence).
+    // U-03: the dedupe key is CASE-SENSITIVE on the path, matching the crawler
+    // (which treats /Page and /page as distinct) and the pages table's
+    // case-sensitive (project_id,url) unique constraint. Lower-casing here used
+    // to silently merge case variants in-scan while the DB kept both across
+    // scans — an inconsistency, and it hid a real issue: case-variant URLs that
+    // serve the same content without redirecting ARE a duplicate-content defect.
+    // (Host case is already normalised by the URL parser; a server that
+    // redirects one case variant to another is followed, so only the canonical
+    // form is stored.)
     const urlMap = new Map<string, ScanResult>();
 
     for (const result of results) {
@@ -199,7 +208,7 @@ export async function storeScanResults(
         console.log(`Skipping non-HTTP URL: ${result.url}`);
         continue;
       }
-      const normalizedUrl = result.url.toLowerCase().trim();
+      const normalizedUrl = result.url.trim();
       if (!urlMap.has(normalizedUrl)) {
         urlMap.set(normalizedUrl, result);
       } else {
