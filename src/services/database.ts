@@ -393,6 +393,11 @@ export async function storeScanResults(
         // Look up the destination page's status if it was crawled
         let httpStatus: number | null = null;
         let isBroken = false;
+        // "unchecked" ≠ "ok": a link whose destination wasn't crawled this scan
+        // (excluded, beyond maxPages/maxDepth, or not reached before timeout)
+        // must not be reported as healthy — a genuinely dead internal URL that
+        // happened not to be crawled would otherwise read as fine (L-02).
+        let linkError: string | null = null;
 
         if (destinationPageId) {
           const destResult = deduplicatedResults.find(r => r.url === link.url);
@@ -408,6 +413,7 @@ export async function storeScanResults(
         } else {
           httpStatus = null;
           isBroken = false;
+          linkError = "unchecked";
         }
 
         allLinks.push({
@@ -421,11 +427,14 @@ export async function storeScanResults(
           is_followed: !link.rel_attributes?.includes("nofollow"),
           http_status: httpStatus,
           is_broken: isBroken,
-          link_error: null,
+          link_error: linkError,
         });
       }
 
-      // External links - mark as unchecked (not broken)
+      // External links start "unchecked" and are cleared to ok (null) only once
+      // actually probed below. Links past the probe cap, or when probing is
+      // disabled, stay "unchecked" so they're never shown as verified-healthy
+      // (L-03).
       for (const link of result.external_links) {
         // Skip non-HTTP URLs that may have slipped through extraction
         if (!/^https?:\/\//i.test(link.url)) continue;
@@ -440,7 +449,7 @@ export async function storeScanResults(
           is_followed: !link.rel_attributes?.includes("nofollow"),
           http_status: null,
           is_broken: false,
-          link_error: null,
+          link_error: "unchecked",
         });
       }
     }
