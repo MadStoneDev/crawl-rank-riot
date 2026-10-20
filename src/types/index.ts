@@ -22,6 +22,13 @@ export interface CrawlOptions {
   customSitemapPaths?: string[];
   seedPaths?: string[];
   wwwPreference?: "www" | "non-www";
+  /**
+   * Obey robots.txt Disallow/Allow + Crawl-delay for our UA (RB-01/RB-02).
+   * Defaults to true. May only be set false for a domain-verified project where
+   * the owner has authorised a full crawl (wired in Stage 4); until then nothing
+   * sets it false, so the crawler always obeys robots.
+   */
+  obeyRobots?: boolean;
 }
 
 export interface ScanResult {

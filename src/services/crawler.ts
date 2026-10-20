@@ -6,9 +6,13 @@ import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser"
 import { ScanLogger } from "./scan-logger";
 import { isCancelled } from "./scan-cancellation";
 import { proxyFetch, isProxyConfigured } from "../utils/proxy";
-import { USER_AGENT } from "../config/identity";
+import { USER_AGENT, BOT_NAME } from "../config/identity";
+import { parseRobots, isPathAllowed, getCrawlDelay, RobotsTxt } from "../utils/robots";
 
 const BROWSER_USER_AGENT = USER_AGENT;
+
+/** Never let a hostile/absurd Crawl-delay stall a scan indefinitely (RB-02). */
+const MAX_ROBOTS_CRAWL_DELAY_MS = 30_000;
 
 export class WebCrawler {
   private scanner: Scanner;
@@ -26,6 +30,14 @@ export class WebCrawler {
   public botBlockedCount = 0;
   public botBlockedHomepage = false;
   public botBlockSampleError: string | undefined;
+
+  // robots.txt obedience (RB-01/RB-02). Loaded once per crawl.
+  private robots: RobotsTxt | null = null;
+  private obeyRobots = true;
+  private robotsCrawlDelayMs = 0;
+  private readonly productTokens = [BOT_NAME];
+  /** True when robots.txt disallowed the seed URL itself (for a clear failure). */
+  public robotsDisallowedSeed = false;
 
   private scanId: string | null = null;
   private projectId: string | null = null;
@@ -59,6 +71,14 @@ export class WebCrawler {
 
       if (this.urlProcessor.shouldExclude(item.url, excludePatterns, this.crawlMode)) {
         console.log(`🚫 Skipping excluded URL: ${item.url}`);
+        return;
+      }
+
+      // Honour robots.txt (RB-01). A disallowed seed is recorded so the pipeline
+      // can report exactly why the crawl produced nothing.
+      if (!this.isAllowedByRobots(item.url)) {
+        if (item.depth === 0) this.robotsDisallowedSeed = true;
+        this.logger?.info("crawl", `Skipping robots-disallowed URL: ${item.url}`, { url: item.url });
         return;
       }
 
@@ -140,7 +160,8 @@ export class WebCrawler {
         }
       }
 
-      const delay = needsHeadless ? 2000 : 500;
+      // Base politeness delay, raised to the robots Crawl-delay when larger (RB-02).
+      const delay = Math.max(needsHeadless ? 2000 : 500, this.robotsCrawlDelayMs);
       await this.delay(delay);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -269,8 +290,10 @@ export class WebCrawler {
       customSitemapPaths = [],
       seedPaths = [],
       wwwPreference,
+      obeyRobots = true,
     } = options;
     this.crawlMode = crawlMode;
+    this.obeyRobots = obeyRobots !== false;
     // Default timeout scales with maxPages: ~2s per page, min 5 minutes
     const timeout = options.timeout ?? Math.max(300_000, maxPages * 2_000);
 
@@ -303,6 +326,10 @@ export class WebCrawler {
     }
     const baseDomain = this.urlProcessor.getBaseDomain();
     this.logger?.info("init", `Base domain resolved: ${baseDomain}`);
+
+    // Load robots.txt and honour it for our UA (RB-01/RB-02), unless an
+    // authorised owner override disabled it.
+    await this.loadRobots(cleanSeedUrl);
 
     // Add seed URL (will be normalized with correct www preference)
     const normalizedSeedUrl = this.urlProcessor.normalize(cleanSeedUrl);
@@ -452,6 +479,11 @@ export class WebCrawler {
 
       if (this.urlProcessor.shouldExclude(cleanUrl, [], this.crawlMode)) {
         console.log(`🚫 Excluding URL: ${cleanUrl}`);
+        continue;
+      }
+
+      // Don't enqueue robots-disallowed links (RB-01).
+      if (!this.isAllowedByRobots(cleanUrl)) {
         continue;
       }
 
@@ -629,7 +661,8 @@ export class WebCrawler {
             if (
               !this.visited.has(cleanUrl) &&
               !this.queued.has(cleanUrl) &&
-              !this.urlProcessor.shouldExclude(cleanUrl, [], this.crawlMode)
+              !this.urlProcessor.shouldExclude(cleanUrl, [], this.crawlMode) &&
+              this.isAllowedByRobots(cleanUrl)
             ) {
               const urlDepth = this.calculateUrlDepth(
                 cleanUrl,
@@ -656,6 +689,54 @@ export class WebCrawler {
 
   private calculateUrlDepth(url: string, baseUrl: string): number {
     return this.urlProcessor.getPathDepth(url);
+  }
+
+  /**
+   * Fetch and parse robots.txt once per crawl. Non-fatal: if robots.txt can't
+   * be fetched we proceed (absence of robots.txt means "allowed").
+   */
+  private async loadRobots(seedUrl: string): Promise<void> {
+    if (!this.obeyRobots) {
+      this.logger?.info("init", "robots.txt obedience disabled for this crawl (authorised override)");
+      return;
+    }
+    try {
+      const origin = new URL(seedUrl).origin;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const response = await proxyFetch(`${origin}/robots.txt`, {
+        headers: { "User-Agent": BROWSER_USER_AGENT },
+        signal: controller.signal,
+        redirect: "follow",
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        this.logger?.info("init", `No robots.txt (HTTP ${response.status}) — crawling all paths`);
+        return;
+      }
+      const content = await response.text();
+      this.robots = parseRobots(content);
+      const delaySec = getCrawlDelay(this.robots, this.productTokens);
+      if (delaySec && delaySec > 0) {
+        this.robotsCrawlDelayMs = Math.min(delaySec * 1000, MAX_ROBOTS_CRAWL_DELAY_MS);
+      }
+      this.logger?.info(
+        "init",
+        `robots.txt loaded: ${this.robots.groups.length} group(s)` +
+          (this.robotsCrawlDelayMs ? `, crawl-delay ${this.robotsCrawlDelayMs / 1000}s` : ""),
+      );
+    } catch (error) {
+      this.logger?.warn(
+        "init",
+        `Failed to load robots.txt (proceeding, treating as allowed): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /** Whether robots.txt permits our UA to fetch `url` (RB-01). */
+  private isAllowedByRobots(url: string): boolean {
+    if (!this.obeyRobots || !this.robots) return true;
+    return isPathAllowed(this.robots, url, this.productTokens);
   }
 
   private delay(ms: number): Promise<void> {

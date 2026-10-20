@@ -434,7 +434,9 @@ export async function runScanPipeline(
     // fixes — everything's clean" for a site that was never actually read. Fail
     // with a reason and leave any previous scan's data untouched.
     if (scanResults.length === 0) {
-      const reason = crawler.botBlockedHomepage
+      const reason = crawler.robotsDisallowedSeed
+        ? "robots.txt disallows RankRiotBot from the start URL, so no pages could be crawled. Allow RankRiotBot in robots.txt (or verify domain ownership to authorise a full crawl) and rescan."
+        : crawler.botBlockedHomepage
         ? "The crawler was blocked by bot protection before it could read any pages. Allowlist RankRiotBot and rescan."
         : "No pages could be crawled. The start URL may be unreachable, redirect off-site, return a non-HTML response, or return an HTTP error. Check the URL and rescan.";
       await markScanFailed(scanId, reason);
