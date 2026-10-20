@@ -163,6 +163,24 @@ describe("analyzePageIssues — canonical & structured-data signals", () => {
     expect(issues).not.toContain("multiple_canonical");
   });
 
+  it("CN-03: a same-site non-self canonical is a canonical_mismatch", () => {
+    const issues = types({
+      canonical_url: "https://example.com/other",
+      canonical_is_self: false,
+    });
+    expect(issues).toContain("canonical_mismatch");
+    expect(issues).not.toContain("cross_domain_canonical");
+  });
+
+  it("CN-03: a cross-domain canonical is informational, not a mismatch", () => {
+    const issues = types({
+      canonical_url: "https://syndicator.com/doc",
+      canonical_is_self: false,
+    });
+    expect(issues).toContain("cross_domain_canonical");
+    expect(issues).not.toContain("canonical_mismatch");
+  });
+
   it("P-03: flags malformed JSON-LD even when nothing parsed", () => {
     const issues = types({
       structured_data: [],

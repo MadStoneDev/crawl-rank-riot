@@ -558,6 +558,17 @@ function detectCrossPageDuplicates(
 /**
  * Analyze a single page's scan result and return all detected issues.
  */
+/** True when a canonical resolves to a different registrable host than the page (CN-03). */
+function isCrossDomainCanonical(canonical: string, pageUrl: string): boolean {
+  try {
+    const c = new URL(canonical, pageUrl).host.toLowerCase().replace(/^www\./, "");
+    const p = new URL(pageUrl).host.toLowerCase().replace(/^www\./, "");
+    return c !== p;
+  } catch {
+    return false;
+  }
+}
+
 export function analyzePageIssues(
   result: ScanResult,
   projectId: string,
@@ -1105,20 +1116,31 @@ export function analyzePageIssues(
 
   // Canonical mismatch. Canonicalised variants never reach this function (they
   // raise no page-level findings), so a non-self canonical here means the target
-  // wasn't a crawled/indexable page — a genuine mismatch worth flagging.
+  // wasn't a crawled/indexable page — a genuine mismatch worth flagging. But a
+  // canonical pointing to ANOTHER domain is a legitimate pattern for syndicated
+  // content, so it's reported informationally, not as a same-site mismatch (CN-03).
   if (
     result.canonical_url != null &&
     result.canonical_is_self === false
   ) {
-    addIssue(
-      "canonical_mismatch",
-      "medium",
-      `Canonical URL does not match the page URL (canonical points to ${result.canonical_url})`,
-      {
-        url: result.url,
-        canonical_url: result.canonical_url,
-      },
-    );
+    if (isCrossDomainCanonical(result.canonical_url, result.url)) {
+      addIssue(
+        "cross_domain_canonical",
+        "low",
+        `Canonical points to another domain (${result.canonical_url}). This is valid for syndicated/republished content — confirm it's intentional.`,
+        { url: result.url, canonical_url: result.canonical_url },
+      );
+    } else {
+      addIssue(
+        "canonical_mismatch",
+        "medium",
+        `Canonical URL does not match the page URL (canonical points to ${result.canonical_url})`,
+        {
+          url: result.url,
+          canonical_url: result.canonical_url,
+        },
+      );
+    }
   }
 
   // Missing lazy loading on images (only flag if more than 3 images)

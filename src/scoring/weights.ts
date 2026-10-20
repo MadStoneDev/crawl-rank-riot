@@ -48,6 +48,7 @@ export const ISSUE_CATEGORY: Record<string, ScoreCategory> = {
   missing_viewport_meta: "technical",
   missing_html_lang: "technical",
   canonical_mismatch: "technical",
+  cross_domain_canonical: "technical",
   missing_canonical: "technical",
   multiple_canonical: "technical",
   orphan_page: "technical",
