@@ -269,7 +269,6 @@ export interface AuditAnalysis {
 export interface ModernizationAnalysis {
   score: number; // 0-100
   usesJQuery: boolean;
-  usesOldFrameworks: boolean;
   hasModernBuildTools: boolean;
   findings: string[];
 }
@@ -347,7 +346,10 @@ export interface AuditResult {
   modernization_score: number;
   performance_score: number;
   completeness_score: number;
-  conversion_score: number;
+  // DEPRECATED: there is no conversion analysis, so this is written as null
+  // ("not measured") rather than a misleading constant 0. Scheduled for removal
+  // once the frontend stops reading it (§7.22, conversion_score decision).
+  conversion_score: number | null;
   overall_score: number;
   tech_stack: TechStackAnalysis;
   design_analysis: DesignAnalysis;

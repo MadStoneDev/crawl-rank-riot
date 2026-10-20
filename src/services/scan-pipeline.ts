@@ -223,7 +223,9 @@ const auditStrategy: ScanStrategy = async (ctx): Promise<ModeResult> => {
     modernization_score: botProtection ? 0 : analysis.modernization.score,
     performance_score: botProtection ? 0 : analysis.performance.score,
     completeness_score: botProtection ? 0 : analysis.completeness.score,
-    conversion_score: 0,
+    // No conversion analysis exists — write null ("not measured"), never a
+    // misleading 0 that reads as "worst possible" (§7.22).
+    conversion_score: null,
     overall_score: effectiveOverallScore,
     tech_stack: analysis.techStack,
     design_analysis: analysis.design,
