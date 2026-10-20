@@ -66,6 +66,13 @@ describe("decodeHtmlBody charset handling (P-07)", () => {
   it("falls back to UTF-8 on an unknown charset label instead of throwing", () => {
     expect(decodeHtmlBody(new Uint8Array(Buffer.from("café", "utf-8")), "text/html; charset=x-bogus")).toBe("café");
   });
+
+  it("E-02: caps the bytes parsed when maxBytes is given", () => {
+    const big = new Uint8Array(Buffer.from("A".repeat(100), "ascii"));
+    expect(decodeHtmlBody(big, "text/html", 10)).toBe("AAAAAAAAAA");
+    // Under the cap, the whole body is returned unchanged.
+    expect(decodeHtmlBody(big, "text/html", 1000).length).toBe(100);
+  });
 });
 
 describe("parseRobotsContent", () => {

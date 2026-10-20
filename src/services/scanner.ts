@@ -20,6 +20,10 @@ function decodeStringRecord(
   return out;
 }
 
+/** Upper bound on HTML bytes we parse per page (E-02). Real pages are a tiny
+ * fraction of this; the cap only guards against pathological runaway documents. */
+const MAX_HTML_BYTES = 10 * 1024 * 1024; // 10 MB
+
 export class Scanner {
   private userAgent = USER_AGENT;
 
@@ -1135,8 +1139,10 @@ export class Scanner {
 
         // Read the raw bytes and decode with the page's declared charset (P-07).
         // response.text() assumes UTF-8, mangling windows-1252 / Shift_JIS pages.
+        // Parsing is capped at MAX_HTML_BYTES so a pathological page can't
+        // exhaust memory (E-02).
         const bodyBuf = new Uint8Array(await response.arrayBuffer());
-        const html = decodeHtmlBody(bodyBuf, result.content_type);
+        const html = decodeHtmlBody(bodyBuf, result.content_type, MAX_HTML_BYTES);
         clearTimeout(timeoutId);
         // Real load time: first byte through full body download. Everything
         // after this (HTML parsing, image HEADs, readability) is our analysis
@@ -1144,6 +1150,11 @@ export class Scanner {
         result.load_time_ms = Date.now() - fetchStart;
         // True transferred (decompressed) body size, independent of re-encoding.
         result.size_bytes = bodyBuf.byteLength;
+        if (bodyBuf.byteLength > MAX_HTML_BYTES) {
+          (result.warnings ??= []).push(
+            `HTML body ${(bodyBuf.byteLength / 1048576).toFixed(1)} MB exceeds the ${MAX_HTML_BYTES / 1048576} MB parse cap; analysed the first ${MAX_HTML_BYTES / 1048576} MB`,
+          );
+        }
 
         await this.processHtml(result, html, urlProcessor);
         result.scan_method = "http";

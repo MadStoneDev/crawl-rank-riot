@@ -75,7 +75,16 @@ function charsetFromContentType(contentType: string | undefined | null): string 
 export function decodeHtmlBody(
   buf: Uint8Array,
   contentTypeHeader?: string | null,
+  maxBytes?: number,
 ): string {
+  // Cap the bytes we parse (E-02): a pathological multi-hundred-MB document
+  // (runaway template, giant inlined data URI) must not exhaust memory. The
+  // head and the bulk of real content are well within any sane cap, and cheerio
+  // parses a truncated tail fine. size_bytes (reported by the caller) still
+  // reflects the full transferred length.
+  if (maxBytes != null && buf.byteLength > maxBytes) {
+    buf = buf.subarray(0, maxBytes);
+  }
   let charset = charsetFromContentType(contentTypeHeader);
   if (!charset) {
     // Peek the head as Latin-1 (every byte maps 1:1) to read a meta charset
