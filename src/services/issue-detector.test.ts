@@ -202,4 +202,10 @@ describe("analyzePageIssues — load-time method gating (PF-02)", () => {
   it("does NOT flag a fast HTTP page", () => {
     expect(types({ scan_method: "http", load_time_ms: 800 })).not.toContain("slow_page");
   });
+
+  it("PF-03: flags large_page_size only for HTTP-timed pages", () => {
+    const big = 4 * 1024 * 1024;
+    expect(types({ scan_method: "http", size_bytes: big })).toContain("large_page_size");
+    expect(types({ scan_method: "headless", size_bytes: big })).not.toContain("large_page_size");
+  });
 });

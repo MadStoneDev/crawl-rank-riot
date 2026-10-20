@@ -1204,8 +1204,17 @@ export class Scanner {
         // after this (HTML parsing, image HEADs, readability) is our analysis
         // and must not count toward the page's load time.
         result.load_time_ms = Date.now() - fetchStart;
-        // True transferred (decompressed) body size, independent of re-encoding.
-        result.size_bytes = bodyBuf.byteLength;
+        // Page weight = bytes actually transferred (E-04). Prefer the
+        // Content-Length header (the compressed download size the user pays
+        // for); fall back to the decompressed body length when it's absent
+        // (chunked responses). This is a real transfer measure, unlike the
+        // headless path's serialized rendered-DOM length — so the
+        // large_page_size check is HTTP-only (PF-03).
+        const contentLengthHeader = Number(response.headers.get("content-length"));
+        result.size_bytes =
+          Number.isFinite(contentLengthHeader) && contentLengthHeader > 0
+            ? contentLengthHeader
+            : bodyBuf.byteLength;
         if (bodyBuf.byteLength > MAX_HTML_BYTES) {
           (result.warnings ??= []).push(
             `HTML body ${(bodyBuf.byteLength / 1048576).toFixed(1)} MB exceeds the ${MAX_HTML_BYTES / 1048576} MB parse cap; analysed the first ${MAX_HTML_BYTES / 1048576} MB`,

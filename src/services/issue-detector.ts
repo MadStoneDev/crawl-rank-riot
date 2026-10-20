@@ -1002,8 +1002,11 @@ export function analyzePageIssues(
     }
   }
 
+  // Only HTTP-timed pages: size_bytes there is the transferred body weight,
+  // whereas the headless path reports the serialized rendered-DOM length, which
+  // isn't a comparable "page weight" and would over-flag (PF-03).
   const THREE_MB = 3 * 1024 * 1024;
-  if (result.size_bytes > THREE_MB) {
+  if (result.scan_method === "http" && result.size_bytes > THREE_MB) {
     const sizeMB = (result.size_bytes / (1024 * 1024)).toFixed(2);
     addIssue(
       "large_page_size",
