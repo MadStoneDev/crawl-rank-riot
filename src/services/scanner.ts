@@ -6,7 +6,7 @@ import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders,
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
-import { extractFromHtml, deriveCleanTitle, isHtmlContentType } from "./extract/parse-html";
+import { extractFromHtml, deriveCleanTitle, isHtmlContentType, decodeHtmlBody } from "./extract/parse-html";
 import { isSoft404 } from "./extract/soft404";
 
 /** Decode HTML entities in every value of a string record (OG / Twitter tags). */
@@ -1133,13 +1133,17 @@ export class Scanner {
           return result;
         }
 
-        const html = await response.text();
+        // Read the raw bytes and decode with the page's declared charset (P-07).
+        // response.text() assumes UTF-8, mangling windows-1252 / Shift_JIS pages.
+        const bodyBuf = new Uint8Array(await response.arrayBuffer());
+        const html = decodeHtmlBody(bodyBuf, result.content_type);
         clearTimeout(timeoutId);
         // Real load time: first byte through full body download. Everything
         // after this (HTML parsing, image HEADs, readability) is our analysis
         // and must not count toward the page's load time.
         result.load_time_ms = Date.now() - fetchStart;
-        result.size_bytes = new TextEncoder().encode(html).length;
+        // True transferred (decompressed) body size, independent of re-encoding.
+        result.size_bytes = bodyBuf.byteLength;
 
         await this.processHtml(result, html, urlProcessor);
         result.scan_method = "http";

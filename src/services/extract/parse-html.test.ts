@@ -6,6 +6,7 @@ import {
   deriveCleanTitle,
   checkHeadingOrder,
   isHtmlContentType,
+  decodeHtmlBody,
 } from "./parse-html";
 
 const BASE = "https://example.com/page";
@@ -33,6 +34,37 @@ describe("isHtmlContentType (E-03/S-02)", () => {
     expect(isHtmlContentType("")).toBe(false);
     expect(isHtmlContentType(null)).toBe(false);
     expect(isHtmlContentType(undefined)).toBe(false);
+  });
+});
+
+describe("decodeHtmlBody charset handling (P-07)", () => {
+  // 0x92 is a curly apostrophe (’ U+2019) in windows-1252, invalid in UTF-8.
+  const curlyByte = () => new Uint8Array([0x92]);
+
+  it("honours a windows-1252 charset from the Content-Type header", () => {
+    expect(decodeHtmlBody(curlyByte(), "text/html; charset=windows-1252")).toBe("’");
+  });
+
+  it("honours ISO-8859-1 (mapped to windows-1252 per WHATWG)", () => {
+    // 0xE9 = é in both ISO-8859-1 and windows-1252.
+    expect(decodeHtmlBody(new Uint8Array([0xe9]), "text/html; charset=iso-8859-1")).toBe("é");
+  });
+
+  it("falls back to a <meta charset> when the header says nothing", () => {
+    const bytes = Buffer.concat([
+      Buffer.from('<meta charset="windows-1252"><title>', "ascii"),
+      Buffer.from([0x92]),
+      Buffer.from("</title>", "ascii"),
+    ]);
+    expect(decodeHtmlBody(new Uint8Array(bytes), "text/html")).toContain("’");
+  });
+
+  it("defaults to UTF-8 when nothing is declared", () => {
+    expect(decodeHtmlBody(new Uint8Array(Buffer.from("café", "utf-8")))).toBe("café");
+  });
+
+  it("falls back to UTF-8 on an unknown charset label instead of throwing", () => {
+    expect(decodeHtmlBody(new Uint8Array(Buffer.from("café", "utf-8")), "text/html; charset=x-bogus")).toBe("café");
   });
 });
 

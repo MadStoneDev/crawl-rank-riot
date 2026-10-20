@@ -56,6 +56,49 @@ export function isHtmlContentType(contentType: string | undefined | null): boole
   return type === "text/html" || type === "application/xhtml+xml";
 }
 
+/** Pull the `charset=` label out of a Content-Type value, if present. */
+function charsetFromContentType(contentType: string | undefined | null): string | null {
+  if (!contentType) return null;
+  const m = /charset\s*=\s*["']?([^"';,\s]+)/i.exec(contentType);
+  return m ? m[1].trim() : null;
+}
+
+/**
+ * Decode a fetched HTML body to a string honouring its declared character set
+ * (P-07). `response.text()` always assumes UTF-8, so a page served as
+ * windows-1252 / ISO-8859-1 / Shift_JIS comes back as mojibake and every
+ * downstream check (title, keywords, readability) is corrupted. We read the
+ * raw bytes and decode with the charset from, in order: the Content-Type
+ * header, a `<meta charset>` / `<meta http-equiv>` in the first 1 KB, else
+ * UTF-8. An unknown/invalid label falls back to UTF-8 rather than throwing.
+ */
+export function decodeHtmlBody(
+  buf: Uint8Array,
+  contentTypeHeader?: string | null,
+): string {
+  let charset = charsetFromContentType(contentTypeHeader);
+  if (!charset) {
+    // Peek the head as Latin-1 (every byte maps 1:1) to read a meta charset
+    // without first guessing the encoding.
+    const head = new TextDecoder("latin1").decode(buf.subarray(0, 1024));
+    charset =
+      charsetFromContentType(
+        /<meta[^>]+http-equiv\s*=\s*["']?content-type["']?[^>]*>/i
+          .exec(head)?.[0],
+      ) ||
+      /<meta[^>]+charset\s*=\s*["']?([^"'\s/>]+)/i.exec(head)?.[1] ||
+      null;
+  }
+  const label = (charset || "utf-8").toLowerCase().trim();
+  try {
+    // TextDecoder maps iso-8859-1→windows-1252 etc. per the WHATWG Encoding
+    // standard; it throws RangeError on a label it doesn't know.
+    return new TextDecoder(label === "utf8" ? "utf-8" : label).decode(buf);
+  } catch {
+    return new TextDecoder("utf-8").decode(buf);
+  }
+}
+
 /** Parse a meta-robots / X-Robots-Tag directive list into noindex/nofollow. */
 export function parseRobotsContent(content: string | undefined | null): {
   noindex: boolean;
