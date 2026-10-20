@@ -407,8 +407,13 @@ export async function storeScanResults(
             // broken link (P0.4).
             isBroken = classifyLinkStatus(destResult.status) === "broken";
           } else {
-            httpStatus = 200;
+            // The destination has a page row (matched via the slash-variant map)
+            // but wasn't in THIS scan's results, so its current status is
+            // unknown — don't assume 200, which would mask a page that 404s now
+            // but was healthy last scan (L-05).
+            httpStatus = null;
             isBroken = false;
+            linkError = "unchecked";
           }
         } else {
           httpStatus = null;
