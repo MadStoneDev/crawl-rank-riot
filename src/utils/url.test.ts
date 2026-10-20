@@ -124,6 +124,29 @@ describe("UrlProcessor.normalize param folding", () => {
   });
 });
 
+describe("UrlProcessor.normalize scheme handling (U-01)", () => {
+  it("upgrades http→https for the project's own host when the project is https", () => {
+    const up = new UrlProcessor("https://blubookkeepers.com");
+    expect(up.normalize("http://blubookkeepers.com/about")).toBe(
+      "https://blubookkeepers.com/about",
+    );
+  });
+
+  it("preserves http for an external host (no blind upgrade)", () => {
+    const up = new UrlProcessor("https://blubookkeepers.com");
+    expect(up.normalize("http://partner.example/page")).toBe(
+      "http://partner.example/page",
+    );
+  });
+
+  it("does NOT force https on a genuinely http-only project", () => {
+    const up = new UrlProcessor("http://legacy-intranet.example");
+    expect(up.normalize("http://legacy-intranet.example/home")).toBe(
+      "http://legacy-intranet.example/home",
+    );
+  });
+});
+
 describe("UrlProcessor.shouldExclude — calendar feeds & event views", () => {
   const up = new UrlProcessor(BASE);
 

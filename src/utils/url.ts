@@ -523,8 +523,19 @@ export class UrlProcessor {
         urlObj.pathname = urlObj.pathname.slice(0, -1);
       }
 
-      // Ensure consistent protocol (prefer https)
-      if (urlObj.protocol === "http:") {
+      // U-01: only upgrade http→https when https is known to work for this host
+      // — i.e. the host is the project's own host and the project is being
+      // crawled over https (so https is confirmed to serve). Blindly rewriting
+      // every http link to https breaks genuinely http-only sites (every fetch
+      // fails → "no pages could be crawled") and makes an http page evaluate its
+      // mixed-content check as if it were https. For any other host, preserve
+      // the observed scheme; if a server redirects http→https the crawl follows
+      // it and records the final https URL anyway.
+      if (
+        urlObj.protocol === "http:" &&
+        this.baseUrl.startsWith("https://") &&
+        this.isSameDomain(urlObj.hostname, this.baseDomain)
+      ) {
         urlObj.protocol = "https:";
       }
 
