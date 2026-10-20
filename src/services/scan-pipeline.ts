@@ -1,4 +1,4 @@
-import { WebCrawler } from "./crawler";
+import { WebCrawler, describePartialCrawl } from "./crawler";
 import { storeScanResults } from "./database";
 import { getSupabaseServiceClient } from "./database/client";
 import { detectAndStoreIssues, computeCanonicalisedVariants, DetectedIssue } from "./issue-detector";
@@ -574,12 +574,23 @@ export async function runScanPipeline(
       .eq("id", scanId)
       .single();
 
+    // Partial-crawl status (PL-03): a crawl that stopped on the page cap or a
+    // timeout only sampled part of the site, so the headline score/trend point
+    // must be caveated in the UI rather than read as the whole site's health.
+    const partialCrawl = describePartialCrawl({
+      crawlCompleted: crawler.crawlCompleted,
+      crawlStopReason: crawler.crawlStopReason,
+      queueRemainingAtStop: crawler.queueRemainingAtStop,
+      pagesCrawled: scanResults.length,
+    });
+
     const mergedStats = {
       ...(typeof existingScan?.summary_stats === "object" && existingScan.summary_stats !== null
         ? (existingScan.summary_stats as Record<string, unknown>)
         : {}),
       ...(siteLevelData && { site_level_data: siteLevelData }),
       ...(botProtection && { bot_protection: botProtection }),
+      partial_crawl: partialCrawl,
       ...summaryStatsPatch,
     };
 

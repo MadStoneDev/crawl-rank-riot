@@ -30,6 +30,33 @@ export function effectiveConcurrency(
   return Math.max(1, maxConcurrent);
 }
 
+export interface PartialCrawlStatus {
+  partial: boolean;
+  /** "complete" | "max_pages" | "timeout". */
+  reason: string;
+  pages_crawled: number;
+  queue_remaining: number;
+}
+
+/**
+ * Describe whether a crawl covered the site or stopped short (PL-03), so the
+ * pipeline can mark a timed-out / page-capped scan "partial" and the UI can
+ * caveat a headline score computed from only a fraction of the pages.
+ */
+export function describePartialCrawl(c: {
+  crawlCompleted: boolean;
+  crawlStopReason: string;
+  queueRemainingAtStop: number;
+  pagesCrawled: number;
+}): PartialCrawlStatus {
+  return {
+    partial: !c.crawlCompleted,
+    reason: c.crawlStopReason,
+    pages_crawled: c.pagesCrawled,
+    queue_remaining: c.queueRemainingAtStop,
+  };
+}
+
 export class WebCrawler {
   private scanner: Scanner;
   private urlProcessor: UrlProcessor;
@@ -41,6 +68,11 @@ export class WebCrawler {
   private maxConcurrentRequests: number = 3;
   private crawlMode: "seo" | "audit" = "seo";
   public crawlCompleted = false;
+  // Why the crawl stopped and how much was left unvisited (PL-03). Lets the
+  // pipeline mark a timed-out / page-capped crawl "partial" so a score computed
+  // from a fraction of the site isn't presented as the whole site's health.
+  public crawlStopReason: "complete" | "max_pages" | "timeout" = "complete";
+  public queueRemainingAtStop = 0;
   // Bot-protection tracking — blocked pages are dropped from results, so these
   // counters are the only signal that the crawl was challenged
   public botBlockedCount = 0;
@@ -426,18 +458,22 @@ export class WebCrawler {
     // Log why the loop exited
     const elapsed = Date.now() - startTime;
     const blocked = this.visited.size - this.results.length;
+    this.queueRemainingAtStop = this.queue.length;
     if (this.queue.length === 0) {
       this.crawlCompleted = true;
+      this.crawlStopReason = "complete";
       this.logger?.info("crawl", `Crawl finished: queue empty after ${Math.round(elapsed / 1000)}s`, {
         pages_found: this.results.length, pages_blocked: blocked, elapsed_s: Math.round(elapsed / 1000),
       });
     } else if (this.results.length >= maxPages) {
       this.crawlCompleted = false;
+      this.crawlStopReason = "max_pages";
       this.logger?.warn("crawl", `Crawl stopped: reached maxPages limit (${maxPages})`, {
         pages_found: this.results.length, queue_remaining: this.queue.length, elapsed_s: Math.round(elapsed / 1000),
       });
     } else {
       this.crawlCompleted = false;
+      this.crawlStopReason = "timeout";
       this.logger?.warn("crawl", `Crawl stopped: timeout reached (${Math.round(timeout / 1000)}s)`, {
         pages_found: this.results.length, queue_remaining: this.queue.length, elapsed_s: Math.round(elapsed / 1000),
       });
