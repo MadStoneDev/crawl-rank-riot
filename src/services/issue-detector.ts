@@ -1367,6 +1367,17 @@ export function analyzePageIssues(
     }
   }
 
+  // Redirect budget exhausted / broken redirect: the URL never resolved to a
+  // real page, so it can't be crawled or indexed (R-03/S-03).
+  if (result.redirect_limit_hit) {
+    addIssue(
+      "too_many_redirects",
+      "high",
+      "URL never resolved to a page — too many redirects, or a redirect with no destination. Search engines will give up here too.",
+      { url: result.url, chain: result.redirect_chain, hops: result.redirect_hops },
+    );
+  }
+
   // (canonical mismatch is reported once, above, as `canonical_mismatch`;
   // the former `canonical_not_self` fired on the identical condition and has
   // been removed to stop double-counting the same issue.)

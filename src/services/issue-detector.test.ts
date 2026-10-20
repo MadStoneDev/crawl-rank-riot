@@ -134,6 +134,14 @@ describe("analyzePageIssues — temporary redirects (R-01)", () => {
   it("does NOT flag a page that was not redirected", () => {
     expect(types({})).not.toContain("temporary_redirect");
   });
+
+  it("R-03/S-03: flags too_many_redirects when the budget was exhausted", () => {
+    expect(types({ redirect_limit_hit: true })).toContain("too_many_redirects");
+  });
+
+  it("does NOT flag too_many_redirects normally", () => {
+    expect(types({})).not.toContain("too_many_redirects");
+  });
 });
 
 describe("analyzePageIssues — canonical & structured-data signals", () => {

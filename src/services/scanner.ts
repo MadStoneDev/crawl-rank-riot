@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { decodeHTML } from "entities";
 import { ScanResult } from "../types";
-import { UrlProcessor, isPublicUrl, isSelfCanonical } from "../utils/url";
+import { UrlProcessor, isPublicUrl, isSelfCanonical, normalizeForSelfCompare } from "../utils/url";
 import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders, detectPlatformFromHtml, platformNeedsHeadless } from "../utils/browser";
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
@@ -1076,14 +1076,19 @@ export class Scanner {
         const fetchStart = Date.now();
 
         const seenUrls = new Set<string>();
+        let loopDetected = false;
 
         for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
-          if (seenUrls.has(currentUrl)) {
+          // Key on a normalised form so a slash/scheme-variant cycle
+          // (A → A/ → A …) is caught as a loop, not run to the hop budget (R-04).
+          const seenKey = normalizeForSelfCompare(currentUrl) ?? currentUrl;
+          if (seenUrls.has(seenKey)) {
             // Redirect loop detected — record it and break
             result.redirect_chain = [...redirectChain, currentUrl];
+            loopDetected = true;
             break;
           }
-          seenUrls.add(currentUrl);
+          seenUrls.add(seenKey);
 
           response = await proxyFetch(currentUrl, {
             headers: {
@@ -1124,6 +1129,13 @@ export class Scanner {
         if (!response) {
           clearTimeout(timeoutId);
           throw new Error("No response received");
+        }
+
+        // Still a 3xx after the loop (and not a detected loop): either the hop
+        // budget was exhausted or a redirect had no Location. Flag it rather
+        // than silently storing a bare redirect as if it were the page (R-03/S-03).
+        if (!loopDetected && response.status >= 300 && response.status < 400) {
+          result.redirect_limit_hit = true;
         }
 
         // Store the redirect chain (only if there were redirects)

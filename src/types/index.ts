@@ -113,6 +113,9 @@ export interface ScanResult {
   // permanent (301/308) move can be told from a temporary (302/303/307) one
   // (R-01). redirect_chain keeps the bare URL list for existing consumers.
   redirect_hops?: Array<{ from: string; status: number; to: string }>;
+  // The response was still a 3xx after the redirect budget was exhausted (or a
+  // redirect had no Location) — never resolved to a real page (R-03/S-03).
+  redirect_limit_hit?: boolean;
   content_type: string;
   // True when the response is a non-HTML resource (PDF, image, feed, JSON …)
   // that returned 2xx (S-02). It is tracked for broken-link/redirect purposes
