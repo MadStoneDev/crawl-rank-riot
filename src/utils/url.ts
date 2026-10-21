@@ -49,7 +49,11 @@ function isPrivateIP(ip: string): boolean {
 export async function isPublicUrl(url: string): Promise<boolean> {
   try {
     const urlObj = new URL(url);
-    const hostname = urlObj.hostname;
+    // URL keeps IPv6 literals in brackets (e.g. "[::1]"); strip them so the
+    // address reaches isIPv6/isPrivateIP instead of falling through to a DNS
+    // lookup that happens to fail. Without this a private IPv6 literal was only
+    // blocked incidentally, and a public one was wrongly blocked.
+    const hostname = urlObj.hostname.replace(/^\[(.*)\]$/, "$1");
 
     // If the hostname is already an IP address, check it directly
     if (isIPv4(hostname) || isIPv6(hostname)) {

@@ -2,11 +2,43 @@ import { describe, it, expect } from "vitest";
 import {
   classifyPageType,
   isContentPage,
+  isPublicUrl,
   isSelfCanonical,
   UrlProcessor,
 } from "./url";
 
 const BASE = "https://blubookkeepers.com";
+
+describe("isPublicUrl — default SSRF guard (production strictness)", () => {
+  // These hosts are IP literals, so the guard checks them directly without DNS
+  // and the result is deterministic. This is the guard every production scan
+  // uses; the injectable guard in the Scanner only ever loosens it inside tests.
+  it("rejects IPv4 loopback", async () => {
+    expect(await isPublicUrl("http://127.0.0.1/")).toBe(false);
+    expect(await isPublicUrl("http://127.0.0.1:8080/x")).toBe(false);
+  });
+
+  it("rejects IPv4 private ranges", async () => {
+    expect(await isPublicUrl("http://10.0.0.1/")).toBe(false);
+    expect(await isPublicUrl("http://172.16.5.4/")).toBe(false);
+    expect(await isPublicUrl("http://192.168.1.1/")).toBe(false);
+  });
+
+  it("rejects IPv4 link-local, unspecified and 0.0.0.0/8", async () => {
+    expect(await isPublicUrl("http://169.254.169.254/")).toBe(false); // cloud metadata
+    expect(await isPublicUrl("http://0.0.0.0/")).toBe(false);
+  });
+
+  it("rejects IPv6 loopback, unique-local and link-local", async () => {
+    expect(await isPublicUrl("http://[::1]/")).toBe(false);
+    expect(await isPublicUrl("http://[fd00::1]/")).toBe(false);
+    expect(await isPublicUrl("http://[fe80::1]/")).toBe(false);
+  });
+
+  it("allows a public IP literal", async () => {
+    expect(await isPublicUrl("http://93.184.216.34/")).toBe(true); // example.com
+  });
+});
 
 describe("isSelfCanonical (P0.3)", () => {
   it("treats a relative canonical that resolves to the page as self", () => {
