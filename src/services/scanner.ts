@@ -38,9 +38,13 @@ const SPA_SHELL_WORD_COUNT = 200;
  * re-fetched with a headless browser. Pure so it is unit-testable (J-01).
  */
 export function needsHeadlessEscalation(
-  result: Pick<ScanResult, "title" | "content_type" | "content_length" | "word_count">,
+  result: Pick<ScanResult, "title" | "content_type" | "content_length" | "word_count" | "is_non_html">,
   platform: string | null,
 ): boolean {
+  // A non-HTML resource (PDF, feed, image …) is tracked, not rendered. It has
+  // no title/content by design, so never escalate it to headless (S-02).
+  if (result.is_non_html) return false;
+
   // No title at all — likely JS-rendered SPA.
   if (!result.title || result.title.length < 3) return true;
 
@@ -62,8 +66,35 @@ export function needsHeadlessEscalation(
   return false;
 }
 
+/** The SSRF guard used before every fetch. Production always uses the strict
+ * `isPublicUrl`; only tests inject a permissive one (see ScannerDeps). */
+export type UrlGuard = (url: string) => Promise<boolean>;
+/** The network fetch used for HTTP scans and image probes. Defaults to the
+ * real `proxyFetch`; injectable for fetch-layer integration tests. */
+export type FetchImpl = typeof proxyFetch;
+
+/**
+ * Injectable dependencies for the Scanner. Both default to the strict
+ * production implementations, so a Scanner constructed the normal way
+ * (`new Scanner()`) behaves exactly as before and can never relax the SSRF
+ * guard. Only test code passes overrides — e.g. a guard that permits a local
+ * fixture server on 127.0.0.1. There is deliberately no env var or runtime flag
+ * that swaps these out, so no production code path can loosen the guard.
+ */
+export interface ScannerDeps {
+  urlGuard?: UrlGuard;
+  fetchImpl?: FetchImpl;
+}
+
 export class Scanner {
   private userAgent = USER_AGENT;
+  private urlGuard: UrlGuard;
+  private fetchImpl: FetchImpl;
+
+  constructor(deps: ScannerDeps = {}) {
+    this.urlGuard = deps.urlGuard ?? isPublicUrl;
+    this.fetchImpl = deps.fetchImpl ?? proxyFetch;
+  }
 
   async scan(
     url: string,
@@ -71,7 +102,7 @@ export class Scanner {
     forceHeadless: boolean = false,
   ): Promise<ScanResult> {
     // SSRF protection: block requests to private/reserved IP ranges
-    const isSafe = await isPublicUrl(url);
+    const isSafe = await this.urlGuard(url);
     if (!isSafe) {
       const result = this.createBaseScanResult(url, depth);
       result.errors = [`Blocked: URL resolves to a private or reserved IP address`];
@@ -1090,7 +1121,7 @@ export class Scanner {
           }
           seenUrls.add(seenKey);
 
-          response = await proxyFetch(currentUrl, {
+          response = await this.fetchImpl(currentUrl, {
             headers: {
               "User-Agent": this.userAgent,
               Accept:
@@ -1674,13 +1705,13 @@ export class Scanner {
         // SSRF guard: img.src comes from the scanned page, so it could point at
         // a private/internal host. Only HEAD public URLs (same guard the primary
         // fetch uses).
-        if (!(await isPublicUrl(img.src))) {
+        if (!(await this.urlGuard(img.src))) {
           img.file_size_unknown = true;
           return;
         }
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
-        const resp = await proxyFetch(img.src, {
+        const resp = await this.fetchImpl(img.src, {
           method: "HEAD",
           signal: controller.signal,
           headers: {

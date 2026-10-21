@@ -35,4 +35,13 @@ describe("needsHeadlessEscalation (J-01)", () => {
   it("does NOT escalate a client-rendered platform that already returned substantial content", () => {
     expect(needsHeadlessEscalation(html({ word_count: 600 }), "shopify")).toBe(false);
   });
+
+  it("S-02: never escalates a non-HTML resource, even with no title", () => {
+    expect(
+      needsHeadlessEscalation(
+        html({ is_non_html: true, title: "", content_length: 0, word_count: 0 }),
+        "spa-generic",
+      ),
+    ).toBe(false);
+  });
 });
