@@ -1,0 +1,37 @@
+HTTP/2 200 
+date: Wed, 21 Oct 2026 03:24:24 GMT
+content-type: text/html; charset=utf-8
+x-download-options: noopen
+product-filtering-backend: bitset_roaring
+cf-cache-status: DYNAMIC
+set-cookie: localization=AU; path=/; expires=Thu, 21 Oct 2027 03:24:24 GMT; SameSite=Lax
+set-cookie: cart_currency=AUD; path=/; expires=Wed, 04 Nov 2026 03:24:24 GMT; SameSite=Lax
+set-cookie: _shopify_essential=:AaFcfRc9AAEAzMVA_4pG5Kb4na3eIi8gm75CwwgQ1Ue5hTOSrSe5ql9_14elRH07jcNxH7LmrUXCd3qsbV-XzLFarhg:; Max-Age=31536000; Path=/; HttpOnly; Secure; Priority=High; SameSite=Lax
+set-cookie: _shopify_analytics=:AaFcfRjyAAEAAznKRoQzUD9P_YKUTX_DIONCn0TCXgNtV5My3Kp9c-AUYMjsWt5WZxtI2TQjgn_llOGid2jF9DlR2BE:; Max-Age=31536000; Path=/; HttpOnly; Secure; Priority=High; SameSite=Lax
+set-cookie: _shopify_marketing=:AaFcfRjzAAEAuWhSg8H6HjBKDxV28bzmVKazknc1WIlQPMEhrHf0x1v5UJJH3MTmFtjuTW_Qz4XCp7bVEmuHWWcYIEk:; Max-Age=31536000; Path=/; HttpOnly; Secure; Priority=High; SameSite=Lax
+link: <https://cdn.shopify.com>; rel="preconnect", <https://cdn.shopify.com>; rel="preconnect"; crossorigin, <//goingdark.com.au/cdn/shop/t/2/assets/theme.css?v=27607179378429087781783397054>; as="style"; rel="preload", <https://cdn.shopify.com/extensions/01a15a21-bcc5-7909-89a6-bd095667b049/timesact-45/assets/timesact.css>; as="style"; rel="preload", <https://cdn.shopify.com/extensions/019f89d1-af7e-761d-bab2-d577df68afd8/google-reviews-2/assets/widget.css>; as="style"; rel="preload", <https://goingdark.com.au/cdn/shopifycloud/portable-wallets/latest/accelerated-checkout-backwards-compat.css>; as="style"; rel="preload"; crossorigin, <//goingdark.com.au/cdn/shop/files/Going_Dark_Logo.png?v=1750821070&width=360>; as="image"; rel="preload"; imagesrcset="//goingdark.com.au/cdn/shop/files/Going_Dark_Logo.png?v=1750821070&width=100 100w, //goingdark.com.au/cdn/shop/files/Going_Dark_Logo.png?v=1750821070&width=200 200w"; imagesizes="100px", <//goingdark.com.au/cdn/shop/files/Going_Dark_Logo.png?v=1750821070&width=360>; as="image"; rel="preload"; imagesrcset="//goingdark.com.au/cdn/shop/files/Going_Dark_Logo.png?v=1750821070&width=70 70w, //goingdark.com.au/cdn/shop/files/Going_Dark_Logo.png?v=1750821070&width=140 140w"; imagesizes="70px", </.well-known/ucp>; rel="ucp"; version="2026-08-25"
+x-request-id: 0802592a-f817-4fec-9735-3b08d42103e0-1792553064
+etag: W/"page_cache:76607946992:IndexController:d242b650ca7f685e1c051e846fce0df0:1ae2ca71a8ae874e1af46fa366cfb280"
+nel: {"report_to":"cf-nel","success_fraction":0.01,"max_age":604800}
+shopify-complexity-score: 4500
+shopify-complexity-score-v2: 450
+x-frame-options: DENY
+content-security-policy: block-all-mixed-content; frame-ancestors 'none'; upgrade-insecure-requests;
+strict-transport-security: max-age=7889238
+x-permitted-cross-domain-policies: none
+vary: Accept
+vary: accept-encoding
+cdn-cache-control: no-cache, no-store
+content-language: en-AU
+accept-ch: Sec-CH-Viewport-Width
+cache-control: private, max-age=0, must-revalidate
+powered-by: Shopify
+server-timing: processing;dur=461;desc="gc:10", db;dur=85, db_async;dur=130.687, render;dur=143, asn;desc="136557", edge;desc="BNE", country;desc="AU", theme;desc="152973836528", pageType;desc="index", servedBy;desc="xfpv", requestID;desc="0802592a-f817-4fec-9735-3b08d42103e0-1792553064", _y;desc="30002ebf-7c0f-45fc-b38a-6269f3419369", _s;desc="8124f4e1-7987-4a67-9dcd-e5db695e6714", _cmp;desc="3.AMPS_AUQLD_f_f_8UzVdAFEQaqOGVO7v1VlMA", _ye;desc="1824110664", _se;desc="1792554864", compressionLevel;desc="5", compressionTime;dur=14.756
+x-dc: gcp-australia-southeast2,gcp-asia-southeast1,gcp-asia-southeast1
+x-xss-protection: 1; mode=block
+alt-svc: h3=":443"; ma=86400
+server: cloudflare
+report-to: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=Su5At01fLZ80%2Fy2S7HOUBYugV9iZut%2FjBuCChaf6o8cNv0wf6ovXMwlxgzmN%2Fb85aGYk2%2Bi0X8BoGYcuX9CpV2FqgThTG%2BXO8QkdJ%2Fh6Lba8DbxFnzO4mgWKPCutfPPpcPk%3D"}]}
+x-content-type-options: nosniff
+cf-ray: a4dd262aaa30d710-BNE
+
