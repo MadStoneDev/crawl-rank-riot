@@ -204,6 +204,56 @@ export async function seedScanScores(scanId: string, projectId: string): Promise
   created.scanScores.push(data.id);
 }
 
+// Untyped accessor for the Stage 4 tables (absent from database.types.ts until
+// the migration is applied + types regenerated).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function tbl(name: string): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (svc() as any).from(name);
+}
+
+/** Seed one api_job_pages row (for exercising the pages endpoints directly). */
+export async function seedJobPage(opts: {
+  jobId: string;
+  url: string;
+  httpStatus?: number;
+  data?: Record<string, unknown>;
+  content?: string | null;
+  modules?: Record<string, unknown>;
+}): Promise<string> {
+  const { data, error } = await tbl("api_job_pages")
+    .insert({
+      job_id: opts.jobId,
+      url: opts.url,
+      http_status: opts.httpStatus ?? 200,
+      data: opts.data ?? { url: opts.url, title: "Seeded", word_count: 100 },
+      content: opts.content ?? null,
+      modules: opts.modules ?? {},
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`seedJobPage failed: ${error?.message}`);
+  return data.id as string;
+}
+
+/** Count api_job_pages rows for a job (for pipeline-snapshot assertions). */
+export async function jobPagesCount(jobId: string): Promise<number> {
+  const { count } = await tbl("api_job_pages")
+    .select("id", { count: "exact", head: true })
+    .eq("job_id", jobId);
+  return count ?? 0;
+}
+
+/** Fetch one api_job_pages row (with modules + content) for assertions. */
+export async function getJobPage(jobId: string, url: string): Promise<Record<string, unknown> | null> {
+  const { data } = await tbl("api_job_pages")
+    .select("id, url, http_status, data, content, modules")
+    .eq("job_id", jobId)
+    .eq("url", url)
+    .maybeSingle();
+  return (data as Record<string, unknown>) ?? null;
+}
+
 /** Read a scan's status directly (for asserting cancel / background effects). */
 export async function scanStatus(scanId: string): Promise<string | null> {
   const { data } = await svc().from("scans").select("status").eq("id", scanId).maybeSingle();
@@ -224,13 +274,22 @@ export async function bumpUsage(apiKeyId: string, requests: number, jobs: number
 
 export async function cleanup(): Promise<void> {
   const s = svc();
+  // Include projects the API created for our users (e.g. POST /api/v1/projects),
+  // not just those the seed helpers tracked.
+  const projectIds = new Set(created.projects);
+  for (const uid of created.users) {
+    const { data } = await s.from("projects").select("id").eq("user_id", uid);
+    for (const p of (data ?? []) as Array<{ id: string }>) projectIds.add(p.id);
+  }
   // Delete every child row for our projects by project_id — this also sweeps up
   // rows the API itself created (e.g. a scan started by POST /jobs), not just
   // what the seed helpers inserted.
-  for (const pid of created.projects) {
+  for (const pid of projectIds) {
     await s.from("issues").delete().eq("project_id", pid);
     await s.from("scan_scores").delete().eq("project_id", pid);
+    // Deleting api_jobs cascades api_job_pages; drop api_projects explicitly.
     await s.from("api_jobs").delete().eq("project_id", pid);
+    await tbl("api_projects").delete().eq("project_id", pid);
     await s.from("pages").delete().eq("project_id", pid);
     await s.from("scans").delete().eq("project_id", pid);
   }
@@ -239,7 +298,7 @@ export async function cleanup(): Promise<void> {
     await s.from("api_jobs").delete().eq("api_key_id", kid);
   }
   if (created.apiKeys.length) await s.from("api_keys").delete().in("id", created.apiKeys);
-  if (created.projects.length) await s.from("projects").delete().in("id", created.projects);
+  if (projectIds.size) await s.from("projects").delete().in("id", [...projectIds]);
   for (const id of created.users) {
     await s.auth.admin.deleteUser(id).catch(() => {});
   }
