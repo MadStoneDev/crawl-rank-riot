@@ -9,7 +9,6 @@ import { runScanPipeline, ScanMode } from "../../services/scan-pipeline";
 import { requestCancel } from "../../services/scan-cancellation";
 import { parseProjectSettings } from "../../utils/project-settings";
 import { ApiKeyRequest, requireScope } from "../../middleware/api-key-auth";
-import { v1Db } from "../../services/api/v1/db";
 import { recordUsage, getCurrentUsage } from "../../services/api/v1/usage";
 import { sendV1, sendV1Error } from "../../services/api/v1/respond";
 import {
@@ -55,7 +54,7 @@ function clampOptions(type: ScanMode, raw: Record<string, unknown>, projectSetti
 
 /** Load the job row and confirm it belongs to the calling key. */
 async function loadOwnedJob(req: ApiKeyRequest, jobId: string): Promise<JobRow & { scan_id: string | null } | null> {
-  const { data } = await v1Db()
+  const { data } = await getSupabaseServiceClient()
     .from("api_jobs")
     .select("id, type, project_id, created_at, scan_id, api_key_id")
     .eq("id", jobId)
@@ -136,7 +135,7 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
     const projectSettings = parseProjectSettings(project.settings, project.url);
     const options = clampOptions(type, req.body?.options ?? {}, projectSettings);
 
-    const { data: job, error: jobError } = await v1Db()
+    const { data: job, error: jobError } = await getSupabaseServiceClient()
       .from("api_jobs")
       .insert({
         api_key_id: req.apiKey!.id,
@@ -177,7 +176,7 @@ router.get("/jobs", requireScope("jobs:read"), async (req: ApiKeyRequest, res: R
   try {
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 25, 100));
     const offset = Math.max(0, Number(req.query.offset) || 0);
-    const { data: jobs } = await v1Db()
+    const { data: jobs } = await getSupabaseServiceClient()
       .from("api_jobs")
       .select("id, type, project_id, created_at, scan_id")
       .eq("api_key_id", req.apiKey!.id)

@@ -9,7 +9,7 @@
 // service client) so the crypto/scope/quota logic is unit-testable without a DB.
 
 import crypto from "crypto";
-import { v1Db } from "./db";
+import { getSupabaseServiceClient } from "../../database/client";
 
 export type ApiScope = "jobs:read" | "jobs:write";
 export const API_SCOPES: ApiScope[] = ["jobs:read", "jobs:write"];
@@ -99,7 +99,7 @@ export async function verifyApiKey(
 export function supabaseApiKeyStore(): ApiKeyStore {
   return {
     async findByPrefix(prefix: string): Promise<ApiKeyRecord | null> {
-      const { data, error } = await v1Db()
+      const { data, error } = await getSupabaseServiceClient()
         .from("api_keys")
         .select("id, user_id, key_hash, scopes, rate_limit_per_min, monthly_quota, status")
         .eq("key_prefix", prefix)
@@ -108,7 +108,7 @@ export function supabaseApiKeyStore(): ApiKeyStore {
       return data as ApiKeyRecord;
     },
     async touchLastUsed(id: string): Promise<void> {
-      await v1Db()
+      await getSupabaseServiceClient()
         .from("api_keys")
         .update({ last_used_at: new Date().toISOString() })
         .eq("id", id);

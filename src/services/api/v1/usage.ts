@@ -6,7 +6,7 @@
 // UsageStore port so the month math is unit-testable without a DB. All metering
 // is best-effort: a metering failure must never fail the API request.
 
-import { v1Db } from "./db";
+import { getSupabaseServiceClient } from "../../database/client";
 
 export interface MonthUsage {
   requests: number;
@@ -67,7 +67,7 @@ export async function getCurrentUsage(
 export function supabaseUsageStore(): UsageStore {
   return {
     async increment(apiKeyId, day, requests, jobs): Promise<void> {
-      await v1Db().rpc("increment_api_key_usage", {
+      await getSupabaseServiceClient().rpc("increment_api_key_usage", {
         p_api_key_id: apiKeyId,
         p_day: day,
         p_requests: requests,
@@ -75,7 +75,7 @@ export function supabaseUsageStore(): UsageStore {
       });
     },
     async monthTotals(apiKeyId, monthStartInclusive, nextMonthExclusive): Promise<MonthUsage> {
-      const { data } = await v1Db()
+      const { data } = await getSupabaseServiceClient()
         .from("api_key_usage")
         .select("requests, jobs_created")
         .eq("api_key_id", apiKeyId)
