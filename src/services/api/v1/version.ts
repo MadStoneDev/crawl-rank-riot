@@ -7,4 +7,6 @@
 // both so a client (Vanward) can assert what it is parsing.
 
 export const API_VERSION = "v1" as const;
-export const SCHEMA_VERSION = "1.0.0" as const;
+// 1.1.0 (Stage 4): additive — projects, job scope + modules + attribution, and
+// the per-job pages endpoints. All 1.0.0 fields are unchanged.
+export const SCHEMA_VERSION = "1.1.0" as const;

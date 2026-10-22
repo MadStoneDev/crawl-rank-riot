@@ -32,6 +32,16 @@ export type V1JobStatus =
   | "completed"
   | "failed"
   | "cancelled";
+/** Crawl scope (Stage 4). "site" is the default full crawl. */
+export type V1JobScope = "site" | "page" | "urls";
+
+/** Attribution carried on jobs and projects (Stage 4). */
+export interface V1Attribution {
+  /** Caller's own identifier for cross-referencing. */
+  external_ref: string | null;
+  /** Small caller-supplied JSON blob, echoed back on reads. */
+  metadata: Record<string, unknown>;
+}
 
 /** A scan exposed as an API job. */
 export interface V1Job {
@@ -39,7 +49,12 @@ export interface V1Job {
   id: string;
   type: V1JobType;
   status: V1JobStatus;
+  scope: V1JobScope;
+  /** Modules this job ran, or null for the full default pipeline (Stage 4). */
+  modules: string[] | null;
   project_id: string;
+  external_ref: string | null;
+  metadata: Record<string, unknown>;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -56,7 +71,81 @@ export interface V1Job {
     self: string;
     report: string;
     issues: string;
+    pages: string;
   };
+}
+
+/** A project (site) managed through the API (Stage 4). */
+export interface V1Project {
+  object: "project";
+  id: string;
+  domain: string;
+  name: string;
+  url: string;
+  external_ref: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface V1ProjectList {
+  object: "list";
+  items: V1Project[];
+  page: { limit: number; offset: number; has_more: boolean };
+}
+
+/** tech_fingerprint / business_info outputs for a page, when those modules ran. */
+export interface V1PageModules {
+  tech_fingerprint?: unknown;
+  business_info?: unknown;
+}
+
+/** The standard extracted fields for a page (Stage 4). No heavy body text. */
+export interface V1PageData {
+  url: string;
+  http_status: number | null;
+  title: string | null;
+  meta_description: string | null;
+  canonical_url: string | null;
+  is_indexable: boolean | null;
+  word_count: number | null;
+  content_length: number | null;
+  headings: { h1: string[]; h2: string[]; h3: string[]; h4: string[]; h5: string[]; h6: string[] };
+  schema_types: string[];
+  structured_data: unknown[];
+  open_graph: Record<string, string>;
+  twitter_card: Record<string, string>;
+  images: unknown[];
+  internal_links: unknown[];
+  external_links: unknown[];
+  detected_platform: string | null;
+  scan_method: string | null;
+}
+
+/** A page in a job's pages list (compact summary + module outputs). */
+export interface V1Page {
+  object: "page";
+  id: string;
+  url: string;
+  http_status: number | null;
+  title: string | null;
+  word_count: number | null;
+  modules: V1PageModules;
+}
+
+/** A single page's full extracted data (+ content only when requested). */
+export interface V1PageDetail extends V1PageData {
+  object: "page";
+  id: string;
+  modules: V1PageModules;
+  /** Cleaned main text; present only when ?include=content was requested. */
+  content?: string | null;
+}
+
+export interface V1PageList {
+  object: "list";
+  job_id: string;
+  items: V1Page[];
+  page: { limit: number; offset: number; total: number; has_more: boolean };
 }
 
 /** One scored category in a report. */

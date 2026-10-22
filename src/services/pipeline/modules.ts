@@ -9,6 +9,10 @@ import { checkAndStoreBacklinks } from "../backlink-checker";
 import { analyzeSiteLevelData } from "../site-analyzer";
 import { detectSiteLevelIssues } from "../site-issue-detector";
 import { detectBotBlock } from "../../utils/bot-block";
+import { fingerprintTech, rollupTech } from "../extract/tech-fingerprint";
+import { extractBusinessInfo, hasBusinessFacts } from "../extract/business-info";
+import { serializePageData } from "../api/v1/serializers";
+import { stage4Db } from "../api/v1/stage4-db";
 import type { ScanModule } from "./types";
 
 /** 2. Store pages/links (guarded against wiping data on a partial crawl). */
@@ -101,6 +105,126 @@ export const issueDetectionModule: ScanModule = {
     logger.info("analysis", "Detecting issues...");
     ctx.issuesFound = await detectAndStoreIssues(scanResults, projectId, scanId, siteIssues);
     logger.info("analysis", `Found ${ctx.issuesFound} issues (${ctx.siteIssuesFound} site-level)`);
+  },
+};
+
+/**
+ * Stage 4: tech_fingerprint. Derive each page's technology (platform,
+ * analytics, booking/CRM/payment/email tools, frameworks, libraries) from its
+ * real loaded assets + external links, stash per-URL for the snapshot module,
+ * and compute a site-level rollup for the job's `result`.
+ */
+export const techFingerprintModule: ScanModule = {
+  name: "tech_fingerprint",
+  async run(ctx) {
+    const fps = ctx.scanResults.map((r) => {
+      const fp = fingerprintTech(r);
+      const entry = ctx.pageModules.get(r.url) ?? {};
+      entry.tech_fingerprint = fp;
+      ctx.pageModules.set(r.url, entry);
+      return fp;
+    });
+    ctx.techRollup = rollupTech(fps);
+    ctx.logger.info("analysis", `tech_fingerprint: ${ctx.scanResults.length} pages`);
+  },
+};
+
+/**
+ * Stage 4: business_info. Extract NAP, opening hours, service areas and social
+ * profiles from each page (JSON-LD + contact links + social externals), stash
+ * per-URL for the snapshot module. Facts are tied to the page's source_url.
+ */
+export const businessInfoModule: ScanModule = {
+  name: "business_info",
+  async run(ctx) {
+    let found = 0;
+    for (const r of ctx.scanResults) {
+      const info = extractBusinessInfo(r);
+      if (!hasBusinessFacts(info)) continue;
+      const entry = ctx.pageModules.get(r.url) ?? {};
+      entry.business_info = info;
+      ctx.pageModules.set(r.url, entry);
+      found++;
+    }
+    ctx.logger.info("analysis", `business_info: facts on ${found}/${ctx.scanResults.length} pages`);
+  },
+};
+
+/**
+ * Stage 4: per-job page snapshot. Writes one api_job_pages row per crawled page
+ * (standard extracted fields in `data`, cleaned main text in `content`, and any
+ * tech_fingerprint/business_info output in `modules`), plus the site-level tech
+ * rollup onto the job's `result`. Runs only for API jobs (ctx.apiJobId set) and
+ * always last, so it captures the other modules' output. Best-effort: a write
+ * failure is logged, never fatal.
+ */
+const MAX_CONTENT_CHARS = 100_000;
+export const apiJobPagesModule: ScanModule = {
+  name: "api_job_pages",
+  async run(ctx) {
+    if (!ctx.apiJobId) return;
+    const { scanResults, projectId, apiJobId, logger } = ctx;
+    const db = stage4Db();
+
+    // Best-effort pages.id cross-reference for smaller jobs.
+    const pageIdByUrl = new Map<string, string>();
+    if (scanResults.length <= 500) {
+      const urls = scanResults.map((r) => r.url);
+      for (let i = 0; i < urls.length; i += 100) {
+        try {
+          const { data } = await db
+            .from("pages")
+            .select("id, url")
+            .eq("project_id", projectId)
+            .in("url", urls.slice(i, i + 100));
+          for (const p of (data ?? []) as Array<{ id: string; url: string }>) {
+            pageIdByUrl.set(p.url, p.id);
+          }
+        } catch {
+          /* non-fatal */
+        }
+      }
+    }
+
+    const rows = scanResults.map((r) => {
+      const extras = ctx.pageModules.get(r.url) ?? {};
+      const modules: Record<string, unknown> = {};
+      if (extras.tech_fingerprint) modules.tech_fingerprint = extras.tech_fingerprint;
+      if (extras.business_info) modules.business_info = extras.business_info;
+      const content = (r.main_text ?? "").slice(0, MAX_CONTENT_CHARS);
+      return {
+        job_id: apiJobId,
+        page_id: pageIdByUrl.get(r.url) ?? null,
+        url: r.url,
+        http_status: r.status ?? null,
+        data: JSON.parse(JSON.stringify(serializePageData(r))),
+        content: content || null,
+        modules,
+      };
+    });
+
+    for (let i = 0; i < rows.length; i += 200) {
+      try {
+        const { error } = await db
+          .from("api_job_pages")
+          .upsert(rows.slice(i, i + 200), { onConflict: "job_id,url" });
+        if (error) logger.warn("store", `api_job_pages write failed: ${error.message}`);
+      } catch (e) {
+        logger.warn("store", `api_job_pages write threw: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    if (ctx.techRollup) {
+      try {
+        await db
+          .from("api_jobs")
+          .update({ result: { tech_fingerprint: ctx.techRollup } })
+          .eq("id", apiJobId);
+      } catch {
+        /* non-fatal */
+      }
+    }
+    logger.info("store", `api_job_pages: wrote ${rows.length} rows for job ${apiJobId}`);
   },
 };
 

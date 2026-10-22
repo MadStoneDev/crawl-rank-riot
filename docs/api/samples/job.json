@@ -1,12 +1,16 @@
 {
   "api_version": "v1",
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "data": {
     "object": "job",
     "id": "3f1c9a2e-7b84-4d2a-9f1e-0a2b3c4d5e6f",
     "type": "seo",
     "status": "completed",
+    "scope": "site",
+    "modules": null,
     "project_id": "9c8b7a65-4321-4a1b-8c7d-6e5f4a3b2c1d",
+    "external_ref": null,
+    "metadata": {},
     "created_at": "2026-10-22T09:00:00.000Z",
     "started_at": "2026-10-22T09:00:01.000Z",
     "completed_at": "2026-10-22T09:03:12.000Z",
@@ -19,7 +23,8 @@
     "links": {
       "self": "/api/v1/jobs/3f1c9a2e-7b84-4d2a-9f1e-0a2b3c4d5e6f",
       "report": "/api/v1/jobs/3f1c9a2e-7b84-4d2a-9f1e-0a2b3c4d5e6f/report",
-      "issues": "/api/v1/jobs/3f1c9a2e-7b84-4d2a-9f1e-0a2b3c4d5e6f/issues"
+      "issues": "/api/v1/jobs/3f1c9a2e-7b84-4d2a-9f1e-0a2b3c4d5e6f/issues",
+      "pages": "/api/v1/jobs/3f1c9a2e-7b84-4d2a-9f1e-0a2b3c4d5e6f/pages"
     }
   }
 }

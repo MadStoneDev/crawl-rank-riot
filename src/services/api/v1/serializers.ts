@@ -9,8 +9,10 @@ import {
   type Severity,
 } from "../../../scoring/weights";
 import type { ScoreReport } from "../../../scoring/score-report";
+import type { ScanResult } from "../../../types";
 import type {
   V1Job,
+  V1JobScope,
   V1JobStatus,
   V1JobType,
   V1Report,
@@ -18,6 +20,11 @@ import type {
   V1CategoryScore,
   V1Deduction,
   V1Usage,
+  V1Project,
+  V1Page,
+  V1PageData,
+  V1PageDetail,
+  V1PageModules,
 } from "./schemas";
 
 /**
@@ -62,6 +69,16 @@ export interface JobRow {
   type: string;
   project_id: string;
   created_at: string;
+  // Stage 4 (optional; absent on pre-Stage-4 rows → sensible defaults).
+  scope?: string | null;
+  modules?: string[] | null;
+  external_ref?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+const VALID_SCOPES: V1JobScope[] = ["site", "page", "urls"];
+function normalizeScope(raw: string | null | undefined): V1JobScope {
+  return (VALID_SCOPES as string[]).includes(raw || "") ? (raw as V1JobScope) : "site";
 }
 
 export interface ScanRowForJob {
@@ -80,7 +97,11 @@ export function serializeJob(job: JobRow, scan: ScanRowForJob | null): V1Job {
     id: job.id,
     type: job.type as V1JobType,
     status: jobStatusFromScan(scan?.status),
+    scope: normalizeScope(job.scope),
+    modules: job.modules ?? null,
     project_id: job.project_id,
+    external_ref: job.external_ref ?? null,
+    metadata: job.metadata ?? {},
     created_at: job.created_at,
     started_at: scan?.started_at ?? null,
     completed_at: scan?.completed_at ?? null,
@@ -94,8 +115,110 @@ export function serializeJob(job: JobRow, scan: ScanRowForJob | null): V1Job {
       self: `/api/v1/jobs/${job.id}`,
       report: `/api/v1/jobs/${job.id}/report`,
       issues: `/api/v1/jobs/${job.id}/issues`,
+      pages: `/api/v1/jobs/${job.id}/pages`,
     },
   };
+}
+
+// --- Projects (Stage 4) ---------------------------------------------------
+
+export interface ProjectRow {
+  id: string;
+  name: string;
+  url: string;
+  created_at?: string | null;
+}
+
+export function serializeProject(
+  project: ProjectRow,
+  attrs: { external_ref?: string | null; metadata?: Record<string, unknown> | null } | null,
+): V1Project {
+  return {
+    object: "project",
+    id: project.id,
+    domain: domainOf(project.url),
+    name: project.name,
+    url: project.url,
+    external_ref: attrs?.external_ref ?? null,
+    metadata: attrs?.metadata ?? {},
+    created_at: project.created_at ?? "",
+  };
+}
+
+/** Bare host (no scheme / leading www / path) for display + dedup. */
+export function domainOf(url: string): string {
+  try {
+    return new URL(url).host.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return (url || "").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+  }
+}
+
+// --- Pages (Stage 4) ------------------------------------------------------
+
+/** Map a crawled page (ScanResult) to the stored/public per-page data blob. */
+export function serializePageData(result: ScanResult): V1PageData {
+  return {
+    url: result.url,
+    http_status: result.status ?? null,
+    title: result.title ?? null,
+    meta_description: result.meta_description ?? null,
+    canonical_url: result.canonical_url ?? null,
+    is_indexable: result.is_indexable ?? null,
+    word_count: result.word_count ?? null,
+    content_length: result.content_length ?? null,
+    headings: {
+      h1: result.h1s ?? [], h2: result.h2s ?? [], h3: result.h3s ?? [],
+      h4: result.h4s ?? [], h5: result.h5s ?? [], h6: result.h6s ?? [],
+    },
+    schema_types: result.schema_types ?? [],
+    structured_data: result.structured_data ?? [],
+    open_graph: result.open_graph ?? {},
+    twitter_card: result.twitter_card ?? {},
+    images: result.images ?? [],
+    internal_links: result.internal_links ?? [],
+    external_links: result.external_links ?? [],
+    detected_platform: result.detected_platform ?? null,
+    scan_method: result.scan_method ?? null,
+  };
+}
+
+/** A stored api_job_pages row (shape from the DB; `data` is a V1PageData blob). */
+export interface JobPageRow {
+  id: string;
+  url: string;
+  http_status: number | null;
+  data: V1PageData | null;
+  content?: string | null;
+  modules: V1PageModules | null;
+}
+
+/** Compact list item. */
+export function serializePageListItem(row: JobPageRow): V1Page {
+  return {
+    object: "page",
+    id: row.id,
+    url: row.url,
+    http_status: row.http_status ?? null,
+    title: row.data?.title ?? null,
+    word_count: row.data?.word_count ?? null,
+    modules: row.modules ?? {},
+  };
+}
+
+/** Full page detail; `content` included only when requested. */
+export function serializePageDetail(row: JobPageRow, includeContent: boolean): V1PageDetail {
+  const data = row.data ?? ({} as V1PageData);
+  const detail: V1PageDetail = {
+    object: "page",
+    id: row.id,
+    ...data,
+    url: row.url,
+    http_status: row.http_status ?? data.http_status ?? null,
+    modules: row.modules ?? {},
+  };
+  if (includeContent) detail.content = row.content ?? null;
+  return detail;
 }
 
 function serializeCategory(

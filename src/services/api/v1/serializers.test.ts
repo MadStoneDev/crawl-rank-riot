@@ -6,6 +6,9 @@ import {
   serializeUsage,
   jobStatusFromScan,
   CATEGORY_LABELS,
+  serializeProject,
+  serializePageListItem,
+  serializePageDetail,
 } from "./serializers";
 import type { ScoreReport } from "../../../scoring/score-report";
 
@@ -126,6 +129,7 @@ describe("serializeJob", () => {
       self: "/api/v1/jobs/job_abc",
       report: "/api/v1/jobs/job_abc/report",
       issues: "/api/v1/jobs/job_abc/issues",
+      pages: "/api/v1/jobs/job_abc/pages",
     });
   });
 
@@ -133,6 +137,64 @@ describe("serializeJob", () => {
     const j = serializeJob(job, null);
     expect(j.status).toBe("queued");
     expect(j.stats).toEqual({ pages_scanned: 0, links_scanned: 0, issues_found: 0 });
+  });
+
+  it("defaults Stage 4 attribution/scope when absent, and echoes them when present", () => {
+    const bare = serializeJob(job, null);
+    expect(bare.scope).toBe("site");
+    expect(bare.modules).toBeNull();
+    expect(bare.external_ref).toBeNull();
+    expect(bare.metadata).toEqual({});
+
+    const rich = serializeJob(
+      { ...job, scope: "page", modules: ["fetch_extract", "tech_fingerprint"], external_ref: "crm-42", metadata: { team: "x" } },
+      null,
+    );
+    expect(rich.scope).toBe("page");
+    expect(rich.modules).toEqual(["fetch_extract", "tech_fingerprint"]);
+    expect(rich.external_ref).toBe("crm-42");
+    expect(rich.metadata).toEqual({ team: "x" });
+  });
+});
+
+describe("serializeProject / serializePage (Stage 4)", () => {
+  it("derives the domain and echoes attribution", () => {
+    const p = serializeProject(
+      { id: "p1", name: "Acme", url: "https://www.acme.test/", created_at: "2026-10-24T00:00:00Z" },
+      { external_ref: "crm-1", metadata: { tier: "pro" } },
+    );
+    expect(p.object).toBe("project");
+    expect(p.domain).toBe("acme.test");
+    expect(p.external_ref).toBe("crm-1");
+    expect(p.metadata).toEqual({ tier: "pro" });
+  });
+
+  it("serializes a compact page list item and a full detail with gated content", () => {
+    const row = {
+      id: "jp1",
+      url: "https://acme.test/about",
+      http_status: 200,
+      data: { url: "https://acme.test/about", http_status: 200, title: "About", word_count: 320 } as any,
+      content: "the cleaned body text",
+      modules: { tech_fingerprint: { platform: "wordpress" } },
+    };
+    const item = serializePageListItem(row);
+    expect(item).toEqual({
+      object: "page",
+      id: "jp1",
+      url: "https://acme.test/about",
+      http_status: 200,
+      title: "About",
+      word_count: 320,
+      modules: { tech_fingerprint: { platform: "wordpress" } },
+    });
+
+    const withoutContent = serializePageDetail(row, false);
+    expect(withoutContent.title).toBe("About");
+    expect("content" in withoutContent).toBe(false);
+
+    const withContent = serializePageDetail(row, true);
+    expect(withContent.content).toBe("the cleaned body text");
   });
 });
 

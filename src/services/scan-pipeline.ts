@@ -414,7 +414,12 @@ export async function runScanPipeline(
   scanId: string,
   projectId: string,
   scannerDeps?: ScannerDeps,
+  apiJob?: { id: string; modules: string[] | null },
 ): Promise<void> {
+  // Stage 4: an API job may select a subset of modules (modules !== null) and
+  // gets a per-job page snapshot. modules === null ⇒ today's full pipeline.
+  const selectedModules = apiJob?.modules ?? null;
+  const runScoring = !selectedModules || selectedModules.includes("scoring");
   // `scannerDeps` forwards the Scanner's test-only DI seam (SSRF guard + fetch);
   // undefined in every production caller, so the strict guard is always used.
   const crawler = new WebCrawler(url, scanId, projectId, scannerDeps);
@@ -470,34 +475,40 @@ export async function runScanPipeline(
       issuesFound: 0,
       siteIssuesFound: 0,
       backlinksFound: 0,
+      apiJobId: apiJob?.id,
+      pageModules: new Map(),
     };
-    for (const scanModule of composePipeline(mode)) {
+    for (const scanModule of composePipeline(mode, { modules: selectedModules, apiJob: !!apiJob })) {
       await scanModule.run(ctx);
     }
 
     // 7. Mode-specific scoring / analysis. issuesFound already includes the
-    // site-level issues (reconciled together), so don't add them again.
+    // site-level issues (reconciled together), so don't add them again. An API
+    // job that did not select "scoring" skips the strategy entirely — it is a
+    // pure extraction job, not a site-health scan (no score, no trend point).
     const totalIssues = ctx.issuesFound;
     const totalLinksScanned = scanResults.reduce(
       (sum, page) => sum + page.internal_links.length + page.external_links.length,
       0,
     );
-    const { snapshotOverall, summaryStatsPatch } = await STRATEGIES[mode]({
-      mode,
-      url,
-      options,
-      scanId,
-      projectId,
-      scanResults,
-      botProtection: ctx.botProtection,
-      siteLevelData: ctx.siteLevelData,
-      issuesFound: ctx.issuesFound,
-      siteIssuesFound: ctx.siteIssuesFound,
-      backlinksFound: ctx.backlinksFound,
-      totalIssues,
-      totalLinksScanned,
-      logger,
-    });
+    const { snapshotOverall, summaryStatsPatch } = runScoring
+      ? await STRATEGIES[mode]({
+          mode,
+          url,
+          options,
+          scanId,
+          projectId,
+          scanResults,
+          botProtection: ctx.botProtection,
+          siteLevelData: ctx.siteLevelData,
+          issuesFound: ctx.issuesFound,
+          siteIssuesFound: ctx.siteIssuesFound,
+          backlinksFound: ctx.backlinksFound,
+          totalIssues,
+          totalLinksScanned,
+          logger,
+        })
+      : { snapshotOverall: 0, summaryStatsPatch: {} as Record<string, unknown> };
 
     // 9. Finalize: mark completed (merging summary_stats), snapshot, project.
     const supabase = getSupabaseServiceClient();
@@ -545,30 +556,35 @@ export async function runScanPipeline(
       })
       .eq("id", scanId);
 
-    await createScanSnapshot(
-      projectId,
-      scanId,
-      scanResults.length,
-      totalIssues,
-      existingScan?.started_at || completedAt,
-      completedAt,
-      snapshotOverall,
-    );
+    // Trend snapshot + project scheduling only for scored scans. A pure
+    // extraction API job (modules without "scoring") must not write a history
+    // point or reschedule the project as if a full health scan had run.
+    if (runScoring) {
+      await createScanSnapshot(
+        projectId,
+        scanId,
+        scanResults.length,
+        totalIssues,
+        existingScan?.started_at || completedAt,
+        completedAt,
+        snapshotOverall,
+      );
 
-    const { data: projectData } = await supabase
-      .from("projects")
-      .select("scan_frequency")
-      .eq("id", projectId)
-      .single();
+      const { data: projectData } = await supabase
+        .from("projects")
+        .select("scan_frequency")
+        .eq("id", projectId)
+        .single();
 
-    const projectUpdate: any = { last_scan_at: completedAt };
-    if (projectData?.scan_frequency) {
-      const nextScanAt = computeNextScanAt(new Date(), projectData.scan_frequency);
-      if (nextScanAt) {
-        projectUpdate.next_scan_at = nextScanAt.toISOString();
+      const projectUpdate: any = { last_scan_at: completedAt };
+      if (projectData?.scan_frequency) {
+        const nextScanAt = computeNextScanAt(new Date(), projectData.scan_frequency);
+        if (nextScanAt) {
+          projectUpdate.next_scan_at = nextScanAt.toISOString();
+        }
       }
+      await supabase.from("projects").update(projectUpdate).eq("id", projectId);
     }
-    await supabase.from("projects").update(projectUpdate).eq("id", projectId);
 
     logger.info(
       "complete",

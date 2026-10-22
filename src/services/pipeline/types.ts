@@ -33,6 +33,13 @@ export interface PipelineContext {
   issuesFound: number;
   siteIssuesFound: number;
   backlinksFound: number;
+
+  // Stage 4 (API jobs only). apiJobId drives the per-job page snapshot; the
+  // tech_fingerprint / business_info modules stash per-URL outputs here for the
+  // snapshot module to persist, plus a site-level tech rollup.
+  apiJobId?: string;
+  pageModules: Map<string, { tech_fingerprint?: unknown; business_info?: unknown }>;
+  techRollup?: unknown;
 }
 
 /** A single composable stage of the scan pipeline. */
