@@ -7,8 +7,10 @@ once after deploying the Stage 3 changes.
 **Prerequisites**
 
 - The crawler is deployed with the `/api/v1` router (this branch) and the
-  migration `2026-10-22_0001_v1_jobs_api.sql` is applied to production. Applying
-  the defence-in-depth `2026-10-23_0001_v1_jobs_api_hardening.sql` first is
+  migrations `2026-10-22_0001_v1_jobs_api.sql` and (for the Stage 4 projects /
+  pages / scope / modules features) `2026-10-24_0001_v1_stage4.sql` are applied
+  to production, with `database.types.ts` regenerated. Applying the
+  defence-in-depth `2026-10-23_0001_v1_jobs_api_hardening.sql` first is
   recommended but not required for the smoke test.
 - You can run the operator CLI against production (its shell has the production
   `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`).
@@ -24,7 +26,7 @@ once after deploying the Stage 3 changes.
 ```bash
 npx ts-node src/scripts/api-key.ts create \
   --user <your-user-uuid> \
-  --scopes jobs:read,jobs:write \
+  --scopes jobs:read,jobs:write,projects:read,projects:write \
   --label "smoke-test $(date +%F)" \
   --rate 60 --quota 10 --env live
 ```
