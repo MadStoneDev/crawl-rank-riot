@@ -11,15 +11,22 @@ import { parseProjectSettings } from "../../utils/project-settings";
 import { ApiKeyRequest, requireScope } from "../../middleware/api-key-auth";
 import { recordUsage, getCurrentUsage } from "../../services/api/v1/usage";
 import { sendV1, sendV1Error } from "../../services/api/v1/respond";
+import { stage4Db } from "../../services/api/v1/stage4-db";
+import { SELECTABLE_MODULES } from "../../services/pipeline/compose";
 import {
   serializeJob,
   serializeReport,
   serializeIssue,
   serializeUsage,
+  serializePageListItem,
+  serializePageDetail,
+  domainOf,
   type JobRow,
   type ScanRowForJob,
 } from "../../services/api/v1/serializers";
 import type { ScoreReport } from "../../scoring/score-report";
+
+const JOB_COLS = "id, type, project_id, created_at, scope, modules, external_ref, metadata";
 
 const router = Router();
 
@@ -53,15 +60,38 @@ function clampOptions(type: ScanMode, raw: Record<string, unknown>, projectSetti
 }
 
 /** Load the job row and confirm it belongs to the calling key. */
-async function loadOwnedJob(req: ApiKeyRequest, jobId: string): Promise<JobRow & { scan_id: string | null } | null> {
-  const { data } = await getSupabaseServiceClient()
+async function loadOwnedJob(req: ApiKeyRequest, jobId: string): Promise<(JobRow & { scan_id: string | null }) | null> {
+  const { data } = await stage4Db()
     .from("api_jobs")
-    .select("id, type, project_id, created_at, scan_id, api_key_id")
+    .select(`${JOB_COLS}, scan_id, api_key_id`)
     .eq("id", jobId)
     .maybeSingle();
   if (!data || data.api_key_id !== req.apiKey!.id) return null;
   return data as JobRow & { scan_id: string | null };
 }
+
+/** Validate a requested module list against the selectable set; null = default. */
+function validateModules(raw: unknown): { modules: string[] | null; error?: string } {
+  if (raw === undefined || raw === null) return { modules: null };
+  if (!Array.isArray(raw) || raw.some((m) => typeof m !== "string")) {
+    return { modules: null, error: "modules must be an array of strings." };
+  }
+  const invalid = raw.filter((m) => !(SELECTABLE_MODULES as readonly string[]).includes(m));
+  if (invalid.length) return { modules: null, error: `Unknown module(s): ${invalid.join(", ")}. Valid: ${SELECTABLE_MODULES.join(", ")}.` };
+  return { modules: [...new Set(raw as string[])] };
+}
+
+/** A URL is in-scope only if it is on the project's domain (or a subdomain). */
+function sameSite(url: string, domain: string): boolean {
+  try {
+    const host = new URL(url).host.toLowerCase().replace(/^www\./, "");
+    return host === domain || host.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+}
+
+const URLS_SCOPE_CAP = 50;
 
 // POST /api/v1/jobs — create a scan job.
 router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res: Response): Promise<void> => {
@@ -72,6 +102,20 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
       sendV1Error(res, 400, "validation_error", "project_id is required.");
       return;
     }
+
+    const scope: "site" | "page" | "urls" =
+      req.body?.scope === "page" || req.body?.scope === "urls" ? req.body.scope : "site";
+    const { modules, error: modulesError } = validateModules(req.body?.modules);
+    if (modulesError) {
+      sendV1Error(res, 400, "validation_error", modulesError);
+      return;
+    }
+    if (req.body?.metadata !== undefined && (typeof req.body.metadata !== "object" || req.body.metadata === null || Array.isArray(req.body.metadata))) {
+      sendV1Error(res, 400, "validation_error", "metadata must be a JSON object.");
+      return;
+    }
+    const externalRef = typeof req.body?.external_ref === "string" ? req.body.external_ref : null;
+    const metadata = req.body?.metadata && typeof req.body.metadata === "object" ? req.body.metadata : {};
 
     const supabase = getSupabaseServiceClient();
     const { data: project, error: projectError } = await supabase
@@ -135,7 +179,44 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
     const projectSettings = parseProjectSettings(project.settings, project.url);
     const options = clampOptions(type, req.body?.options ?? {}, projectSettings);
 
-    const { data: job, error: jobError } = await getSupabaseServiceClient()
+    // Scope (Stage 4): translate to crawl bounds + the seed URL. page/urls URLs
+    // must be on the project's own domain. Overrides are applied AFTER
+    // clampOptions (and its crawlOverrides spread) so scope always wins.
+    const domain = domainOf(project.url);
+    let seedUrl = project.url;
+    if (scope === "page") {
+      const pageUrl = typeof req.body?.url === "string" ? req.body.url.trim() : "";
+      if (pageUrl && !sameSite(pageUrl, domain)) {
+        sendV1Error(res, 400, "validation_error", "The page url must be on the project's domain.");
+        return;
+      }
+      seedUrl = pageUrl || project.url;
+      Object.assign(options, { maxDepth: 0, maxPages: 1, checkSitemaps: false, seedPaths: [], seedUrls: [] });
+    } else if (scope === "urls") {
+      const raw: unknown[] = Array.isArray(req.body?.urls) ? req.body.urls : [];
+      const list: string[] = [
+        ...new Set(
+          raw
+            .filter((u): u is string => typeof u === "string")
+            .map((u) => u.trim())
+            .filter(Boolean),
+        ),
+      ];
+      if (list.length === 0) {
+        sendV1Error(res, 400, "validation_error", "urls scope requires a non-empty urls array.");
+        return;
+      }
+      const offSite = list.filter((u) => !sameSite(u, domain));
+      if (offSite.length) {
+        sendV1Error(res, 400, "validation_error", "All urls must be on the project's domain.", { off_domain: offSite.slice(0, 5) });
+        return;
+      }
+      const capped = list.slice(0, URLS_SCOPE_CAP);
+      seedUrl = capped[0];
+      Object.assign(options, { maxDepth: 0, maxPages: capped.length, checkSitemaps: false, seedPaths: [], seedUrls: capped.slice(1) });
+    }
+
+    const { data: job, error: jobError } = await stage4Db()
       .from("api_jobs")
       .insert({
         api_key_id: req.apiKey!.id,
@@ -143,9 +224,13 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
         project_id: projectId,
         scan_id: scan.id,
         type,
-        request: { options: req.body?.options ?? {} },
+        scope,
+        modules,
+        external_ref: externalRef,
+        metadata,
+        request: { options: req.body?.options ?? {}, scope, modules, url: req.body?.url, urls: req.body?.urls },
       })
-      .select("id, type, project_id, created_at")
+      .select(JOB_COLS)
       .single();
     if (jobError || !job) {
       sendV1Error(res, 500, "database_error", "Could not create the job.");
@@ -154,8 +239,9 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
 
     void recordUsage(req.apiKey!.id, { jobs: 1 });
 
-    // Fire-and-forget, exactly like POST /api/scan.
-    runScanPipeline(type, project.url, options, scan.id, projectId);
+    // Fire-and-forget, exactly like POST /api/scan. modules === null runs the
+    // full default pipeline; a selection runs only those stages.
+    runScanPipeline(type, seedUrl, options, scan.id, projectId, undefined, { id: job.id as string, modules });
 
     sendV1(res, 202, serializeJob(job as JobRow, {
       status: "in_progress",
@@ -176,10 +262,12 @@ router.get("/jobs", requireScope("jobs:read"), async (req: ApiKeyRequest, res: R
   try {
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 25, 100));
     const offset = Math.max(0, Number(req.query.offset) || 0);
-    const { data: jobs } = await getSupabaseServiceClient()
+    let q = stage4Db()
       .from("api_jobs")
-      .select("id, type, project_id, created_at, scan_id")
-      .eq("api_key_id", req.apiKey!.id)
+      .select(`${JOB_COLS}, scan_id`)
+      .eq("api_key_id", req.apiKey!.id);
+    if (typeof req.query.external_ref === "string") q = q.eq("external_ref", req.query.external_ref);
+    const { data: jobs } = await q
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -315,6 +403,72 @@ router.post("/jobs/:id/cancel", requireScope("jobs:write"), async (req: ApiKeyRe
     sendV1(res, 200, serializeJob(job, (data as ScanRowForJob) ?? null));
   } catch {
     sendV1Error(res, 500, "internal_error", "Could not cancel the job.");
+  }
+});
+
+// GET /api/v1/jobs/:id/pages — the job's per-page extracted data (Stage 4).
+router.get("/jobs/:id/pages", requireScope("jobs:read"), async (req: ApiKeyRequest, res: Response): Promise<void> => {
+  try {
+    const job = await loadOwnedJob(req, req.params.id);
+    if (!job) {
+      sendV1Error(res, 404, "job_not_found", "No job with that id for this API key.");
+      return;
+    }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const db = stage4Db();
+    const { count } = await db
+      .from("api_job_pages")
+      .select("id", { count: "exact", head: true })
+      .eq("job_id", job.id);
+    const { data: rows } = await db
+      .from("api_job_pages")
+      .select("id, url, http_status, data, modules")
+      .eq("job_id", job.id)
+      .order("url", { ascending: true })
+      .range(offset, offset + limit - 1);
+
+    const items = ((rows ?? []) as Parameters<typeof serializePageListItem>[0][]).map(serializePageListItem);
+    const total = count ?? items.length;
+    sendV1(res, 200, {
+      object: "list",
+      job_id: job.id,
+      items,
+      page: { limit, offset, total, has_more: offset + items.length < total },
+    });
+  } catch {
+    sendV1Error(res, 500, "internal_error", "Could not load the job's pages.");
+  }
+});
+
+// GET /api/v1/jobs/:id/pages/:pageId — one page's full extracted data.
+// ?include=content adds the cleaned main text (omitted by default for size).
+router.get("/jobs/:id/pages/:pageId", requireScope("jobs:read"), async (req: ApiKeyRequest, res: Response): Promise<void> => {
+  try {
+    const job = await loadOwnedJob(req, req.params.id);
+    if (!job) {
+      sendV1Error(res, 404, "job_not_found", "No job with that id for this API key.");
+      return;
+    }
+    const includeContent =
+      typeof req.query.include === "string" &&
+      req.query.include.split(",").map((s) => s.trim()).includes("content");
+    const cols = includeContent
+      ? "id, url, http_status, data, modules, content"
+      : "id, url, http_status, data, modules";
+    const { data: row } = await stage4Db()
+      .from("api_job_pages")
+      .select(cols)
+      .eq("id", req.params.pageId)
+      .eq("job_id", job.id)
+      .maybeSingle();
+    if (!row) {
+      sendV1Error(res, 404, "page_not_found", "No page with that id for this job.");
+      return;
+    }
+    sendV1(res, 200, serializePageDetail(row as Parameters<typeof serializePageDetail>[0], includeContent));
+  } catch {
+    sendV1Error(res, 500, "internal_error", "Could not load the page.");
   }
 });
 

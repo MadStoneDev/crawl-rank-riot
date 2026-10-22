@@ -11,8 +11,8 @@
 import crypto from "crypto";
 import { getSupabaseServiceClient } from "../../database/client";
 
-export type ApiScope = "jobs:read" | "jobs:write";
-export const API_SCOPES: ApiScope[] = ["jobs:read", "jobs:write"];
+export type ApiScope = "jobs:read" | "jobs:write" | "projects:read" | "projects:write";
+export const API_SCOPES: ApiScope[] = ["jobs:read", "jobs:write", "projects:read", "projects:write"];
 
 const PREFIX_LEN = 16;
 

@@ -13,6 +13,7 @@ import { serializeUsage } from "../../services/api/v1/serializers";
 import { sendV1, sendV1Error } from "../../services/api/v1/respond";
 import { API_SCOPES } from "../../services/api/v1/keys";
 import jobsRouter from "./jobs";
+import projectsRouter from "./projects";
 
 const router = Router();
 
@@ -29,11 +30,16 @@ router.get("/meta", (_req, res) => {
     schema_version: SCHEMA_VERSION,
     scopes: API_SCOPES,
     endpoints: [
+      "POST /api/v1/projects",
+      "GET /api/v1/projects",
+      "GET /api/v1/projects/:id",
       "POST /api/v1/jobs",
       "GET /api/v1/jobs",
       "GET /api/v1/jobs/:id",
       "GET /api/v1/jobs/:id/report",
       "GET /api/v1/jobs/:id/issues",
+      "GET /api/v1/jobs/:id/pages",
+      "GET /api/v1/jobs/:id/pages/:pageId",
       "POST /api/v1/jobs/:id/cancel",
       "GET /api/v1/usage",
     ],
@@ -54,6 +60,7 @@ router.get("/usage", requireScope("jobs:read"), async (req: ApiKeyRequest, res: 
   }
 });
 
+router.use(projectsRouter);
 router.use(jobsRouter);
 
 export default router;
