@@ -22,8 +22,15 @@ import {
   serializeReport,
   serializeIssue,
   serializeUsage,
+  serializeProject,
+  serializePageData,
+  serializePageListItem,
+  serializePageDetail,
   type IssueRow,
+  type JobPageRow,
 } from "../services/api/v1/serializers";
+import { fingerprintTech } from "../services/extract/tech-fingerprint";
+import { extractBusinessInfo } from "../services/extract/business-info";
 
 /** The committed sample directory (in-repo, under docs/api/). */
 export const SAMPLES_DIR = path.resolve(__dirname, "../../docs/api/samples");
@@ -164,6 +171,105 @@ export function buildSamples(): Record<string, string> {
     }),
     "usage.json": envelope(serializeUsage("2026-10-01", 1284, 37, 500)),
   };
+
+  // --- Stage 4 samples -----------------------------------------------------
+
+  // A project managed through the API.
+  bodies["project.json"] = envelope(
+    serializeProject(
+      { id: "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d", name: "Acme Bookkeeping", url: "https://acme.test/", created_at: "2026-10-24T09:00:00.000Z" },
+      { external_ref: "crm-42", metadata: { team: "growth" } },
+    ),
+  );
+
+  // A page-scope job that ran only extraction modules (no scoring).
+  bodies["job_page_scope.json"] = envelope(
+    serializeJob(
+      {
+        id: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b",
+        type: "seo",
+        project_id: "7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+        created_at: "2026-10-24T10:00:00.000Z",
+        scope: "page",
+        modules: ["fetch_extract", "tech_fingerprint", "business_info"],
+        external_ref: "crm-42",
+        metadata: { campaign: "q4-audit" },
+      },
+      {
+        status: "completed",
+        started_at: "2026-10-24T10:00:01.000Z",
+        completed_at: "2026-10-24T10:00:06.000Z",
+        pages_scanned: 1,
+        links_scanned: 7,
+        issues_found: 0,
+        failure_reason: null,
+      },
+    ),
+  );
+
+  // A representative extracted page (real serializer + extractor output), used
+  // for both the pages list and the page detail.
+  const contactPage: ScanResult = page({
+    url: "https://acme.test/contact",
+    title: "Contact — Acme Bookkeeping",
+    meta_description: "Call or visit Acme Bookkeeping in Sydney.",
+    word_count: 180,
+    h1s: ["Contact us"],
+    open_graph: { "og:site_name": "Acme Bookkeeping" },
+    script_srcs: [
+      "https://www.googletagmanager.com/gtag/js?id=G-XXXX",
+      "https://assets.calendly.com/assets/external/widget.js",
+    ],
+    external_links: [
+      { url: "https://facebook.com/acmebookkeeping", anchor_text: "Facebook", rel_attributes: [] },
+    ],
+    contact_links: [
+      { type: "tel", value: "+61 2 1234 5678", href: "tel:+61212345678" },
+      { type: "email", value: "hello@acme.test", href: "mailto:hello@acme.test" },
+    ],
+    structured_data: [
+      {
+        "@context": "https://schema.org",
+        "@type": "LocalBusiness",
+        name: "Acme Bookkeeping",
+        telephone: "+61 2 1234 5678",
+        address: {
+          "@type": "PostalAddress",
+          streetAddress: "1 Main St",
+          addressLocality: "Sydney",
+          addressRegion: "NSW",
+          postalCode: "2000",
+          addressCountry: "AU",
+        },
+        openingHoursSpecification: [
+          { "@type": "OpeningHoursSpecification", dayOfWeek: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], opens: "09:00", closes: "17:00" },
+        ],
+        areaServed: ["Sydney", "Greater Sydney"],
+        sameAs: ["https://facebook.com/acmebookkeeping"],
+      },
+    ],
+    schema_types: ["LocalBusiness"],
+    main_text: "Acme Bookkeeping helps small businesses in Sydney keep their accounts accurate and file on time. Call us or drop into our office on Main St.",
+  });
+  const contactRow: JobPageRow = {
+    id: "9f0a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c",
+    url: contactPage.url,
+    http_status: contactPage.status,
+    data: serializePageData(contactPage),
+    content: contactPage.main_text ?? null,
+    modules: {
+      tech_fingerprint: fingerprintTech(contactPage),
+      business_info: extractBusinessInfo(contactPage),
+    },
+  };
+
+  bodies["pages.json"] = envelope({
+    object: "list",
+    job_id: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b",
+    items: [serializePageListItem(contactRow)],
+    page: { limit: 50, offset: 0, total: 1, has_more: false },
+  });
+  bodies["page.json"] = envelope(serializePageDetail(contactRow, true));
 
   const files: Record<string, string> = {};
   for (const [name, body] of Object.entries(bodies)) {
