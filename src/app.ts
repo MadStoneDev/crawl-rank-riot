@@ -1,6 +1,7 @@
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import routes from "./routes/index"; // Updated path to point to routes/index.ts
+import v1Routes from "./routes/v1/index";
 import { config, validateConfig } from "./config";
 import { crawlScheduler } from "./utils/scheduler";
 import { errorHandlerMiddleware } from "./services/api/responses";
@@ -29,6 +30,12 @@ app.set(
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+// Public /api/v1 jobs API (Stage 3). Mounted BEFORE the IP rate limiters and
+// the JWT-protected /api router so it is governed solely by its own API-key
+// auth and per-key rate limiter. API keys are for server-to-server use, so this
+// deliberately sits outside the browser CORS policy below.
+app.use("/api/v1", v1Routes);
 
 // Rate limiting — general API
 const generalLimiter = rateLimit({

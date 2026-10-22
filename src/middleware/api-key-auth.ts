@@ -69,3 +69,26 @@ export function apiKeyAuth(requiredScope?: ApiScope) {
     }
   };
 }
+
+/**
+ * Per-route scope guard for routes already behind apiKeyAuth() — checks the
+ * attached req.apiKey without re-verifying, so one verification covers the
+ * request.
+ */
+export function requireScope(scope: ApiScope) {
+  return (req: ApiKeyRequest, res: Response, next: NextFunction): void => {
+    const key = req.apiKey;
+    if (!key) {
+      sendV1Error(res, 401, "invalid_api_key", "Missing or invalid API key.");
+      return;
+    }
+    if (!hasScope(key, scope)) {
+      sendV1Error(res, 403, "insufficient_scope", `This API key is missing the required scope '${scope}'.`, {
+        required_scope: scope,
+        scopes: key.scopes,
+      });
+      return;
+    }
+    next();
+  };
+}
