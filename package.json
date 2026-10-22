@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "samples:generate": "ts-node src/scripts/generate-v1-samples.ts"
+    "samples:generate": "ts-node src/scripts/generate-v1-samples.ts",
+    "apikey": "ts-node src/scripts/api-key.ts"
   },
   "repository": {
     "type": "git",
