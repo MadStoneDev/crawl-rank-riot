@@ -105,6 +105,11 @@ revoked key row can stay (revoked keys are harmless) or be removed in Supabase.
 
 ---
 
+To also smoke-test Stage 4: `POST /api/v1/projects {domain,name}` (needs
+`projects:write`), then a page-scope extraction job
+`POST /api/v1/jobs {project_id, scope:"page", modules:["fetch_extract","tech_fingerprint","business_info"]}`,
+then `GET /api/v1/jobs/:id/pages` and `.../pages/:pageId?include=content`.
+
 **If anything fails**, check: the key's `scopes` include what the endpoint needs
 (`jobs:write` to create/cancel, `jobs:read` to read); the project id is yours;
 the crawler host is reachable; and the migration is applied (a `500
