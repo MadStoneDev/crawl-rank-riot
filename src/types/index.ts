@@ -29,6 +29,13 @@ export interface CrawlOptions {
    * sets it false, so the crawler always obeys robots.
    */
   obeyRobots?: boolean;
+  /**
+   * Explicit additional seed URLs crawled at depth 0 (no discovery of their own).
+   * Used by the /api/v1 "urls" job scope to crawl exactly a given list. Empty /
+   * absent ⇒ unchanged single-seed behaviour. The base `url` passed to crawl()
+   * is still the origin used for internal/external classification.
+   */
+  seedUrls?: string[];
 }
 
 export interface ScanResult {
@@ -145,6 +152,14 @@ export interface ScanResult {
   // from actual bundle paths instead of guessing from anchor hrefs.
   script_srcs?: string[];
   stylesheet_hrefs?: string[];
+
+  // Cleaned main-area text (nav/header/footer/aside stripped — the same text
+  // word_count/readability are derived from). In-memory only; persisted
+  // (truncated) to api_job_pages.content for /api/v1 page-data jobs (Stage 4).
+  main_text?: string;
+  // tel:/mailto: links found on the page, captured before nav-scheme filtering
+  // drops them. In-memory only; feeds the Stage 4 business_info module.
+  contact_links?: Array<{ type: "tel" | "email"; value: string; href: string }>;
 
   // SEO analysis
   keywords: Array<{

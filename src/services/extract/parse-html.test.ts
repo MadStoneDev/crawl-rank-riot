@@ -343,3 +343,30 @@ describe("mixed content", () => {
     expect(parse(`<img src="http://x/a.jpg">`, "http://example.com/p").has_mixed_content).toBe(false);
   });
 });
+
+describe("Stage 4: contact links + main text capture", () => {
+  it("captures tel: and mailto: links before the nav-scheme filter drops them", () => {
+    const r = parse(
+      '<a href="tel:+61 2 1234 5678">Call</a>' +
+        '<a href="mailto:hi@acme.test?subject=x">Email</a>' +
+        '<a href="/about">About</a>',
+    );
+    expect(r.contact_links).toEqual([
+      { type: "tel", value: "+61 2 1234 5678", href: "tel:+61 2 1234 5678" },
+      { type: "email", value: "hi@acme.test", href: "mailto:hi@acme.test?subject=x" },
+    ]);
+    // tel:/mailto: must NOT leak into internal/external link sets.
+    const urls = [...r.internal_links!, ...r.external_links!].map((l) => l.url);
+    expect(urls.some((u) => u.startsWith("tel:") || u.startsWith("mailto:"))).toBe(false);
+  });
+
+  it("keeps cleaned main text in memory (main_text), stripping nav/footer", () => {
+    const r = parse(
+      "<nav>Home Products Contact</nav>" +
+        "<main><h1>Widgets</h1><p>We make durable widgets for factories.</p></main>" +
+        "<footer>Copyright 2026</footer>",
+    );
+    expect(r.main_text).toContain("We make durable widgets for factories.");
+    expect(r.main_text).not.toContain("Copyright 2026");
+  });
+});

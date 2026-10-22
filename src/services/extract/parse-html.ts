@@ -382,6 +382,18 @@ export function extractFromHtml(html: string, finalUrl: string): ParsedHtml {
   $("a[href]").each((_, el) => {
     const href = ($(el).attr("href") || "").trim();
     const hrefLower = href.toLowerCase();
+    // Capture contact links (phone/email) before the nav-scheme filter drops
+    // them — the business_info module (Stage 4) reads them.
+    if (hrefLower.startsWith("tel:")) {
+      const value = href.slice(4).trim();
+      if (value) (out.contact_links ??= []).push({ type: "tel", value, href });
+      return;
+    }
+    if (hrefLower.startsWith("mailto:")) {
+      const value = href.slice(7).split("?")[0].trim();
+      if (value) (out.contact_links ??= []).push({ type: "email", value, href });
+      return;
+    }
     if (!href || href === "#" || NON_NAV_SCHEMES.some((s) => hrefLower.startsWith(s))) return;
     const resolved = resolve(href);
     if (!resolved) return;
@@ -477,6 +489,9 @@ export function extractFromHtml(html: string, finalUrl: string): ParsedHtml {
   out.content_hash = computeContentHash(contentText);
   out.readability_score = computeReadabilityScore(contentText);
   out.keywords = extractKeywords(contentText);
+  // Keep the cleaned main text in memory for the Stage 4 page-data API; it is
+  // never written to the shared `pages` table.
+  out.main_text = contentText;
 
   return out;
 }

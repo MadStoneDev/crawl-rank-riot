@@ -341,6 +341,7 @@ export class WebCrawler {
       crawlMode = "seo",
       customSitemapPaths = [],
       seedPaths = [],
+      seedUrls = [],
       wwwPreference,
       obeyRobots = true,
     } = options;
@@ -401,6 +402,24 @@ export class WebCrawler {
         }
       } catch {
         this.logger?.warn("init", `Ignoring invalid seed path: ${seedPath}`);
+      }
+    }
+
+    // Explicit seed URLs (Stage 4 "urls" job scope): crawl each at depth 0 so
+    // they survive maxDepth=0 and raise no discovery of their own. Absent/empty
+    // ⇒ unchanged. Resolved against the base seed so bare paths also work.
+    for (const seedUrl of seedUrls) {
+      try {
+        const normalized = this.urlProcessor.normalize(
+          new URL(seedUrl, normalizedSeedUrl).toString(),
+        );
+        if (!this.queued.has(normalized)) {
+          this.queue.push({ url: normalized, depth: 0 });
+          this.queued.add(normalized);
+          this.logger?.info("init", `Seeded explicit URL: ${normalized}`);
+        }
+      } catch {
+        this.logger?.warn("init", `Ignoring invalid seed URL: ${seedUrl}`);
       }
     }
 
