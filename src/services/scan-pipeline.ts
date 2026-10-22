@@ -1,16 +1,14 @@
 import { WebCrawler, describePartialCrawl } from "./crawler";
-import { storeScanResults } from "./database";
 import { getSupabaseServiceClient } from "./database/client";
-import { detectAndStoreIssues, computeCanonicalisedVariants, DetectedIssue } from "./issue-detector";
-import { checkAndStoreBacklinks } from "./backlink-checker";
+import { computeCanonicalisedVariants } from "./issue-detector";
 import { isCancelled, clearCancel } from "./scan-cancellation";
 import { AuditAnalyzer } from "./audit-analyzer";
 import { storeAuditResults } from "./audit-database";
-import { analyzeSiteLevelData } from "./site-analyzer";
-import { detectSiteLevelIssues } from "./site-issue-detector";
 import { ScanLogger } from "./scan-logger";
+import { composePipeline } from "./pipeline/compose";
+import { PipelineContext } from "./pipeline/types";
 import { computeNextScanAt } from "../utils/scheduler";
-import { detectBotBlock, BotProtectionInfo } from "../utils/bot-block";
+import { BotProtectionInfo } from "../utils/bot-block";
 import { computeScoreReport } from "../scoring/score-report";
 import { computeWeightedScore, IssueAggregate } from "../scoring/weighted-score";
 import { CRAWLER_VERSION, CHECK_VERSION } from "../config/versions";
@@ -450,101 +448,32 @@ export async function runScanPipeline(
       return;
     }
 
-    // 2. Store pages/links (guarded against wiping data on a partial crawl).
-    logger.info("store", `Storing ${scanResults.length} pages in database...`);
-    await storeScanResults(projectId, scanId, scanResults, {
-      crawlCompleted: crawler.crawlCompleted,
-    });
-    logger.info("store", `Pages stored (crawlCompleted=${crawler.crawlCompleted})`);
-
-    // 3. Bot-block detection (once, from crawler state).
-    const botProtection = detectBotBlock({
-      pagesScanned: scanResults.length,
-      blockedCount: crawler.botBlockedCount,
-      homepageBlocked: crawler.botBlockedHomepage,
-      sampleError: crawler.botBlockSampleError,
-    });
-    if (botProtection) {
-      logger.warn(
-        "complete",
-        `Scan blocked by bot protection — ${botProtection.blocked_pages}/${botProtection.total_pages} pages challenged. Customer should allowlist ${botProtection.egress_ip || "our crawler"}.`,
-      );
-    }
-
-    // 4. Site-level analysis (robots.txt, sitemap, llms.txt). Non-critical.
-    let siteLevelData: SiteLevelData | undefined;
-    try {
-      logger.info("analysis", "Running site-level analysis (robots.txt, sitemap, llms.txt)...");
-      siteLevelData = await analyzeSiteLevelData(url, scanResults, {
-        sitemapPath: options?.customSitemapPaths?.[0],
-      });
-      logger.info(
-        "analysis",
-        `Site-level analysis complete: llms.txt=${siteLevelData.llms_txt?.exists}, robots.txt=${siteLevelData.robots_txt?.exists}, sitemap=${siteLevelData.sitemap_validation?.found}`,
-      );
-    } catch (error) {
-      logger.error("analysis", `Site-level analysis failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    // 5. Build site-level issues first (needs the homepage page id), then detect
-    // page issues and reconcile BOTH together so site issues get a fingerprint /
-    // identity and are counted by Compare (P1.1).
-    let siteIssues: DetectedIssue[] = [];
-    if (siteLevelData) {
-      try {
-        const supabase = getSupabaseServiceClient();
-        const { data: homepagePage } = await supabase
-          .from("pages")
-          .select("id")
-          .eq("project_id", projectId)
-          .eq("depth", 0)
-          .limit(1)
-          .single();
-
-        siteIssues = detectSiteLevelIssues(
-          siteLevelData,
-          projectId,
-          scanId,
-          homepagePage?.id || null,
-        );
-      } catch (error) {
-        logger.error("analysis", `Site-level issue detection failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    const siteIssuesFound = siteIssues.length;
-
-    logger.info("analysis", "Detecting issues...");
-    const issuesFound = await detectAndStoreIssues(
-      scanResults,
-      projectId,
+    // 2–6. Shared post-crawl stages, composed per mode (store pages, bot-block
+    // detection, site-level analysis, issue detection, backlinks). Each module
+    // reads/writes the shared PipelineContext; behaviour is unchanged from the
+    // previously-inlined steps.
+    const ctx: PipelineContext = {
+      mode,
+      url,
+      options,
       scanId,
-      siteIssues,
-    );
-    logger.info(
-      "analysis",
-      `Found ${issuesFound} issues (${siteIssuesFound} site-level)`,
-    );
-
-    // 7. Backlinks (disabled by default).
-    // The current check only fetches the sites we link OUT to and looks for a
-    // link back — i.e. reciprocal links, a tiny biased slice of real backlinks —
-    // for ~40s of wall-clock per scan and near-zero useful results. Real backlink
-    // data needs Google Search Console or a third-party index, not a crawl of our
-    // own outbound links, so it's off until then. Set ENABLE_BACKLINK_CHECK=true
-    // to re-enable the experimental checker.
-    let backlinksFound = 0;
-    if (process.env.ENABLE_BACKLINK_CHECK === "true") {
-      logger.info("analysis", "Checking for backlinks (experimental)...");
-      backlinksFound = await checkAndStoreBacklinks(projectId, url);
-      logger.info("analysis", `Discovered ${backlinksFound} backlinks`);
-    } else {
-      logger.info("analysis", "Backlink check skipped (work in progress)");
+      projectId,
+      crawler,
+      logger,
+      scanResults,
+      botProtection: null,
+      siteLevelData: undefined,
+      issuesFound: 0,
+      siteIssuesFound: 0,
+      backlinksFound: 0,
+    };
+    for (const scanModule of composePipeline(mode)) {
+      await scanModule.run(ctx);
     }
 
-    // 8. Mode-specific scoring / analysis. issuesFound already includes the
+    // 7. Mode-specific scoring / analysis. issuesFound already includes the
     // site-level issues (reconciled together), so don't add them again.
-    const totalIssues = issuesFound;
-    void siteIssuesFound;
+    const totalIssues = ctx.issuesFound;
     const totalLinksScanned = scanResults.reduce(
       (sum, page) => sum + page.internal_links.length + page.external_links.length,
       0,
@@ -556,11 +485,11 @@ export async function runScanPipeline(
       scanId,
       projectId,
       scanResults,
-      botProtection,
-      siteLevelData,
-      issuesFound,
-      siteIssuesFound,
-      backlinksFound,
+      botProtection: ctx.botProtection,
+      siteLevelData: ctx.siteLevelData,
+      issuesFound: ctx.issuesFound,
+      siteIssuesFound: ctx.siteIssuesFound,
+      backlinksFound: ctx.backlinksFound,
       totalIssues,
       totalLinksScanned,
       logger,
@@ -590,8 +519,8 @@ export async function runScanPipeline(
       ...(typeof existingScan?.summary_stats === "object" && existingScan.summary_stats !== null
         ? (existingScan.summary_stats as Record<string, unknown>)
         : {}),
-      ...(siteLevelData && { site_level_data: siteLevelData }),
-      ...(botProtection && { bot_protection: botProtection }),
+      ...(ctx.siteLevelData && { site_level_data: ctx.siteLevelData }),
+      ...(ctx.botProtection && { bot_protection: ctx.botProtection }),
       partial_crawl: partialCrawl,
       ...summaryStatsPatch,
     };
@@ -639,7 +568,7 @@ export async function runScanPipeline(
 
     logger.info(
       "complete",
-      `Scan finished: ${scanResults.length} pages, ${totalLinksScanned} links, ${totalIssues} issues, ${backlinksFound} backlinks, overall ${snapshotOverall}${botProtection ? " (blocked)" : ""}`,
+      `Scan finished: ${scanResults.length} pages, ${totalLinksScanned} links, ${totalIssues} issues, ${ctx.backlinksFound} backlinks, overall ${snapshotOverall}${ctx.botProtection ? " (blocked)" : ""}`,
     );
     await logger.close();
   } catch (error) {
