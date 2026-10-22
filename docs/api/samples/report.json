@@ -1,0 +1,97 @@
+{
+  "api_version": "v1",
+  "schema_version": "1.0.0",
+  "data": {
+    "object": "report",
+    "job_id": "3f1c9a2e-7b84-4d2a-9f1e-0a2b3c4d5e6f",
+    "score_version": 3,
+    "score_model": "weighted-v1",
+    "blocked": false,
+    "capped": "high",
+    "overall": 80,
+    "overall_pass_rate": 71,
+    "categories": [
+      {
+        "category": "technical",
+        "label": "Technical",
+        "score": 93,
+        "pass_rate": 89
+      },
+      {
+        "category": "content",
+        "label": "Content",
+        "score": 90,
+        "pass_rate": 83
+      },
+      {
+        "category": "media",
+        "label": "Media",
+        "score": 99,
+        "pass_rate": 50
+      },
+      {
+        "category": "aeo",
+        "label": "AEO",
+        "score": 99,
+        "pass_rate": 62
+      }
+    ],
+    "deductions": [
+      {
+        "issue_type": "missing_meta_description",
+        "category": "content",
+        "label": "Content",
+        "severity": "high",
+        "is_speed": false,
+        "affected_pages": 1,
+        "scored_pages": 3,
+        "penalty": 6.928203230275509,
+        "site_level": false
+      },
+      {
+        "issue_type": "slow_page",
+        "category": "technical",
+        "label": "Technical",
+        "severity": "high",
+        "is_speed": true,
+        "affected_pages": 1,
+        "scored_pages": 3,
+        "penalty": 6.928203230275509,
+        "site_level": false
+      },
+      {
+        "issue_type": "thin_content",
+        "category": "content",
+        "label": "Content",
+        "severity": "medium",
+        "is_speed": false,
+        "affected_pages": 1,
+        "scored_pages": 3,
+        "penalty": 3.4641016151377544,
+        "site_level": false
+      },
+      {
+        "issue_type": "missing_image_alt",
+        "category": "media",
+        "label": "Media",
+        "severity": "low",
+        "is_speed": false,
+        "affected_pages": 1,
+        "scored_pages": 3,
+        "penalty": 1.1547005383792515,
+        "site_level": false
+      },
+      {
+        "issue_type": "missing_twitter_card",
+        "category": "aeo",
+        "label": "AEO",
+        "severity": "low",
+        "is_speed": false,
+        "affected_pages": 1,
+        "scored_pages": 3,
+        "penalty": 1.1547005383792515,
+        "site_level": false
+      }
+    ]
+  }
+}

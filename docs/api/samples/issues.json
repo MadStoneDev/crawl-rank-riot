@@ -1,0 +1,66 @@
+{
+  "api_version": "v1",
+  "schema_version": "1.0.0",
+  "data": {
+    "object": "list",
+    "job_id": "3f1c9a2e-7b84-4d2a-9f1e-0a2b3c4d5e6f",
+    "items": [
+      {
+        "object": "issue",
+        "type": "missing_meta_description",
+        "category": "content",
+        "category_label": "Content",
+        "severity": "high",
+        "is_speed": false,
+        "page_url": "https://example.com/about",
+        "description": "No meta description."
+      },
+      {
+        "object": "issue",
+        "type": "thin_content",
+        "category": "content",
+        "category_label": "Content",
+        "severity": "medium",
+        "is_speed": false,
+        "page_url": "https://example.com/about",
+        "description": "Only 120 words."
+      },
+      {
+        "object": "issue",
+        "type": "missing_image_alt",
+        "category": "media",
+        "category_label": "Media",
+        "severity": "low",
+        "is_speed": false,
+        "page_url": "https://example.com/blog/choosing-widgets",
+        "description": "1 image missing alt text."
+      },
+      {
+        "object": "issue",
+        "type": "slow_page",
+        "category": "technical",
+        "category_label": "Technical",
+        "severity": "high",
+        "is_speed": true,
+        "page_url": "https://example.com/blog/choosing-widgets",
+        "description": "Loaded in 4.2s (target 3s)."
+      },
+      {
+        "object": "issue",
+        "type": "missing_twitter_card",
+        "category": "aeo",
+        "category_label": "AEO",
+        "severity": "low",
+        "is_speed": false,
+        "page_url": "https://example.com/",
+        "description": "No Twitter Card tags."
+      }
+    ],
+    "page": {
+      "limit": 50,
+      "offset": 0,
+      "total": 5,
+      "has_more": false
+    }
+  }
+}

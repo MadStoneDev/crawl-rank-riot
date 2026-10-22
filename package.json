@@ -9,7 +9,8 @@
     "dev": "ts-node src/app.ts",
     "lint": "eslint . --ext .ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "samples:generate": "ts-node src/scripts/generate-v1-samples.ts"
   },
   "repository": {
     "type": "git",
