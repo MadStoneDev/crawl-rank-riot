@@ -86,7 +86,6 @@ export const ISSUE_CATEGORY: Record<string, ScoreCategory> = {
   keyword_not_in_title: "content",
   non_descriptive_anchor_text: "content",
   heading_hierarchy_invalid: "content",
-  missing_answer_block: "content",
   // media
   missing_image_alt: "media",
   missing_image_dimensions: "media",
@@ -101,13 +100,39 @@ export const ISSUE_CATEGORY: Record<string, ScoreCategory> = {
   missing_twitter_card: "aeo",
   faq_without_schema: "aeo",
   missing_podcast_schema: "aeo",
+  // A lead answer under the H1 is an answer-engine-readiness signal (it sits
+  // with the other AEO checks and surfaces on the AEO view), so it is scored
+  // as aeo — not content — even though the fix is a short paragraph (F-D09).
+  missing_answer_block: "aeo",
   missing_llms_txt: "aeo",
   empty_llms_txt: "aeo",
   ai_bots_blocked: "aeo",
 };
 
+/**
+ * Cross-category "speed" tag (F-D09 / taxonomy decision #2). Page performance
+ * lives in `technical` and image performance in `media`, so no single score
+ * category captures "speed". This set marks the issue types that are about load
+ * performance regardless of their score category, so a response can expose a
+ * `speed: true` flag and a speed filter can draw from both categories. It is
+ * data only — it does not affect scoring, which stays category-driven.
+ */
+export const SPEED_ISSUE_TYPES = new Set<string>([
+  "slow_page",
+  "slow_server_response",
+  "large_page_size",
+  "oversized_images",
+  "non_modern_image_format",
+  "missing_image_dimensions",
+]);
+
 export function categoryForIssueType(type: string): ScoreCategory {
   return ISSUE_CATEGORY[type] ?? "technical";
+}
+
+/** Whether an issue type is a load-performance ("speed") issue (F-D09). */
+export function isSpeedIssueType(type: string): boolean {
+  return SPEED_ISSUE_TYPES.has(type);
 }
 
 export function isSiteLevelIssueType(type: string): boolean {
