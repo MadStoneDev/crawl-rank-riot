@@ -237,7 +237,16 @@ const NON_NAV_SCHEMES = [
   "file:", "geo:", "whatsapp:", "skype:", "viber:", "callto:",
 ];
 
-const LAZY_SRC_ATTRS = ["data-src", "data-lazy-src", "data-original", "data-lazy"];
+// Lazy-load src attributes, in priority order. Covers the common WordPress
+// lazy-load plugins: Smush / a3 / Lazy Load (data-src), WP Rocket (data-lazy-src),
+// jQuery.lazyload (data-original), and Breeze / Cloudways (data-breeze).
+const LAZY_SRC_ATTRS = [
+  "data-src",
+  "data-lazy-src",
+  "data-original",
+  "data-lazy",
+  "data-breeze",
+];
 
 function pickImageSrc($el: ReturnType<CheerioAPI>): string | null {
   const rawSrc = ($el.attr("src") || "").trim();

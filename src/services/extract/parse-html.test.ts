@@ -248,6 +248,13 @@ describe("images (L-01, alt_state, P-09)", () => {
     expect(r.images![1].src).toBe("https://example.com/lazy.webp");
     expect(r.images![1].format).toBe("webp");
   });
+  it("resolves Breeze (Cloudways) data-breeze lazy images", () => {
+    const r = parse(
+      `<img src="data:image/svg+xml,placeholder" data-breeze="https://example.com/breeze.jpg">`,
+    );
+    expect(r.images).toHaveLength(1);
+    expect(r.images![0].src).toBe("https://example.com/breeze.jpg");
+  });
   it("distinguishes absent / empty / present alt", () => {
     const r = parse(
       `<img src="/a.jpg">` +
