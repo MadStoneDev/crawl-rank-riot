@@ -1,4 +1,4 @@
-import { Scanner } from "./scanner";
+import { Scanner, ScannerDeps } from "./scanner";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
 import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
@@ -93,8 +93,12 @@ export class WebCrawler {
   private progressUpdateInterval: number = 1000;
   public logger: ScanLogger | null = null;
 
-  constructor(baseUrl: string, scanId?: string, projectId?: string) {
-    this.scanner = new Scanner();
+  // `scannerDeps` is the Scanner's DI seam (SSRF guard + fetch). It defaults to
+  // the production strict guard; ONLY test code passes overrides (e.g. a guard
+  // that permits a 127.0.0.1 fixture server). There is deliberately no env var
+  // or runtime flag, so no production path can loosen the guard.
+  constructor(baseUrl: string, scanId?: string, projectId?: string, scannerDeps?: ScannerDeps) {
+    this.scanner = new Scanner(scannerDeps);
     this.urlProcessor = new UrlProcessor(baseUrl);
     this.scanId = scanId || null;
     this.projectId = projectId || null;

@@ -1,4 +1,5 @@
 import { WebCrawler, describePartialCrawl } from "./crawler";
+import { ScannerDeps } from "./scanner";
 import { getSupabaseServiceClient } from "./database/client";
 import { computeCanonicalisedVariants } from "./issue-detector";
 import { isCancelled, clearCancel } from "./scan-cancellation";
@@ -412,8 +413,11 @@ export async function runScanPipeline(
   options: any,
   scanId: string,
   projectId: string,
+  scannerDeps?: ScannerDeps,
 ): Promise<void> {
-  const crawler = new WebCrawler(url, scanId, projectId);
+  // `scannerDeps` forwards the Scanner's test-only DI seam (SSRF guard + fetch);
+  // undefined in every production caller, so the strict guard is always used.
+  const crawler = new WebCrawler(url, scanId, projectId, scannerDeps);
   const logger = crawler.logger!;
 
   try {
