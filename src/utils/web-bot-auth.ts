@@ -67,9 +67,9 @@ async function jwkThumbprint(jwk: Ed25519Jwk): Promise<string> {
 }
 
 // Import the key once and reuse it; signing happens on every outbound request.
-let cached: Promise<{ key: CryptoKey; kid: string }> | null = null;
+let cached: Promise<{ key: webcrypto.CryptoKey; kid: string }> | null = null;
 
-function loadSigner(): Promise<{ key: CryptoKey; kid: string }> | null {
+function loadSigner(): Promise<{ key: webcrypto.CryptoKey; kid: string }> | null {
   const jwk = getPrivateJwk();
   if (!jwk) return null;
   if (!cached) {
