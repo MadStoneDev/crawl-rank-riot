@@ -145,13 +145,28 @@ export function serializeProject(
   };
 }
 
-/** Bare host (no scheme / leading www / path) for display + dedup. */
+/**
+ * Bare registrable-ish host for display + dedup: lowercased, with scheme, a
+ * leading `www.`, any path/query/fragment and a trailing slash all dropped. So
+ * `http://www.acme.test/`, `https://acme.test` and `acme.test/x` all normalise
+ * to `acme.test` — apex and www are the same site.
+ */
 export function domainOf(url: string): string {
   try {
     return new URL(url).host.toLowerCase().replace(/^www\./, "");
   } catch {
     return (url || "").toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
   }
+}
+
+/**
+ * True when `url` is on `domain` (the project's `domainOf`): the apex, its
+ * `www`, or any subdomain — regardless of scheme or trailing slash. Used to keep
+ * page/urls-scope jobs on the project's own site.
+ */
+export function isSameSite(url: string, domain: string): boolean {
+  const host = domainOf(url);
+  return !!host && (host === domain || host.endsWith(`.${domain}`));
 }
 
 // --- Pages (Stage 4) ------------------------------------------------------

@@ -21,6 +21,7 @@ import {
   serializePageListItem,
   serializePageDetail,
   domainOf,
+  isSameSite,
   type JobRow,
   type ScanRowForJob,
 } from "../../services/api/v1/serializers";
@@ -79,16 +80,6 @@ function validateModules(raw: unknown): { modules: string[] | null; error?: stri
   const invalid = raw.filter((m) => !(SELECTABLE_MODULES as readonly string[]).includes(m));
   if (invalid.length) return { modules: null, error: `Unknown module(s): ${invalid.join(", ")}. Valid: ${SELECTABLE_MODULES.join(", ")}.` };
   return { modules: [...new Set(raw as string[])] };
-}
-
-/** A URL is in-scope only if it is on the project's domain (or a subdomain). */
-function sameSite(url: string, domain: string): boolean {
-  try {
-    const host = new URL(url).host.toLowerCase().replace(/^www\./, "");
-    return host === domain || host.endsWith(`.${domain}`);
-  } catch {
-    return false;
-  }
 }
 
 const URLS_SCOPE_CAP = 50;
@@ -186,7 +177,7 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
     let seedUrl = project.url;
     if (scope === "page") {
       const pageUrl = typeof req.body?.url === "string" ? req.body.url.trim() : "";
-      if (pageUrl && !sameSite(pageUrl, domain)) {
+      if (pageUrl && !isSameSite(pageUrl, domain)) {
         sendV1Error(res, 400, "validation_error", "The page url must be on the project's domain.");
         return;
       }
@@ -206,7 +197,7 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
         sendV1Error(res, 400, "validation_error", "urls scope requires a non-empty urls array.");
         return;
       }
-      const offSite = list.filter((u) => !sameSite(u, domain));
+      const offSite = list.filter((u) => !isSameSite(u, domain));
       if (offSite.length) {
         sendV1Error(res, 400, "validation_error", "All urls must be on the project's domain.", { off_domain: offSite.slice(0, 5) });
         return;

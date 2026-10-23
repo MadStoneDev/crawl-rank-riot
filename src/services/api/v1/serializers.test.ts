@@ -9,6 +9,8 @@ import {
   serializeProject,
   serializePageListItem,
   serializePageDetail,
+  domainOf,
+  isSameSite,
 } from "./serializers";
 import type { ScoreReport } from "../../../scoring/score-report";
 
@@ -219,5 +221,34 @@ describe("serializeUsage", () => {
 describe("CATEGORY_LABELS", () => {
   it("covers all four categories", () => {
     expect(CATEGORY_LABELS).toEqual({ technical: "Technical", content: "Content", media: "Media", aeo: "AEO" });
+  });
+});
+
+describe("domainOf / isSameSite (apex == www, scheme- and slash-insensitive)", () => {
+  it("normalises apex, www, scheme and trailing slash to the same domain", () => {
+    for (const u of [
+      "https://acme.test",
+      "http://acme.test/",
+      "https://www.acme.test/",
+      "http://www.acme.test/pricing?x=1",
+      "acme.test",
+      "www.acme.test/path",
+    ]) {
+      expect(domainOf(u)).toBe("acme.test");
+    }
+  });
+
+  it("treats apex and www as the same site, both directions", () => {
+    expect(isSameSite("https://www.acme.test/contact", "acme.test")).toBe(true);
+    expect(isSameSite("https://acme.test/contact", "acme.test")).toBe(true);
+    // Project registered as www (domainOf strips it) still matches the apex.
+    expect(isSameSite("https://acme.test/x", domainOf("https://www.acme.test/"))).toBe(true);
+  });
+
+  it("allows subdomains but rejects other sites and look-alikes", () => {
+    expect(isSameSite("https://blog.acme.test/post", "acme.test")).toBe(true);
+    expect(isSameSite("https://evil.example/acme.test", "acme.test")).toBe(false);
+    expect(isSameSite("https://evil-acme.test/", "acme.test")).toBe(false);
+    expect(isSameSite("not a url", "acme.test")).toBe(false);
   });
 });
