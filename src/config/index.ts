@@ -27,6 +27,10 @@ export interface Config {
     enabled: boolean;
     checkInterval: number; // in milliseconds
   };
+  retention: {
+    /** Days to keep /api/v1 per-job page snapshots (api_job_pages). */
+    apiJobPagesDays: number;
+  };
 }
 
 export const config: Config = {
@@ -63,6 +67,12 @@ export const config: Config = {
       process.env.SCHEDULER_CHECK_INTERVAL || "3600000",
       10,
     ), // 1 hour
+  },
+  retention: {
+    apiJobPagesDays: Math.max(
+      1,
+      parseInt(process.env.API_JOB_PAGES_RETENTION_DAYS || "90", 10) || 90,
+    ),
   },
 };
 
