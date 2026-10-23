@@ -14,20 +14,60 @@ once after deploying the Stage 3 changes.
   recommended but not required for the smoke test.
 - You can run the operator CLI against production (its shell has the production
   `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`).
-- A small project you own in RankRiot. Note its **project id** and your
-  **user id** (both are UUIDs from the dashboard / Supabase).
+- A small site to scan. The project must belong to the **service user** (step
+  0) — create it via `POST /api/v1/projects` with the key (step 3), or add it in
+  the dashboard as that user, and note its **project id**.
 - `CRAWLER` below is your crawler's base URL, e.g.
   `https://crawler.rankriot.app`.
 
 ---
 
+## 0. Create a dedicated service user for Vanward
+
+Mint the key under a **dedicated RankRiot user for Vanward**, not your own
+account, so its usage, projects and jobs are isolated and the key can be
+revoked without touching you.
+
+1. Create the user (one of):
+   - Supabase dashboard → Authentication → **Add user** (email you control,
+     e.g. `vanward@rankriot.app`, mark email confirmed); or
+   - `supabase.auth.admin.createUser({ email, email_confirm: true })` with the
+     service role.
+2. Note its **user UUID** (Authentication → Users, or `auth.users`). Use it as
+   `--user` below.
+3. **Internal plan / no page caps:** if you keep a `profiles`/`subscription`
+   row per user, set this user to your internal/unlimited tier. This is for the
+   app UI and your own bookkeeping only — see the note below; it does **not**
+   change what API jobs are allowed to crawl.
+
+### Do plan caps apply to API jobs?
+
+**No — the crawler does not apply per-user plan page caps to `/api/v1` jobs.**
+Plan enforcement (e.g. `subscription_plans.max_pages_per_scan`) lives in the
+RankRiot **app** (`rank-riot`) ahead of its `/api/scan` call; the crawler's
+`scan-pipeline` contract states the *caller* owns plan limits, and the `/v1`
+path calls the pipeline directly, so no plan/page cap is read there. An API
+job is bounded only by:
+
+- the request's `options`, **clamped** server-side to hard ceilings
+  (`maxPages` ≤ 100,000 for `seo` / ≤ 500 for `audit`; `maxDepth` ≤ 10 / 5) in
+  `clampOptions` (`src/routes/v1/jobs.ts`);
+- the API key's **`monthly_quota`** (jobs created/month) and
+  **`rate_limit_per_min`** (`api_keys`, set when minting);
+- **one scan per project** at a time (`409 scan_in_progress`);
+- for `page`/`urls` scope, the explicit URL set (≤ 50, same-domain).
+
+So the Vanward service user needs no special plan for the API to work at full
+size. If you later want to *limit* Vanward, do it on the key (`monthly_quota`,
+`rate_limit_per_min`), not via a plan.
+
 ## 1. Mint a key (shown once)
 
 ```bash
 npx ts-node src/scripts/api-key.ts create \
-  --user <your-user-uuid> \
+  --user <vanward-service-user-uuid> \
   --scopes jobs:read,jobs:write,projects:read,projects:write \
-  --label "smoke-test $(date +%F)" \
+  --label "vanward $(date +%F)" \
   --rate 60 --quota 10 --env live
 ```
 
