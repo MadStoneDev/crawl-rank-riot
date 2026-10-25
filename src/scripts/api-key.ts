@@ -13,6 +13,13 @@
  *   npx ts-node src/scripts/api-key.ts revoke --id <key-uuid>
  */
 
+// Load .env as the very first side effect, before any import reads process.env.
+// The normal app entry does this via src/config/index.ts; this standalone script
+// must do it itself, or it throws "Missing Supabase service configuration" even
+// when .env holds the values. Import side effects run in order, so this must
+// stay above the imports below.
+import "dotenv/config";
+
 import { getSupabaseServiceClient } from "../services/database/client";
 import { generateApiKey, API_SCOPES, type ApiScope } from "../services/api/v1/keys";
 

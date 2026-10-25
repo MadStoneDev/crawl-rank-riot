@@ -12,8 +12,10 @@ once after deploying the Stage 3 changes.
   to production, with `database.types.ts` regenerated. Applying the
   defence-in-depth `2026-10-23_0001_v1_jobs_api_hardening.sql` first is
   recommended but not required for the smoke test.
-- You can run the operator CLI against production (its shell has the production
-  `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`).
+- You can run the operator CLI against the production database. It reads
+  `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`) and
+  loads a `.env` from the repo root on its own (`import "dotenv/config"`), so
+  either point `.env` at production or pass the two vars inline / exported.
 - A small site to scan. The project must belong to the **service user** (step
   0) — create it via `POST /api/v1/projects` with the key (step 3), or add it in
   the dashboard as that user, and note its **project id**.
@@ -63,7 +65,13 @@ size. If you later want to *limit* Vanward, do it on the key (`monthly_quota`,
 
 ## 1. Mint a key (shown once)
 
+The CLI loads `.env` itself, so with a production `.env` present you can run it
+directly; otherwise prefix the command with the two vars. `npm run apikey -- …`
+works the same as the `npx ts-node …` form below.
+
 ```bash
+# If .env does not point at production, prefix with:
+#   SUPABASE_URL='…' SUPABASE_SERVICE_ROLE_KEY='…' \
 npx ts-node src/scripts/api-key.ts create \
   --user <vanward-service-user-uuid> \
   --scopes jobs:read,jobs:write,projects:read,projects:write \
