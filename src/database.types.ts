@@ -50,6 +50,156 @@ export type Database = {
           },
         ]
       }
+      api_jobs: {
+        Row: {
+          id: string
+          api_key_id: string
+          user_id: string
+          project_id: string
+          scan_id: string | null
+          type: string
+          request: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          api_key_id: string
+          user_id: string
+          project_id: string
+          scan_id?: string | null
+          type: string
+          request?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          api_key_id?: string
+          user_id?: string
+          project_id?: string
+          scan_id?: string | null
+          type?: string
+          request?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "api_jobs_api_key_id_fkey"
+            columns: ["api_key_id"]
+            isOneToOne: false
+            referencedRelation: "api_keys"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "api_jobs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "api_jobs_scan_id_fkey"
+            columns: ["scan_id"]
+            isOneToOne: false
+            referencedRelation: "scans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "api_jobs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      api_key_usage: {
+        Row: {
+          api_key_id: string
+          day: string
+          requests: number
+          jobs_created: number
+          updated_at: string
+        }
+        Insert: {
+          api_key_id: string
+          day: string
+          requests?: number
+          jobs_created?: number
+          updated_at?: string
+        }
+        Update: {
+          api_key_id?: string
+          day?: string
+          requests?: number
+          jobs_created?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "api_key_usage_api_key_id_fkey"
+            columns: ["api_key_id"]
+            isOneToOne: false
+            referencedRelation: "api_keys"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      api_keys: {
+        Row: {
+          id: string
+          user_id: string
+          name: string
+          key_prefix: string
+          key_hash: string
+          scopes: string[]
+          rate_limit_per_min: number
+          monthly_quota: number | null
+          status: string
+          last_used_at: string | null
+          created_at: string
+          revoked_at: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          name: string
+          key_prefix: string
+          key_hash: string
+          scopes?: string[]
+          rate_limit_per_min?: number
+          monthly_quota?: number | null
+          status?: string
+          last_used_at?: string | null
+          created_at?: string
+          revoked_at?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          name?: string
+          key_prefix?: string
+          key_hash?: string
+          scopes?: string[]
+          rate_limit_per_min?: number
+          monthly_quota?: number | null
+          status?: string
+          last_used_at?: string | null
+          created_at?: string
+          revoked_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "api_keys_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       audit_results: {
         Row: {
           id: string
@@ -386,10 +536,10 @@ export type Database = {
           is_followed: boolean | null
           is_broken: boolean | null
           http_status: number | null
-          link_error: string | null
           rel_attributes: Json | null
           created_at: string | null
           updated_at: string | null
+          link_error: string | null
         }
         Insert: {
           id?: string
@@ -402,10 +552,10 @@ export type Database = {
           is_followed?: boolean | null
           is_broken?: boolean | null
           http_status?: number | null
-          link_error?: string | null
           rel_attributes?: Json | null
           created_at?: string | null
           updated_at?: string | null
+          link_error?: string | null
         }
         Update: {
           id?: string
@@ -418,10 +568,10 @@ export type Database = {
           is_followed?: boolean | null
           is_broken?: boolean | null
           http_status?: number | null
-          link_error?: string | null
           rel_attributes?: Json | null
           created_at?: string | null
           updated_at?: string | null
+          link_error?: string | null
         }
         Relationships: [
           {
@@ -1044,6 +1194,15 @@ export type Database = {
           p_user_id: string
         }
         Returns: Json[]
+      }
+      increment_api_key_usage: {
+        Args: {
+          p_api_key_id: string
+          p_day: string
+          p_requests: number
+          p_jobs: number
+        }
+        Returns: undefined
       }
       increment_usage: {
         Args: {
