@@ -9,7 +9,7 @@ import { ScanLogger } from "./scan-logger";
 import { composePipeline } from "./pipeline/compose";
 import { PipelineContext } from "./pipeline/types";
 import { computeNextScanAt } from "../utils/scheduler";
-import { BotProtectionInfo } from "../utils/bot-block";
+import { BotProtectionInfo, detectBotBlock } from "../utils/bot-block";
 import { computeScoreReport } from "../scoring/score-report";
 import { computeWeightedScore, IssueAggregate } from "../scoring/weighted-score";
 import { CRAWLER_VERSION, CHECK_VERSION } from "../config/versions";
@@ -374,7 +374,11 @@ export async function createScanSnapshot(
 }
 
 /** Mark a scan failed, retrying the status write a few times. */
-async function markScanFailed(scanId: string, errorMessage: string): Promise<void> {
+async function markScanFailed(
+  scanId: string,
+  errorMessage: string,
+  extraStats?: Record<string, unknown>,
+): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const supabase = getSupabaseServiceClient();
@@ -389,6 +393,7 @@ async function markScanFailed(scanId: string, errorMessage: string): Promise<voi
           summary_stats: {
             error_message: errorMessage,
             failed_at: new Date().toISOString(),
+            ...(extraStats ?? {}),
           },
         })
         .eq("id", scanId);
@@ -452,7 +457,23 @@ export async function runScanPipeline(
         : crawler.botBlockedHomepage
         ? "The crawler was blocked by bot protection before it could read any pages. Allowlist RankRiotBot and rescan."
         : "No pages could be crawled. The start URL may be unreachable, redirect off-site, return a non-HTML response, or return an HTTP error. Check the URL and rescan.";
-      await markScanFailed(scanId, reason);
+      // A fully-blocked crawl returns before the post-crawl bot-block module, so
+      // compute and persist bot_protection here too — otherwise the frontend's
+      // BotBlockedNotice (allowlist + Cloudflare steps, crawler UA/IP) has no
+      // data to render for a site that blocked us outright (PC-09).
+      const botProtection = crawler.botBlockedHomepage
+        ? detectBotBlock({
+            pagesScanned: 0,
+            blockedCount: crawler.botBlockedCount,
+            homepageBlocked: crawler.botBlockedHomepage,
+            sampleError: crawler.botBlockSampleError,
+          })
+        : null;
+      await markScanFailed(
+        scanId,
+        reason,
+        botProtection ? { bot_protection: botProtection } : undefined,
+      );
       logger.error("complete", `Scan failed (0 pages): ${reason}`);
       return;
     }
