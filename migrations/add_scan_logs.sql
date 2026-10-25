@@ -1,5 +1,5 @@
 -- Stores detailed crawl logs for admin visibility
-CREATE TABLE public.scan_logs (
+CREATE TABLE IF NOT EXISTS public.scan_logs (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     scan_id uuid NOT NULL REFERENCES public.scans(id) ON DELETE CASCADE,
     timestamp timestamptz DEFAULT now() NOT NULL,
@@ -9,11 +9,12 @@ CREATE TABLE public.scan_logs (
     metadata jsonb DEFAULT NULL -- optional structured data (url, status code, timing, etc.)
 );
 
-CREATE INDEX idx_scan_logs_scan_id ON public.scan_logs(scan_id);
-CREATE INDEX idx_scan_logs_scan_id_timestamp ON public.scan_logs(scan_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_scan_logs_scan_id ON public.scan_logs(scan_id);
+CREATE INDEX IF NOT EXISTS idx_scan_logs_scan_id_timestamp ON public.scan_logs(scan_id, timestamp);
 
 -- RLS: only service role writes, admin reads
 ALTER TABLE public.scan_logs ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Service role full access" ON public.scan_logs;
 CREATE POLICY "Service role full access" ON public.scan_logs
     FOR ALL USING (true) WITH CHECK (true);
