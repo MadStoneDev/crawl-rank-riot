@@ -236,9 +236,27 @@ export class CrawlScheduler {
         project.id,
       );
 
-      console.log(
-        `Scheduled SEO scan successfully completed for project: ${project.name}`,
-      );
+      // runScanPipeline marks the scan failed but does NOT throw, so the
+      // outcome can't be read from control flow — read the scan back and log
+      // the real result instead of always reporting success (PC-06).
+      const { data: finalScan } = await supabase
+        .from("scans")
+        .select("status, failure_reason")
+        .eq("id", scanId)
+        .maybeSingle();
+      if (finalScan?.status === "failed") {
+        console.error(
+          `Scheduled SEO scan FAILED for project: ${project.name} — ${finalScan.failure_reason ?? "see scan logs"}`,
+        );
+      } else if (finalScan?.status === "cancelled") {
+        console.log(
+          `Scheduled SEO scan was cancelled for project: ${project.name}`,
+        );
+      } else {
+        console.log(
+          `Scheduled SEO scan completed for project: ${project.name}`,
+        );
+      }
     } catch (error) {
       // runScanPipeline handles its own failures (marks the scan failed); this
       // only catches setup errors before/around it. Still advance next_scan_at
@@ -303,9 +321,27 @@ export class CrawlScheduler {
         keyPages: projectSettings.keyPages,
       }, scanId, project.id);
 
-      console.log(
-        `Scheduled audit scan successfully completed for project: ${project.name}`,
-      );
+      // Read the scan back and log the real outcome — runScanPipeline marks a
+      // failed scan without throwing, so the previous unconditional success
+      // log misreported failed scans (PC-06).
+      const { data: finalScan } = await supabase
+        .from("scans")
+        .select("status, failure_reason")
+        .eq("id", scanId)
+        .maybeSingle();
+      if (finalScan?.status === "failed") {
+        console.error(
+          `Scheduled audit scan FAILED for project: ${project.name} — ${finalScan.failure_reason ?? "see scan logs"}`,
+        );
+      } else if (finalScan?.status === "cancelled") {
+        console.log(
+          `Scheduled audit scan was cancelled for project: ${project.name}`,
+        );
+      } else {
+        console.log(
+          `Scheduled audit scan completed for project: ${project.name}`,
+        );
+      }
     } catch (error) {
       console.error(
         `Error in scheduled audit scan for project ${project.id}:`,
