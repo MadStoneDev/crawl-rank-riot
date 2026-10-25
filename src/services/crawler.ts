@@ -1,5 +1,5 @@
 import { Scanner, ScannerDeps } from "./scanner";
-import { UrlProcessor, isPublicUrl } from "../utils/url";
+import { UrlProcessor, isPublicUrl, buildSitemapCandidateUrls } from "../utils/url";
 import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
 import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser";
@@ -602,24 +602,11 @@ export class WebCrawler {
   ): Promise<void> {
     console.log("🗺️ Checking for sitemaps...");
 
-    // User-specified sitemaps (from project settings) are checked first;
-    // they may be site-relative paths or full URLs
-    const customUrls = customSitemapPaths.map((path) => {
-      try {
-        return new URL(path, `${baseUrl}/`).toString();
-      } catch {
-        return null;
-      }
-    }).filter((url): url is string => url !== null);
-
-    const sitemapUrls = [
-      ...customUrls,
-      `${baseUrl}/sitemap.xml`,
-      `${baseUrl}/sitemap_index.xml`,
-      `${baseUrl}/product-sitemap.xml`,
-      `${baseUrl}/pages-sitemap.xml`,
-      `${baseUrl}/robots.txt`, // Will check for sitemap references
-    ];
+    // User-specified sitemaps (from project settings) are checked first; they
+    // may be site-relative paths or full URLs. Trailing slashes on the base are
+    // stripped so a root seed URL can't produce "//sitemap.xml" (PC-05). The
+    // robots.txt entry is handled below via its sitemap: references.
+    const sitemapUrls = buildSitemapCandidateUrls(baseUrl, customSitemapPaths);
 
     for (const sitemapUrl of sitemapUrls) {
       try {

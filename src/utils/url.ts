@@ -841,3 +841,36 @@ export function isSelfCanonical(
   if (a === null || b === null) return canonical === pageUrl;
   return a === b;
 }
+
+/**
+ * Build the candidate sitemap/robots URLs to probe for a crawl.
+ *
+ * `baseUrl` is the normalized seed URL, which for a root seed keeps its
+ * trailing slash (e.g. "https://site.com/"). Naive templating then produced
+ * "https://site.com//sitemap.xml". Strip trailing slashes from the base before
+ * joining so the standard paths — and any user-supplied custom paths — are well
+ * formed (PC-05).
+ */
+export function buildSitemapCandidateUrls(
+  baseUrl: string,
+  customSitemapPaths: string[] = [],
+): string[] {
+  const base = baseUrl.replace(/\/+$/, "");
+  const custom = customSitemapPaths
+    .map((path) => {
+      try {
+        return new URL(path, `${base}/`).toString();
+      } catch {
+        return null;
+      }
+    })
+    .filter((url): url is string => url !== null);
+  return [
+    ...custom,
+    `${base}/sitemap.xml`,
+    `${base}/sitemap_index.xml`,
+    `${base}/product-sitemap.xml`,
+    `${base}/pages-sitemap.xml`,
+    `${base}/robots.txt`,
+  ];
+}
