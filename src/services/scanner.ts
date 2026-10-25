@@ -1,11 +1,13 @@
 import { createHash } from "crypto";
 import { decodeHTML } from "entities";
 import { ScanResult } from "../types";
-import { UrlProcessor, isPublicUrl, isSelfCanonical } from "../utils/url";
+import { UrlProcessor, isPublicUrl, isSelfCanonical, normalizeForSelfCompare } from "../utils/url";
 import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders, detectPlatformFromHtml, platformNeedsHeadless } from "../utils/browser";
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
+import { extractFromHtml, deriveCleanTitle, isHtmlContentType, decodeHtmlBody, parseLinkHeaderCanonical } from "./extract/parse-html";
+import { isSoft404 } from "./extract/soft404";
 
 /** Decode HTML entities in every value of a string record (OG / Twitter tags). */
 function decodeStringRecord(
@@ -18,8 +20,81 @@ function decodeStringRecord(
   return out;
 }
 
+/** Upper bound on HTML bytes we parse per page (E-02). Real pages are a tiny
+ * fraction of this; the cap only guards against pathological runaway documents. */
+const MAX_HTML_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/**
+ * Below this HTTP word count, a page on a client-rendered platform is assumed
+ * to be a shell (nav + cookie banner) rather than real content, so we escalate
+ * to headless (J-01). Real content pages on these platforms comfortably exceed
+ * it; the "keep HTTP unless headless is better" guard downstream protects the
+ * rare genuinely-thin page from a worse headless result.
+ */
+const SPA_SHELL_WORD_COUNT = 200;
+
+/**
+ * Decide whether an HTTP scan result is too poor to trust and should be
+ * re-fetched with a headless browser. Pure so it is unit-testable (J-01).
+ */
+export function needsHeadlessEscalation(
+  result: Pick<ScanResult, "title" | "content_type" | "content_length" | "word_count" | "is_non_html">,
+  platform: string | null,
+): boolean {
+  // A non-HTML resource (PDF, feed, image …) is tracked, not rendered. It has
+  // no title/content by design, so never escalate it to headless (S-02).
+  if (result.is_non_html) return false;
+
+  // No title at all — likely JS-rendered SPA.
+  if (!result.title || result.title.length < 3) return true;
+
+  const isHtml = !!result.content_type?.includes("text/html");
+
+  // Almost no text content — page body is probably rendered by JS.
+  if (isHtml && (result.content_length ?? 0) < 500 && (result.word_count ?? 0) < 5) {
+    return true;
+  }
+
+  // Client-rendered platform (Shopify/Squarespace/Wix/SPA …): a shell can clear
+  // the thin-content bar above with just nav + a cookie notice while hiding the
+  // real, client-rendered content, links and schema. Escalate unless the HTTP
+  // response already captured substantial content (J-01).
+  if (isHtml && platformNeedsHeadless(platform) && (result.word_count ?? 0) < SPA_SHELL_WORD_COUNT) {
+    return true;
+  }
+
+  return false;
+}
+
+/** The SSRF guard used before every fetch. Production always uses the strict
+ * `isPublicUrl`; only tests inject a permissive one (see ScannerDeps). */
+export type UrlGuard = (url: string) => Promise<boolean>;
+/** The network fetch used for HTTP scans and image probes. Defaults to the
+ * real `proxyFetch`; injectable for fetch-layer integration tests. */
+export type FetchImpl = typeof proxyFetch;
+
+/**
+ * Injectable dependencies for the Scanner. Both default to the strict
+ * production implementations, so a Scanner constructed the normal way
+ * (`new Scanner()`) behaves exactly as before and can never relax the SSRF
+ * guard. Only test code passes overrides — e.g. a guard that permits a local
+ * fixture server on 127.0.0.1. There is deliberately no env var or runtime flag
+ * that swaps these out, so no production code path can loosen the guard.
+ */
+export interface ScannerDeps {
+  urlGuard?: UrlGuard;
+  fetchImpl?: FetchImpl;
+}
+
 export class Scanner {
   private userAgent = USER_AGENT;
+  private urlGuard: UrlGuard;
+  private fetchImpl: FetchImpl;
+
+  constructor(deps: ScannerDeps = {}) {
+    this.urlGuard = deps.urlGuard ?? isPublicUrl;
+    this.fetchImpl = deps.fetchImpl ?? proxyFetch;
+  }
 
   async scan(
     url: string,
@@ -27,7 +102,7 @@ export class Scanner {
     forceHeadless: boolean = false,
   ): Promise<ScanResult> {
     // SSRF protection: block requests to private/reserved IP ranges
-    const isSafe = await isPublicUrl(url);
+    const isSafe = await this.urlGuard(url);
     if (!isSafe) {
       const result = this.createBaseScanResult(url, depth);
       result.errors = [`Blocked: URL resolves to a private or reserved IP address`];
@@ -78,7 +153,7 @@ export class Scanner {
     // Platform detection alone is not enough — if HTTP got good data, keep it.
     // Never escalate bot challenges to headless — if HTTP got blocked, headless will too.
     const isBotChallenge = !!(result as any)._isBotChallenge;
-    const httpResultsArePoor = !isBotChallenge && this.needsHeadlessVerification(result);
+    const httpResultsArePoor = !isBotChallenge && this.needsHeadlessVerification(result, detectedPlatform);
 
     if (isBotChallenge) {
       console.log(`🛡️ Bot challenge detected via HTTP for ${url} — skipping headless (will be blocked too)`);
@@ -326,8 +401,10 @@ export class Scanner {
     result: ScanResult,
     urlProcessor: UrlProcessor,
   ): Promise<void> {
-    // Extract title with multiple fallbacks
-    result.title = await this.extractTitle(page);
+    // Title stored verbatim (P-01); cleaned form is a separate derived field.
+    const rawTitle = await this.extractTitleVerbatim(page);
+    result.title = rawTitle;
+    result.title_cleaned = deriveCleanTitle(rawTitle);
 
     // Extract meta description
     result.meta_description = await this.extractMetaDescription(page);
@@ -519,119 +596,35 @@ export class Scanner {
       };
     });
 
+    // Soft-404: a 2xx response whose title/H1 reads as "not found" (S-01).
+    result.soft_404 = isSoft404(result.status, result.title, result.h1s);
+
     // Mark as headless scan
     result.scan_method = "headless";
   }
 
-  private async extractTitle(page: Page): Promise<string> {
+  /**
+   * The page's title, VERBATIM (P-01). document.title is already the parsed,
+   * entity-decoded <title>. Fall back to og:title then the first H1 only when
+   * there is no <title>. No brand-suffix stripping and no payment-provider
+   * filtering of a real title — the cleaned form is a separate derived field
+   * (title_cleaned). Matches the HTTP path's extractFromHtml title behaviour.
+   */
+  private async extractTitleVerbatim(page: Page): Promise<string> {
     try {
-      // Multiple strategies to get the correct title
-      const titleStrategies = [
-        // Strategy 1: Page title
-        () => page.title(),
-
-        // Strategy 2: Open Graph title
-        () =>
-          page.$eval('meta[property="og:title"]', (el) =>
-            el.getAttribute("content"),
-          ),
-
-        // Strategy 3: First meaningful H1
-        () => page.$eval("h1", (el) => el.textContent?.trim()),
-
-        // Strategy 4: Twitter title
-        () =>
-          page.$eval('meta[name="twitter:title"]', (el) =>
-            el.getAttribute("content"),
-          ),
-
-        // Strategy 5: Product-specific selectors for e-commerce
-        () =>
-          page.$eval(
-            ".product-title, .product-name, [data-product-title]",
-            (el) => el.textContent?.trim(),
-          ),
-
-        // Strategy 6: Page-specific selectors
-        () =>
-          page.$eval(
-            ".page-title, .hero-title, h1.title",
-            (el) => el.textContent?.trim(),
-          ),
-      ];
-
-      for (const strategy of titleStrategies) {
-        try {
-          const title = await strategy();
-          if (title && this.isValidTitle(title)) {
-            return this.cleanTitle(title);
-          }
-        } catch (e) {
-          // Try next strategy
-          continue;
-        }
-      }
-
-      // Fallback to page title even if it seems invalid
-      const fallbackTitle = await page.title();
-      return this.cleanTitle(fallbackTitle);
-    } catch (error) {
-      console.error("Error extracting title:", error);
+      const docTitle = ((await page.title()) || "").trim();
+      if (docTitle) return docTitle;
+      const og = await page
+        .$eval('meta[property="og:title"]', (el) => el.getAttribute("content"))
+        .catch(() => null);
+      if (og && og.trim()) return og.trim();
+      const h1 = await page
+        .$eval("h1", (el) => el.textContent?.trim() || "")
+        .catch(() => null);
+      return (h1 || "").trim();
+    } catch {
       return "";
     }
-  }
-
-  private isValidTitle(title: string): boolean {
-    if (!title || title.length < 2) return false;
-
-    // Check for payment provider titles that shouldn't be page titles
-    const paymentProviders = [
-      "American Express",
-      "Visa",
-      "MasterCard",
-      "PayPal",
-      "Apple Pay",
-      "Google Pay",
-      "Stripe",
-      "Shop Pay",
-      "Klarna",
-      "Afterpay",
-      "Sezzle",
-    ];
-
-    const trimmedTitle = title.trim();
-    return !paymentProviders.some(
-      (provider) =>
-        trimmedTitle === provider ||
-        trimmedTitle.toLowerCase() === provider.toLowerCase(),
-    );
-  }
-
-  private cleanTitle(title: string): string {
-    if (!title) return "";
-
-    // Decode HTML entities (named + numeric) via a proper decoder.
-    const decoded = decodeHTML(title);
-
-    // Common site name patterns to remove (only at end of title)
-    // These are typically brand suffixes like "Product Name | Brand" or "Page - Company Name"
-    const siteNamePatterns = [
-      /\s*[|–—]\s*(?:Official\s+)?(?:Site|Website|Home|Shop|Store|Online).*$/i,
-      /\s*[|–—]\s*(?:Buy|Order|Get|Shop)\s+.*$/i,
-      /\s*[|–—]\s*(?:Free Shipping|Fast Delivery).*$/i,
-    ];
-
-    let cleaned = decoded.trim();
-
-    // Only apply site name removal if it looks like a suffix pattern
-    for (const pattern of siteNamePatterns) {
-      cleaned = cleaned.replace(pattern, "");
-    }
-
-    // Remove excessive whitespace
-    cleaned = cleaned.replace(/\s+/g, " ").trim();
-
-    return cleaned;
   }
 
   private async extractMetaDescription(page: Page): Promise<string> {
@@ -1076,14 +1069,11 @@ export class Scanner {
     return false;
   }
 
-  private needsHeadlessVerification(result: ScanResult): boolean {
-    // No title at all — likely JS-rendered SPA
-    if (!result.title || result.title.length < 3) return true;
-
-    // Almost no text content — page body is probably rendered by JS
-    if (result.content_type?.includes("text/html") && result.content_length < 500 && result.word_count < 5) return true;
-
-    return false;
+  private needsHeadlessVerification(
+    result: ScanResult,
+    platform?: string | null,
+  ): boolean {
+    return needsHeadlessEscalation(result, platform ?? null);
   }
 
   private async httpScan(
@@ -1109,6 +1099,7 @@ export class Scanner {
 
         // Track redirect chain by following redirects manually
         const redirectChain: string[] = [];
+        const redirectHops: { from: string; status: number; to: string }[] = [];
         let currentUrl = url;
         let response: Response | null = null;
         const maxRedirects = 10;
@@ -1116,16 +1107,21 @@ export class Scanner {
         const fetchStart = Date.now();
 
         const seenUrls = new Set<string>();
+        let loopDetected = false;
 
         for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
-          if (seenUrls.has(currentUrl)) {
+          // Key on a normalised form so a slash/scheme-variant cycle
+          // (A → A/ → A …) is caught as a loop, not run to the hop budget (R-04).
+          const seenKey = normalizeForSelfCompare(currentUrl) ?? currentUrl;
+          if (seenUrls.has(seenKey)) {
             // Redirect loop detected — record it and break
             result.redirect_chain = [...redirectChain, currentUrl];
+            loopDetected = true;
             break;
           }
-          seenUrls.add(currentUrl);
+          seenUrls.add(seenKey);
 
-          response = await proxyFetch(currentUrl, {
+          response = await this.fetchImpl(currentUrl, {
             headers: {
               "User-Agent": this.userAgent,
               Accept:
@@ -1143,11 +1139,16 @@ export class Scanner {
             if (location) {
               redirectChain.push(currentUrl);
               // Resolve relative redirect URLs
+              let nextUrl: string;
               try {
-                currentUrl = new URL(location, currentUrl).href;
+                nextUrl = new URL(location, currentUrl).href;
               } catch {
-                currentUrl = location;
+                nextUrl = location;
               }
+              // Record this hop's status so 301/308 (permanent) can be told
+              // apart from 302/303/307 (temporary) later (R-01).
+              redirectHops.push({ from: currentUrl, status: response.status, to: nextUrl });
+              currentUrl = nextUrl;
               continue;
             }
           }
@@ -1161,9 +1162,19 @@ export class Scanner {
           throw new Error("No response received");
         }
 
+        // Still a 3xx after the loop (and not a detected loop): either the hop
+        // budget was exhausted or a redirect had no Location. Flag it rather
+        // than silently storing a bare redirect as if it were the page (R-03/S-03).
+        if (!loopDetected && response.status >= 300 && response.status < 400) {
+          result.redirect_limit_hit = true;
+        }
+
         // Store the redirect chain (only if there were redirects)
         if (redirectChain.length > 0) {
           result.redirect_chain = redirectChain;
+        }
+        if (redirectHops.length > 0) {
+          result.redirect_hops = redirectHops;
         }
 
         result.status = response.status;
@@ -1203,21 +1214,64 @@ export class Scanner {
           continue;
         }
 
-        if (!result.content_type.includes("text/html")) {
+        // Non-HTML resource (PDF, image, feed, JSON …): record it for
+        // broken-link/redirect tracking but don't parse it or score it as a
+        // page (S-02). XHTML is HTML and still parsed (E-03).
+        if (!isHtmlContentType(result.content_type)) {
           clearTimeout(timeoutId);
+          result.is_non_html = true;
           result.load_time_ms = Date.now() - fetchStart;
           return result;
         }
 
-        const html = await response.text();
+        // Read the raw bytes and decode with the page's declared charset (P-07).
+        // response.text() assumes UTF-8, mangling windows-1252 / Shift_JIS pages.
+        // Parsing is capped at MAX_HTML_BYTES so a pathological page can't
+        // exhaust memory (E-02).
+        const bodyBuf = new Uint8Array(await response.arrayBuffer());
+        const html = decodeHtmlBody(bodyBuf, result.content_type, MAX_HTML_BYTES);
         clearTimeout(timeoutId);
         // Real load time: first byte through full body download. Everything
         // after this (HTML parsing, image HEADs, readability) is our analysis
         // and must not count toward the page's load time.
         result.load_time_ms = Date.now() - fetchStart;
-        result.size_bytes = new TextEncoder().encode(html).length;
+        // Page weight = bytes actually transferred (E-04). Prefer the
+        // Content-Length header (the compressed download size the user pays
+        // for); fall back to the decompressed body length when it's absent
+        // (chunked responses). This is a real transfer measure, unlike the
+        // headless path's serialized rendered-DOM length — so the
+        // large_page_size check is HTTP-only (PF-03).
+        const contentLengthHeader = Number(response.headers.get("content-length"));
+        result.size_bytes =
+          Number.isFinite(contentLengthHeader) && contentLengthHeader > 0
+            ? contentLengthHeader
+            : bodyBuf.byteLength;
+        if (bodyBuf.byteLength > MAX_HTML_BYTES) {
+          (result.warnings ??= []).push(
+            `HTML body ${(bodyBuf.byteLength / 1048576).toFixed(1)} MB exceeds the ${MAX_HTML_BYTES / 1048576} MB parse cap; analysed the first ${MAX_HTML_BYTES / 1048576} MB`,
+          );
+        }
 
         await this.processHtml(result, html, urlProcessor);
+
+        // Canonical declared in the HTTP `Link` header (CN-05). Merge it with
+        // any HTML <link rel=canonical>: a header canonical and a differing HTML
+        // one are conflicting signals, surfaced via canonical_urls (CN-01).
+        const headerCanonical = parseLinkHeaderCanonical(
+          response.headers.get("link"),
+          result.url,
+        );
+        if (headerCanonical) {
+          const set = new Set(result.canonical_urls ?? []);
+          if (result.canonical_url) set.add(result.canonical_url);
+          set.add(headerCanonical);
+          result.canonical_urls = [...set];
+          if (!result.canonical_url) {
+            result.canonical_url = headerCanonical;
+            result.canonical_is_self = isSelfCanonical(headerCanonical, result.url);
+          }
+        }
+
         result.scan_method = "http";
         // Attach raw HTML temporarily for platform detection in scan()
         (result as any)._rawHtml = html;
@@ -1282,495 +1336,73 @@ export class Scanner {
     html: string,
     urlProcessor: UrlProcessor,
   ): Promise<void> {
-    // Extract title with fallbacks
-    result.title = this.extractTitleFromHtml(html);
+    // Single DOM-string extraction path (P-06): cheerio parses the raw HTML and
+    // fills every DOM-derivable field, with the parser-level correctness fixes
+    // baked in (see src/services/extract/parse-html.ts). Replaces the old
+    // per-field regex extraction that lived here.
+    const parsed = extractFromHtml(html, result.url);
 
-    // Extract meta description (handle both attribute orders)
-    const metaMatch = html.match(
-      /<meta[^>]*name=["']description["'][^>]*content=["'](.*?)["']/i,
-    ) || html.match(
-      /<meta[^>]*content=["'](.*?)["'][^>]*name=["']description["']/i,
-    );
-    if (metaMatch) {
-      // Decode entities before storing so length checks and display are accurate.
-      result.meta_description = decodeHTML(metaMatch[1]).trim();
-    }
+    result.title = parsed.title ?? "";
+    result.title_cleaned = parsed.title_cleaned;
+    if (parsed.meta_description !== undefined) result.meta_description = parsed.meta_description;
+    result.favicon_url = parsed.favicon_url ?? null;
 
-    // Extract the declared favicon: any <link> whose rel contains "icon"
-    // (icon, shortcut icon, apple-touch-icon, mask-icon), in any attribute order.
-    const linkTagRegex = /<link\b[^>]*>/gi;
-    let linkTag: RegExpExecArray | null;
-    while ((linkTag = linkTagRegex.exec(html)) !== null) {
-      const tag = linkTag[0];
-      if (/rel=["'][^"']*icon[^"']*["']/i.test(tag)) {
-        const href = tag.match(/href=["']([^"']+)["']/i);
-        if (href) {
-          const decodedHref = decodeHTML(href[1]);
-          result.favicon_url = urlProcessor.resolve(result.url, decodedHref) || decodedHref;
-          break;
-        }
-      }
-    }
+    result.h1s = parsed.h1s ?? [];
+    result.h2s = parsed.h2s ?? [];
+    result.h3s = parsed.h3s ?? [];
+    result.h4s = parsed.h4s ?? [];
+    result.h5s = parsed.h5s ?? [];
+    result.h6s = parsed.h6s ?? [];
+    result.heading_hierarchy_valid = parsed.heading_hierarchy_valid ?? true;
+    result.heading_hierarchy_issues = parsed.heading_hierarchy_issues ?? [];
 
-    // Extract headings using regex
-    const extractHeadings = (tag: string) => {
-      const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi");
-      const headings = [];
-      let match;
-      while ((match = regex.exec(html)) !== null) {
-        const text = decodeHTML(match[1].replace(/<[^>]+>/g, "")).trim();
-        if (text.length > 0) {
-          headings.push(text);
-        }
-      }
-      return headings;
-    };
+    result.internal_links = parsed.internal_links ?? [];
+    result.external_links = parsed.external_links ?? [];
+    result.images = parsed.images ?? [];
 
-    result.h1s = extractHeadings("h1");
-    result.h2s = extractHeadings("h2");
-    result.h3s = extractHeadings("h3");
-    result.h4s = extractHeadings("h4");
-    result.h5s = extractHeadings("h5");
-    result.h6s = extractHeadings("h6");
+    result.content_length = parsed.content_length ?? 0;
+    result.word_count = parsed.word_count ?? 0;
+    result.lead_paragraph_words = parsed.lead_paragraph_words ?? 0;
+    result.content_hash = parsed.content_hash;
+    result.readability_score = parsed.readability_score;
+    result.keywords = parsed.keywords ?? [];
 
-    // Extract and process links
-    this.extractLinksFromHtml(html, result, urlProcessor);
+    result.canonical_url = parsed.canonical_url ?? null;
+    result.canonical_urls = parsed.canonical_urls;
+    result.canonical_is_self = isSelfCanonical(result.canonical_url, result.url);
 
-    // Extract images
-    this.extractImagesFromHtml(html, result, urlProcessor);
+    // Robots: merge the meta signal with any X-Robots-Tag header already applied
+    // in httpScan (header noindex must not be cleared by a permissive meta).
+    result.has_robots_noindex = result.has_robots_noindex || !!parsed.meta_noindex;
+    result.has_robots_nofollow = result.has_robots_nofollow || !!parsed.meta_nofollow;
+    result.is_indexable = !result.has_robots_noindex;
 
-    // Content-area text: exclude nav/header/footer/aside boilerplate so word
-    // count, readability and the duplicate-content hash reflect real content,
-    // not a Divi header+footer shared across every page (which alone reads as
-    // ~150 words and falsely flags real pages as thin).
-    const noScripts = html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "");
-    const mainMatch = noScripts.match(
-      /<(main|article)\b[^>]*>([\s\S]*?)<\/\1>/i,
-    );
-    const contentHtml = (mainMatch ? mainMatch[2] : noScripts).replace(
-      /<(nav|header|footer|aside|form)\b[^>]*>[\s\S]*?<\/\1>/gi,
-      " ",
-    );
-    // Strip tags, then decode entities, then collapse whitespace so word count,
-    // readability, the content hash and the keyword tokeniser all operate on
-    // real text (not "&rsquo;" → the bogus keyword "rsquo").
-    const textContent = decodeHTML(contentHtml.replace(/<[^>]+>/g, " "))
-      .replace(/\s+/g, " ")
-      .trim();
+    result.open_graph = parsed.open_graph ?? {};
+    result.twitter_card = parsed.twitter_card ?? {};
+    result.structured_data = parsed.structured_data ?? [];
+    result.schema_types = parsed.schema_types ?? [];
+    result.has_invalid_structured_data = parsed.has_invalid_structured_data;
 
-    // content_length stays a whole-page proxy (a page-size signal).
-    const fullText = decodeHTML(noScripts.replace(/<[^>]+>/g, " "))
-      .replace(/\s+/g, " ")
-      .trim();
-    result.content_length = fullText.length;
-    result.word_count = textContent
-      .split(/\s+/)
-      .filter((w) => w.length > 0).length;
+    result.script_srcs = parsed.script_srcs ?? [];
+    result.js_count = parsed.js_count ?? 0;
+    result.stylesheet_hrefs = parsed.stylesheet_hrefs ?? [];
+    result.css_count = parsed.css_count ?? 0;
 
-    // Answer block: first substantial <p> after the H1 in the content area.
-    const afterH1 =
-      contentHtml.split(/<h1\b[^>]*>[\s\S]*?<\/h1>/i)[1] ?? contentHtml;
-    const firstP = afterH1.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i);
-    result.lead_paragraph_words = firstP
-      ? decodeHTML(firstP[1].replace(/<[^>]+>/g, " "))
-          .replace(/\s+/g, " ")
-          .trim()
-          .split(/\s+/)
-          .filter((w) => w.length > 0).length
-      : 0;
+    result.has_viewport_meta = parsed.has_viewport_meta ?? false;
+    result.has_mixed_content = parsed.has_mixed_content ?? false;
+    result.hreflang_tags = parsed.hreflang_tags ?? [];
+    result.url_issues = parsed.url_issues ?? [];
+    result.has_contact_form = parsed.has_contact_form ?? false;
+    result.cls_risk_images = parsed.cls_risk_images ?? 0;
+    result.accessibility = parsed.accessibility;
+    result.has_cookie_consent = parsed.has_cookie_consent ?? false;
+    result.resource_hints = parsed.resource_hints;
 
-    result.content_hash = this.computeContentHash(textContent);
-    result.readability_score = this.computeReadabilityScore(textContent);
+    // Soft-404: a 2xx response whose title/H1 reads as "not found" (S-01).
+    result.soft_404 = isSoft404(result.status, result.title, result.h1s);
 
-    // Extract keywords from page content
-    result.keywords = this.extractKeywords(textContent);
-
-    // Extract meta tags (merge with header-based detection, don't override)
-    result.canonical_url = this.extractCanonicalFromHtml(html);
-    if (this.hasRobotsNoindex(html)) {
-      result.has_robots_noindex = true;
-      result.is_indexable = false;
-    }
-    if (this.hasRobotsNofollow(html)) {
-      result.has_robots_nofollow = true;
-    }
-    // Set indexable to true only if not already set to false by headers or meta
-    if (result.is_indexable === undefined || result.is_indexable === null) {
-      result.is_indexable = !result.has_robots_noindex;
-    }
-
-    // Extract Open Graph tags
-    const ogRegex = /<meta[^>]*property=["']og:([^"']+)["'][^>]*content=["']([^"']*)["'][^>]*>/gi;
-    const ogRegexAlt = /<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:([^"']+)["'][^>]*>/gi;
-    let ogMatch;
-    while ((ogMatch = ogRegex.exec(html)) !== null) {
-      result.open_graph[ogMatch[1]] = decodeHTML(ogMatch[2]);
-    }
-    while ((ogMatch = ogRegexAlt.exec(html)) !== null) {
-      result.open_graph[ogMatch[2]] = decodeHTML(ogMatch[1]);
-    }
-
-    // Extract Twitter Card tags
-    const twRegex = /<meta[^>]*name=["']twitter:([^"']+)["'][^>]*content=["']([^"']*)["'][^>]*>/gi;
-    const twRegexAlt = /<meta[^>]*content=["']([^"']*)["'][^>]*name=["']twitter:([^"']+)["'][^>]*>/gi;
-    let twMatch;
-    while ((twMatch = twRegex.exec(html)) !== null) {
-      result.twitter_card[twMatch[1]] = decodeHTML(twMatch[2]);
-    }
-    while ((twMatch = twRegexAlt.exec(html)) !== null) {
-      result.twitter_card[twMatch[2]] = decodeHTML(twMatch[1]);
-    }
-
-    // Extract JSON-LD structured data
-    const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-    let jsonLdMatch;
-    while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null) {
-      try {
-        const data = JSON.parse(jsonLdMatch[1].trim());
-        result.structured_data.push(data);
-        if (data["@type"]) {
-          const types = Array.isArray(data["@type"]) ? data["@type"] : [data["@type"]];
-          result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
-        }
-        if (data["@graph"] && Array.isArray(data["@graph"])) {
-          for (const item of data["@graph"]) {
-            if (item["@type"]) {
-              const types = Array.isArray(item["@type"]) ? item["@type"] : [item["@type"]];
-              result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
-            }
-          }
-        }
-        if (Array.isArray(data) && data.length > 0 && data[0]["@type"]) {
-          const types = Array.isArray(data[0]["@type"]) ? data[0]["@type"] : [data[0]["@type"]];
-          result.schema_types.push(...types.filter((t: any) => typeof t === 'string'));
-        }
-      } catch (e) {
-        // Invalid JSON-LD, skip
-      }
-    }
-    // Deduplicate schema types
-    result.schema_types = [...new Set(result.schema_types)];
-
-    // Capture the real <script src> and <link rel=stylesheet href> URLs so the
-    // audit tech-stack analysis can detect frameworks/CMSs from actual bundle
-    // paths (e.g. /_next/static/, wp-content, cdn.shopify.com) rather than
-    // guessing from anchor hrefs. Counts derive from the captured URLs.
-    const scriptSrcs: string[] = [];
-    const scriptSrcRe = /<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi;
-    let scriptMatch: RegExpExecArray | null;
-    while ((scriptMatch = scriptSrcRe.exec(html)) !== null) {
-      scriptSrcs.push(scriptMatch[1]);
-    }
-    result.script_srcs = scriptSrcs;
-    result.js_count = scriptSrcs.length;
-
-    const stylesheetHrefs: string[] = [];
-    const linkTagRe = /<link\b[^>]*>/gi;
-    let linkMatch: RegExpExecArray | null;
-    while ((linkMatch = linkTagRe.exec(html)) !== null) {
-      const tag = linkMatch[0];
-      if (/\brel\s*=\s*["']stylesheet["']/i.test(tag)) {
-        const href = tag.match(/\bhref\s*=\s*["']([^"']+)["']/i);
-        if (href) stylesheetHrefs.push(href[1]);
-      }
-    }
-    result.stylesheet_hrefs = stylesheetHrefs;
-    result.css_count = stylesheetHrefs.length;
-
-    // Check for viewport meta tag
-    result.has_viewport_meta = /<meta[^>]*name=["']viewport["']/i.test(html);
-
-    // Check for mixed content (HTTPS page with HTTP resources)
-    if (result.url.startsWith("https://")) {
-      const mixedContentPatterns = [
-        /<img[^>]*src=["']http:\/\//i,
-        /<script[^>]*src=["']http:\/\//i,
-        /<link[^>]*href=["']http:\/\//i,
-        /<iframe[^>]*src=["']http:\/\//i,
-        /<video[^>]*src=["']http:\/\//i,
-        /<audio[^>]*src=["']http:\/\//i,
-        /<source[^>]*src=["']http:\/\//i,
-        /<object[^>]*data=["']http:\/\//i,
-        /<embed[^>]*src=["']http:\/\//i,
-      ];
-      result.has_mixed_content = mixedContentPatterns.some((pattern) => pattern.test(html));
-    } else {
-      result.has_mixed_content = false;
-    }
-
-    // Extract hreflang tags
-    const hreflangRegex = /<link[^>]*rel=["']alternate["'][^>]*hreflang=["']([^"']*)["'][^>]*href=["']([^"']*)["'][^>]*>/gi;
-    const hreflangRegexAlt = /<link[^>]*hreflang=["']([^"']*)["'][^>]*rel=["']alternate["'][^>]*href=["']([^"']*)["'][^>]*>/gi;
-    const hreflangRegexAlt2 = /<link[^>]*href=["']([^"']*)["'][^>]*rel=["']alternate["'][^>]*hreflang=["']([^"']*)["'][^>]*>/gi;
-    result.hreflang_tags = [];
-    let hreflangMatch;
-    while ((hreflangMatch = hreflangRegex.exec(html)) !== null) {
-      result.hreflang_tags.push({ lang: hreflangMatch[1], url: hreflangMatch[2] });
-    }
-    while ((hreflangMatch = hreflangRegexAlt.exec(html)) !== null) {
-      result.hreflang_tags.push({ lang: hreflangMatch[1], url: hreflangMatch[2] });
-    }
-    while ((hreflangMatch = hreflangRegexAlt2.exec(html)) !== null) {
-      result.hreflang_tags.push({ lang: hreflangMatch[2], url: hreflangMatch[1] });
-    }
-
-    // Check canonical_is_self
-    result.canonical_is_self = this.checkCanonicalIsSelf(result.canonical_url, result.url);
-
-    // Check URL issues
-    result.url_issues = this.analyzeUrlIssues(result.url);
-
-    // Check heading hierarchy
-    const hierarchyResult = this.checkHeadingHierarchy(result);
-    result.heading_hierarchy_valid = hierarchyResult.valid;
-    result.heading_hierarchy_issues = hierarchyResult.issues;
-
-    // Detect contact forms
-    result.has_contact_form = this.detectContactForm(html);
-
-    // CLS risk: images without explicit width/height
-    result.cls_risk_images = (() => {
-      const imgRegex = /<img\s[^>]*>/gi;
-      let count = 0;
-      let m;
-      while ((m = imgRegex.exec(html)) !== null) {
-        const tag = m[0];
-        if (!(/width=["']?\d/.test(tag) && /height=["']?\d/.test(tag))) count++;
-      }
-      return count;
-    })();
-
-    // Accessibility (limited via regex)
-    result.accessibility = {
-      html_lang: (html.match(/<html[^>]*\slang=["']([^"']+)["']/i) || [])[1] || undefined,
-      form_labels_missing: 0,
-      aria_landmarks: (() => {
-        const landmarks = new Set<string>();
-        if (/<nav[\s>]/i.test(html)) landmarks.add("nav");
-        if (/<main[\s>]/i.test(html)) landmarks.add("main");
-        if (/<header[\s>]/i.test(html)) landmarks.add("header");
-        if (/<footer[\s>]/i.test(html)) landmarks.add("footer");
-        if (/<aside[\s>]/i.test(html)) landmarks.add("aside");
-        return [...landmarks];
-      })(),
-      has_skip_nav: /href=["']#[^"']*["'][^>]*>[^<]*(skip|jump to)/i.test(html),
-      tabindex_misuse: 0,
-    };
-
-    // Cookie consent detection
-    result.has_cookie_consent = /cookie[-_]?(banner|consent|notice|policy|popup)|gdpr|onetrust|cookiebot|cc-banner/i.test(html);
-
-    // Resource hints
-    result.resource_hints = (() => {
-      const extract = (rel: string) => {
-        const re = new RegExp(`<link[^>]*rel=["']${rel}["'][^>]*href=["']([^"']+)["']`, "gi");
-        const reAlt = new RegExp(`<link[^>]*href=["']([^"']+)["'][^>]*rel=["']${rel}["']`, "gi");
-        const urls: string[] = [];
-        let m;
-        while ((m = re.exec(html)) !== null) urls.push(m[1]);
-        while ((m = reAlt.exec(html)) !== null) urls.push(m[1]);
-        return urls;
-      };
-      return {
-        preconnect: extract("preconnect"),
-        preload: extract("preload"),
-        prefetch: extract("prefetch"),
-        dns_prefetch: extract("dns-prefetch"),
-      };
-    })();
-
-    // Fetch image file sizes (background, non-blocking)
+    // Network step (not pure): probe image file sizes.
     await this.fetchImageFileSizes(result.images);
-  }
-
-  private extractTitleFromHtml(html: string): string {
-    // Try multiple strategies for title extraction
-    const strategies = [
-      // Strategy 1: Regular title tag
-      () => {
-        const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
-        return titleMatch ? titleMatch[1].trim() : null;
-      },
-
-      // Strategy 2: Open Graph title
-      () => {
-        const ogMatch = html.match(
-          /<meta[^>]*property=["']og:title["'][^>]*content=["'](.*?)["']/i,
-        );
-        return ogMatch ? ogMatch[1] : null;
-      },
-
-      // Strategy 3: First H1
-      () => {
-        const h1Match = html.match(/<h1[^>]*>(.*?)<\/h1>/i);
-        return h1Match ? h1Match[1].replace(/<[^>]+>/g, "").trim() : null;
-      },
-    ];
-
-    for (const strategy of strategies) {
-      try {
-        const title = strategy();
-        if (title && this.isValidTitle(title)) {
-          return this.cleanTitle(title);
-        }
-      } catch (e) {
-        continue;
-      }
-    }
-
-    // Fallback to first title found, even if invalid
-    const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
-    return titleMatch ? this.cleanTitle(titleMatch[1].trim()) : "";
-  }
-
-  private extractLinksFromHtml(
-    html: string,
-    result: ScanResult,
-    urlProcessor: UrlProcessor,
-  ): void {
-    const linkRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-    let match;
-
-    while ((match = linkRegex.exec(html)) !== null) {
-      const href = decodeHTML(match[1]);
-      const text = decodeHTML(match[2].replace(/<[^>]+>/g, "")).trim();
-
-      const hrefLower = (href || "").trim().toLowerCase();
-      if (
-        !href ||
-        href === "#" ||
-        hrefLower.startsWith("javascript:") ||
-        hrefLower.startsWith("mailto:") ||
-        hrefLower.startsWith("tel:") ||
-        hrefLower.startsWith("data:") ||
-        hrefLower.startsWith("ftp:") ||
-        hrefLower.startsWith("sms:") ||
-        hrefLower.startsWith("blob:") ||
-        hrefLower.startsWith("file:") ||
-        hrefLower.startsWith("geo:") ||
-        hrefLower.startsWith("whatsapp:") ||
-        hrefLower.startsWith("skype:") ||
-        hrefLower.startsWith("viber:") ||
-        hrefLower.startsWith("callto:")
-      ) continue;
-
-      try {
-        const resolvedUrl = urlProcessor.resolve(result.url, href);
-        if (!resolvedUrl) continue;
-
-        // Extract rel attributes
-        const relMatch = match[0].match(/rel=["']([^"']*)["']/i);
-        const relAttributes = relMatch
-          ? relMatch[1].split(" ").filter((r) => r.length > 0)
-          : [];
-
-        const linkData = {
-          url: resolvedUrl,
-          anchor_text: text || href,
-          rel_attributes: relAttributes,
-        };
-
-        if (urlProcessor.isInternal(resolvedUrl)) {
-          result.internal_links.push(linkData);
-        } else {
-          result.external_links.push(linkData);
-        }
-      } catch (error) {
-        // Skip invalid URLs
-      }
-    }
-  }
-
-  private extractImagesFromHtml(
-    html: string,
-    result: ScanResult,
-    urlProcessor: UrlProcessor,
-  ): void {
-    const imgRegex = /<img\s+[^>]*src=["']([^"']+)["'][^>]*>/gi;
-    let match;
-
-    while ((match = imgRegex.exec(html)) !== null) {
-      // Decode entities first: a Next.js src like
-      // /_next/image?url=%2F...&amp;w=3840 must become ...&w=3840 before URL
-      // resolution, or the size fetch hits a malformed (&amp%3B) query.
-      const src = decodeHTML(match[1]);
-
-      try {
-        const resolvedUrl = urlProcessor.resolve(result.url, src);
-        if (!resolvedUrl) continue;
-
-        const altMatch = match[0].match(/alt=["'](.*?)["']/i);
-        const widthMatch = match[0].match(/width=["']?(\d+)/i);
-        const heightMatch = match[0].match(/height=["']?(\d+)/i);
-        const loadingMatch = match[0].match(/loading=["']([^"']*)["']/i);
-        const srcsetMatch = match[0].match(/srcset=["']([^"']*)["']/i);
-
-        const altValue = altMatch ? decodeHTML(altMatch[1]) : "";
-        // No alt attribute at all is the real issue; alt="" is a valid
-        // decorative-image signal, not a missing-alt problem.
-        const altState: "absent" | "empty" | "present" = !altMatch
-          ? "absent"
-          : altValue.trim() === ""
-            ? "empty"
-            : "present";
-
-        result.images.push({
-          src: resolvedUrl,
-          alt: altValue,
-          alt_state: altState,
-          dimensions: {
-            width: widthMatch ? parseInt(widthMatch[1], 10) : 0,
-            height: heightMatch ? parseInt(heightMatch[1], 10) : 0,
-          },
-          loading: loadingMatch ? loadingMatch[1] : "",
-          srcset: srcsetMatch ? decodeHTML(srcsetMatch[1]) : undefined,
-          format: this.deriveImageFormat(resolvedUrl),
-        });
-      } catch (error) {
-        // Skip invalid URLs
-      }
-    }
-  }
-
-  private extractCanonicalFromHtml(html: string): string | null {
-    const canonicalMatch = html.match(
-      /<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']*)["']/i,
-    );
-    return canonicalMatch ? decodeHTML(canonicalMatch[1]) : null;
-  }
-
-  private hasRobotsNoindex(html: string): boolean {
-    const robotsMatch = html.match(
-      /<meta[^>]*name=["']robots["'][^>]*content=["']([^"']*)["']/i,
-    );
-    return robotsMatch
-      ? robotsMatch[1].toLowerCase().includes("noindex")
-      : false;
-  }
-
-  private hasRobotsNofollow(html: string): boolean {
-    const robotsMatch = html.match(
-      /<meta[^>]*name=["']robots["'][^>]*content=["']([^"']*)["']/i,
-    );
-    return robotsMatch
-      ? robotsMatch[1].toLowerCase().includes("nofollow")
-      : false;
-  }
-
-  private detectContactForm(html: string): boolean {
-    const formRegex = /<form[\s\S]*?<\/form>/gi;
-    let match;
-    while ((match = formRegex.exec(html)) !== null) {
-      const form = match[0].toLowerCase();
-      const hasEmailInput = /type=["']email["']|name=["'][^"']*email[^"']*["']|autocomplete=["']email["']/.test(form);
-      const hasTextarea = /<textarea/.test(form);
-      const hasPhoneInput = /type=["']tel["']|name=["'][^"']*phone[^"']*["']/.test(form);
-      const hasNameInput = /name=["'][^"']*name[^"']*["']|autocomplete=["']name["']/.test(form);
-      if (hasEmailInput && (hasTextarea || hasPhoneInput || hasNameInput)) return true;
-    }
-    return false;
   }
 
   private createBaseScanResult(url: string, depth: number): ScanResult {
@@ -2062,18 +1694,24 @@ export class Scanner {
    */
   private async fetchImageFileSizes(
     images: ScanResult["images"],
-    limit: number = 10,
+    limit: number = 20,
   ): Promise<void> {
+    // Images beyond the probe cap are size-unknown, not "fine" (L-04).
+    for (const img of images.slice(limit)) img.file_size_unknown = true;
+
     const toCheck = images.slice(0, limit);
     const promises = toCheck.map(async (img) => {
       try {
         // SSRF guard: img.src comes from the scanned page, so it could point at
         // a private/internal host. Only HEAD public URLs (same guard the primary
         // fetch uses).
-        if (!(await isPublicUrl(img.src))) return;
+        if (!(await this.urlGuard(img.src))) {
+          img.file_size_unknown = true;
+          return;
+        }
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
-        const resp = await proxyFetch(img.src, {
+        const resp = await this.fetchImpl(img.src, {
           method: "HEAD",
           signal: controller.signal,
           headers: {
@@ -2084,9 +1722,13 @@ export class Scanner {
         const cl = resp.headers.get("content-length");
         if (cl) {
           img.file_size_bytes = parseInt(cl, 10);
+        } else {
+          // 200 with no Content-Length (chunked/streamed) — size still unknown.
+          img.file_size_unknown = true;
         }
       } catch {
-        // Skip — file size unknown
+        // HEAD failed — file size unknown, not confirmed small.
+        img.file_size_unknown = true;
       }
     });
     await Promise.allSettled(promises);

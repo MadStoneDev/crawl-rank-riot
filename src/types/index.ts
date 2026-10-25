@@ -22,6 +22,20 @@ export interface CrawlOptions {
   customSitemapPaths?: string[];
   seedPaths?: string[];
   wwwPreference?: "www" | "non-www";
+  /**
+   * Obey robots.txt Disallow/Allow + Crawl-delay for our UA (RB-01/RB-02).
+   * Defaults to true. May only be set false for a domain-verified project where
+   * the owner has authorised a full crawl (wired in Stage 4); until then nothing
+   * sets it false, so the crawler always obeys robots.
+   */
+  obeyRobots?: boolean;
+  /**
+   * Explicit additional seed URLs crawled at depth 0 (no discovery of their own).
+   * Used by the /api/v1 "urls" job scope to crawl exactly a given list. Empty /
+   * absent ⇒ unchanged single-seed behaviour. The base `url` passed to crawl()
+   * is still the origin used for internal/external classification.
+   */
+  seedUrls?: string[];
 }
 
 export interface ScanResult {
@@ -29,6 +43,10 @@ export interface ScanResult {
   url: string;
   status: number;
   title?: string;
+  // Verbatim <title> is stored in `title` (P-01). This is an optional derived
+  // display form with brand/suffix noise stripped — never used for length
+  // checks or as the stored title.
+  title_cleaned?: string;
   meta_description?: string;
   depth: number;
 
@@ -48,6 +66,12 @@ export interface ScanResult {
 
   // Meta information
   canonical_url: string | null;
+  // All distinct canonical targets found (resolved absolute). >1 means the page
+  // declares conflicting canonicals (CN-01). `canonical_url` is the first.
+  canonical_urls?: string[];
+  // True when a <script type="application/ld+json"> block failed to parse
+  // (malformed JSON), as opposed to no structured data at all (P-03).
+  has_invalid_structured_data?: boolean;
   is_indexable: boolean;
   has_robots_noindex: boolean;
   has_robots_nofollow: boolean;
@@ -78,6 +102,10 @@ export interface ScanResult {
       height: number;
     };
     file_size_bytes?: number;
+    // True when we did not determine this image's byte size (beyond the per-page
+    // probe cap, or the HEAD failed). Keeps "size unknown" distinct from "small"
+    // so size-dependent checks never treat an unprobed image as fine (L-04).
+    file_size_unknown?: boolean;
     loading?: string;
     srcset?: string;
     format?: string;
@@ -88,7 +116,21 @@ export interface ScanResult {
   is_redirect?: boolean;
   redirected_from?: string;
   redirect_chain?: string[];
+  // Per-hop record of the redirect chain with each hop's HTTP status, so a
+  // permanent (301/308) move can be told from a temporary (302/303/307) one
+  // (R-01). redirect_chain keeps the bare URL list for existing consumers.
+  redirect_hops?: Array<{ from: string; status: number; to: string }>;
+  // The response was still a 3xx after the redirect budget was exhausted (or a
+  // redirect had no Location) — never resolved to a real page (R-03/S-03).
+  redirect_limit_hit?: boolean;
   content_type: string;
+  // True when the response is a non-HTML resource (PDF, image, feed, JSON …)
+  // that returned 2xx (S-02). It is tracked for broken-link/redirect purposes
+  // but is not a "page": no HTML content checks run and it is excluded from the
+  // scored page set.
+  is_non_html?: boolean;
+  // True when a 2xx response is really a "page not found" page (soft 404, S-01).
+  soft_404?: boolean;
   size_bytes: number;
   load_time_ms: number;
   first_byte_time_ms: number;
@@ -110,6 +152,14 @@ export interface ScanResult {
   // from actual bundle paths instead of guessing from anchor hrefs.
   script_srcs?: string[];
   stylesheet_hrefs?: string[];
+
+  // Cleaned main-area text (nav/header/footer/aside stripped — the same text
+  // word_count/readability are derived from). In-memory only; persisted
+  // (truncated) to api_job_pages.content for /api/v1 page-data jobs (Stage 4).
+  main_text?: string;
+  // tel:/mailto: links found on the page, captured before nav-scheme filtering
+  // drops them. In-memory only; feeds the Stage 4 business_info module.
+  contact_links?: Array<{ type: "tel" | "email"; value: string; href: string }>;
 
   // SEO analysis
   keywords: Array<{
@@ -234,7 +284,6 @@ export interface AuditAnalysis {
 export interface ModernizationAnalysis {
   score: number; // 0-100
   usesJQuery: boolean;
-  usesOldFrameworks: boolean;
   hasModernBuildTools: boolean;
   findings: string[];
 }
@@ -312,7 +361,10 @@ export interface AuditResult {
   modernization_score: number;
   performance_score: number;
   completeness_score: number;
-  conversion_score: number;
+  // DEPRECATED: there is no conversion analysis, so this is written as null
+  // ("not measured") rather than a misleading constant 0. Scheduled for removal
+  // once the frontend stops reading it (§7.22, conversion_score decision).
+  conversion_score: number | null;
   overall_score: number;
   tech_stack: TechStackAnalysis;
   design_analysis: DesignAnalysis;

@@ -233,7 +233,12 @@ export async function detectAndStoreIssues(
     // noise on a slow host (every page fires); instead report ONE issue when
     // the site-wide MEDIAN first-byte time is slow. This is server response
     // time, not page weight, and is usually a single infrastructure fix.
+    // Only HTTP-timed pages: headless TTFB is measured from a different vantage
+    // (navigation start, media blocked) and must not be averaged with HTTP
+    // first-byte times (PF-02). The site-wide median already smooths per-page
+    // sampling noise (PF-01).
     const ttfbs = results
+      .filter((r) => r.scan_method === "http")
       .map((r) => r.first_byte_time_ms)
       .filter((v): v is number => typeof v === "number" && v > 0)
       .sort((a, b) => a - b);
@@ -553,7 +558,18 @@ function detectCrossPageDuplicates(
 /**
  * Analyze a single page's scan result and return all detected issues.
  */
-function analyzePageIssues(
+/** True when a canonical resolves to a different registrable host than the page (CN-03). */
+function isCrossDomainCanonical(canonical: string, pageUrl: string): boolean {
+  try {
+    const c = new URL(canonical, pageUrl).host.toLowerCase().replace(/^www\./, "");
+    const p = new URL(pageUrl).host.toLowerCase().replace(/^www\./, "");
+    return c !== p;
+  } catch {
+    return false;
+  }
+}
+
+export function analyzePageIssues(
   result: ScanResult,
   projectId: string,
   pageId: string,
@@ -595,7 +611,27 @@ function analyzePageIssues(
     });
   }
 
+  // Non-HTML resources (PDF, image, feed, JSON …) are not pages: the HTML
+  // content/SEO/media/AEO checks below don't apply, so running them would raise
+  // phantom "missing title/H1/meta" findings on a linked PDF (S-02). Status
+  // issues above (404/5xx) still fire so a broken non-HTML link is caught.
+  if (result.is_non_html) {
+    return issues;
+  }
+
   // ── HIGH ──────────────────────────────────────────────────────────────
+
+  // Soft 404 (S-01): a 2xx response whose content reads as "page not found".
+  // Search engines should see a 404/410; served as 200 it pollutes the index
+  // and is counted as a healthy page everywhere else.
+  if (result.soft_404) {
+    addIssue(
+      "soft_404",
+      "high",
+      "Page returns HTTP 200 but its content reads as a 'page not found' page (soft 404). It should return HTTP 404 or 410 instead.",
+      { url: result.url, status_code: result.status, title: result.title },
+    );
+  }
 
   if (!result.title || result.title.trim() === "") {
     addIssue("missing_title", "high", "Page is missing a title tag", {
@@ -855,8 +891,18 @@ function analyzePageIssues(
   }
 
   // Structured data validation
-  if (result.structured_data && result.structured_data.length > 0) {
+  if (
+    (result.structured_data && result.structured_data.length > 0) ||
+    result.has_invalid_structured_data
+  ) {
     const sdIssues: string[] = [];
+
+    // Malformed JSON-LD that couldn't be parsed at all (P-03). parse-html sets
+    // this flag independently of structured_data, so a block that fails to parse
+    // is reported even when nothing parseable survived.
+    if (result.has_invalid_structured_data) {
+      sdIssues.push("One or more JSON-LD blocks are malformed and could not be parsed");
+    }
 
     // A pure { "@id": "..." } object references another node; it is not a node
     // itself and must not be expected to carry @type.
@@ -939,7 +985,7 @@ function analyzePageIssues(
     };
 
     const nodes: any[] = [];
-    for (const sd of result.structured_data) collectNodes(sd, nodes);
+    for (const sd of result.structured_data ?? []) collectNodes(sd, nodes);
     for (const node of nodes) validateNode(node);
 
     if (sdIssues.length > 0) {
@@ -956,8 +1002,11 @@ function analyzePageIssues(
     }
   }
 
+  // Only HTTP-timed pages: size_bytes there is the transferred body weight,
+  // whereas the headless path reports the serialized rendered-DOM length, which
+  // isn't a comparable "page weight" and would over-flag (PF-03).
   const THREE_MB = 3 * 1024 * 1024;
-  if (result.size_bytes > THREE_MB) {
+  if (result.scan_method === "http" && result.size_bytes > THREE_MB) {
     const sizeMB = (result.size_bytes / (1024 * 1024)).toFixed(2);
     addIssue(
       "large_page_size",
@@ -967,13 +1016,19 @@ function analyzePageIssues(
     );
   }
 
-  if (result.load_time_ms > 3000) {
+  // Only flag load time for HTTP-timed pages (PF-02): headless navigation
+  // blocks images/fonts/media, so its load_time_ms excludes the heaviest
+  // resources and isn't comparable to a full HTTP body download — flagging it
+  // would be inconsistent (the same template is flagged on one page, not on
+  // another, purely by scan method). This is a crawler-side lab measurement,
+  // not field data (PF-01).
+  if (result.scan_method === "http" && result.load_time_ms > 3000) {
     const loadTimeSec = (result.load_time_ms / 1000).toFixed(2);
     addIssue(
       "slow_page",
       "low",
-      `Page load time is ${loadTimeSec}s (recommended max 3s)`,
-      { url: result.url, load_time_ms: result.load_time_ms },
+      `Page load time is ${loadTimeSec}s measured crawler-side (recommended max 3s). This is a lab measurement — confirm against field data (CrUX/Search Console).`,
+      { url: result.url, load_time_ms: result.load_time_ms, timing_method: "http" },
     );
   }
 
@@ -1049,22 +1104,46 @@ function analyzePageIssues(
     );
   }
 
+  // Multiple conflicting canonicals (CN-01): the page declares more than one
+  // distinct canonical target (across <link rel=canonical> tags and the HTTP
+  // Link header). Search engines may ignore all of them, so the page can drop
+  // out of the index entirely — flag it high.
+  if (result.canonical_urls && result.canonical_urls.length > 1) {
+    addIssue(
+      "multiple_canonical",
+      "high",
+      `Page declares ${result.canonical_urls.length} conflicting canonical URLs; search engines may ignore all of them.`,
+      { url: result.url, canonical_urls: result.canonical_urls },
+    );
+  }
+
   // Canonical mismatch. Canonicalised variants never reach this function (they
   // raise no page-level findings), so a non-self canonical here means the target
-  // wasn't a crawled/indexable page — a genuine mismatch worth flagging.
+  // wasn't a crawled/indexable page — a genuine mismatch worth flagging. But a
+  // canonical pointing to ANOTHER domain is a legitimate pattern for syndicated
+  // content, so it's reported informationally, not as a same-site mismatch (CN-03).
   if (
     result.canonical_url != null &&
     result.canonical_is_self === false
   ) {
-    addIssue(
-      "canonical_mismatch",
-      "medium",
-      `Canonical URL does not match the page URL (canonical points to ${result.canonical_url})`,
-      {
-        url: result.url,
-        canonical_url: result.canonical_url,
-      },
-    );
+    if (isCrossDomainCanonical(result.canonical_url, result.url)) {
+      addIssue(
+        "cross_domain_canonical",
+        "low",
+        `Canonical points to another domain (${result.canonical_url}). This is valid for syndicated/republished content — confirm it's intentional.`,
+        { url: result.url, canonical_url: result.canonical_url },
+      );
+    } else {
+      addIssue(
+        "canonical_mismatch",
+        "medium",
+        `Canonical URL does not match the page URL (canonical points to ${result.canonical_url})`,
+        {
+          url: result.url,
+          canonical_url: result.canonical_url,
+        },
+      );
+    }
   }
 
   // Missing lazy loading on images (only flag if more than 3 images)
@@ -1117,6 +1196,10 @@ function analyzePageIssues(
     const oversized = result.images.filter(
       (img) => img.file_size_bytes && img.file_size_bytes > 400_000,
     );
+    // Images whose size we couldn't determine (beyond the probe cap or a failed
+    // HEAD) are not counted as oversized, but we surface the count so the result
+    // isn't read as "all images verified small" (L-04).
+    const uncheckedSize = result.images.filter((img) => img.file_size_unknown).length;
     if (oversized.length > 0) {
       addIssue(
         "oversized_images",
@@ -1124,6 +1207,7 @@ function analyzePageIssues(
         `${oversized.length} image(s) exceed 400 KB`,
         {
           url: result.url,
+          unchecked_images: uncheckedSize,
           images: oversized.slice(0, 5).map((img) => ({
             src: img.src,
             size_kb: Math.round((img.file_size_bytes || 0) / 1024),
@@ -1173,6 +1257,21 @@ function analyzePageIssues(
         chain: result.redirect_chain,
         hop_count: result.redirect_chain.length,
       },
+    );
+  }
+
+  // Temporary redirect (R-01): the page is reached through a 302/303/307 rather
+  // than a permanent 301/308. A permanent move served temporarily keeps the old
+  // URL indexed and dilutes the ranking signals that should flow to the target.
+  const tempHops = (result.redirect_hops ?? []).filter(
+    (h) => h.status === 302 || h.status === 303 || h.status === 307,
+  );
+  if (result.is_redirect && tempHops.length > 0) {
+    addIssue(
+      "temporary_redirect",
+      "low",
+      `Page is reached via a temporary redirect (HTTP ${tempHops[0].status}). If the move is permanent, use a 301 so the destination inherits the original URL's ranking signals.`,
+      { url: result.url, hops: result.redirect_hops },
     );
   }
 
@@ -1291,6 +1390,17 @@ function analyzePageIssues(
         },
       );
     }
+  }
+
+  // Redirect budget exhausted / broken redirect: the URL never resolved to a
+  // real page, so it can't be crawled or indexed (R-03/S-03).
+  if (result.redirect_limit_hit) {
+    addIssue(
+      "too_many_redirects",
+      "high",
+      "URL never resolved to a page — too many redirects, or a redirect with no destination. Search engines will give up here too.",
+      { url: result.url, chain: result.redirect_chain, hops: result.redirect_hops },
+    );
   }
 
   // (canonical mismatch is reported once, above, as `canonical_mismatch`;

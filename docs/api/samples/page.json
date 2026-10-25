@@ -1,0 +1,131 @@
+{
+  "api_version": "v1",
+  "schema_version": "1.1.0",
+  "data": {
+    "object": "page",
+    "id": "9f0a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c",
+    "url": "https://acme.test/contact",
+    "http_status": 200,
+    "title": "Contact — Acme Bookkeeping",
+    "meta_description": "Call or visit Acme Bookkeeping in Sydney.",
+    "canonical_url": null,
+    "is_indexable": true,
+    "word_count": 180,
+    "content_length": 0,
+    "headings": {
+      "h1": [
+        "Contact us"
+      ],
+      "h2": [],
+      "h3": [],
+      "h4": [],
+      "h5": [],
+      "h6": []
+    },
+    "schema_types": [
+      "LocalBusiness"
+    ],
+    "structured_data": [
+      {
+        "@context": "https://schema.org",
+        "@type": "LocalBusiness",
+        "name": "Acme Bookkeeping",
+        "telephone": "+61 2 1234 5678",
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "1 Main St",
+          "addressLocality": "Sydney",
+          "addressRegion": "NSW",
+          "postalCode": "2000",
+          "addressCountry": "AU"
+        },
+        "openingHoursSpecification": [
+          {
+            "@type": "OpeningHoursSpecification",
+            "dayOfWeek": [
+              "Monday",
+              "Tuesday",
+              "Wednesday",
+              "Thursday",
+              "Friday"
+            ],
+            "opens": "09:00",
+            "closes": "17:00"
+          }
+        ],
+        "areaServed": [
+          "Sydney",
+          "Greater Sydney"
+        ],
+        "sameAs": [
+          "https://facebook.com/acmebookkeeping"
+        ]
+      }
+    ],
+    "open_graph": {
+      "og:site_name": "Acme Bookkeeping"
+    },
+    "twitter_card": {},
+    "images": [],
+    "internal_links": [],
+    "external_links": [
+      {
+        "url": "https://facebook.com/acmebookkeeping",
+        "anchor_text": "Facebook",
+        "rel_attributes": []
+      }
+    ],
+    "detected_platform": null,
+    "scan_method": null,
+    "modules": {
+      "tech_fingerprint": {
+        "platform": null,
+        "schema_types": [
+          "LocalBusiness"
+        ],
+        "analytics": [
+          "Google Analytics"
+        ],
+        "booking": [
+          "Calendly"
+        ],
+        "crm_chat": [],
+        "payments": [],
+        "email_marketing": [],
+        "frameworks": [],
+        "libraries": []
+      },
+      "business_info": {
+        "source_url": "https://acme.test/contact",
+        "name": "Acme Bookkeeping",
+        "phones": [
+          "+61 2 1234 5678"
+        ],
+        "emails": [
+          "hello@acme.test"
+        ],
+        "address": {
+          "street": "1 Main St",
+          "locality": "Sydney",
+          "region": "NSW",
+          "postal_code": "2000",
+          "country": "AU"
+        },
+        "opening_hours": [
+          "Monday, Tuesday, Wednesday, Thursday, Friday 09:00-17:00"
+        ],
+        "service_areas": [
+          "Sydney",
+          "Greater Sydney"
+        ],
+        "socials": [
+          {
+            "platform": "facebook",
+            "url": "https://facebook.com/acmebookkeeping"
+          }
+        ]
+      }
+    },
+    "content": "Acme Bookkeeping helps small businesses in Sydney keep their accounts accurate and file on time. Call us or drop into our office on Main St."
+  }
+}

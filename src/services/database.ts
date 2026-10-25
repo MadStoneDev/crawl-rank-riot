@@ -190,7 +190,16 @@ export async function storeScanResults(
       bogusPages.forEach((p) => existingUrlSet.delete(p.url));
     }
 
-    // STEP 2: Deduplicate results by URL (keep the first occurrence)
+    // STEP 2: Deduplicate results by URL (keep the first occurrence).
+    // U-03: the dedupe key is CASE-SENSITIVE on the path, matching the crawler
+    // (which treats /Page and /page as distinct) and the pages table's
+    // case-sensitive (project_id,url) unique constraint. Lower-casing here used
+    // to silently merge case variants in-scan while the DB kept both across
+    // scans — an inconsistency, and it hid a real issue: case-variant URLs that
+    // serve the same content without redirecting ARE a duplicate-content defect.
+    // (Host case is already normalised by the URL parser; a server that
+    // redirects one case variant to another is followed, so only the canonical
+    // form is stored.)
     const urlMap = new Map<string, ScanResult>();
 
     for (const result of results) {
@@ -199,7 +208,7 @@ export async function storeScanResults(
         console.log(`Skipping non-HTTP URL: ${result.url}`);
         continue;
       }
-      const normalizedUrl = result.url.toLowerCase().trim();
+      const normalizedUrl = result.url.trim();
       if (!urlMap.has(normalizedUrl)) {
         urlMap.set(normalizedUrl, result);
       } else {
@@ -384,6 +393,11 @@ export async function storeScanResults(
         // Look up the destination page's status if it was crawled
         let httpStatus: number | null = null;
         let isBroken = false;
+        // "unchecked" ≠ "ok": a link whose destination wasn't crawled this scan
+        // (excluded, beyond maxPages/maxDepth, or not reached before timeout)
+        // must not be reported as healthy — a genuinely dead internal URL that
+        // happened not to be crawled would otherwise read as fine (L-02).
+        let linkError: string | null = null;
 
         if (destinationPageId) {
           const destResult = deduplicatedResults.find(r => r.url === link.url);
@@ -393,12 +407,18 @@ export async function storeScanResults(
             // broken link (P0.4).
             isBroken = classifyLinkStatus(destResult.status) === "broken";
           } else {
-            httpStatus = 200;
+            // The destination has a page row (matched via the slash-variant map)
+            // but wasn't in THIS scan's results, so its current status is
+            // unknown — don't assume 200, which would mask a page that 404s now
+            // but was healthy last scan (L-05).
+            httpStatus = null;
             isBroken = false;
+            linkError = "unchecked";
           }
         } else {
           httpStatus = null;
           isBroken = false;
+          linkError = "unchecked";
         }
 
         allLinks.push({
@@ -412,11 +432,14 @@ export async function storeScanResults(
           is_followed: !link.rel_attributes?.includes("nofollow"),
           http_status: httpStatus,
           is_broken: isBroken,
-          link_error: null,
+          link_error: linkError,
         });
       }
 
-      // External links - mark as unchecked (not broken)
+      // External links start "unchecked" and are cleared to ok (null) only once
+      // actually probed below. Links past the probe cap, or when probing is
+      // disabled, stay "unchecked" so they're never shown as verified-healthy
+      // (L-03).
       for (const link of result.external_links) {
         // Skip non-HTTP URLs that may have slipped through extraction
         if (!/^https?:\/\//i.test(link.url)) continue;
@@ -431,7 +454,7 @@ export async function storeScanResults(
           is_followed: !link.rel_attributes?.includes("nofollow"),
           http_status: null,
           is_broken: false,
-          link_error: null,
+          link_error: "unchecked",
         });
       }
     }

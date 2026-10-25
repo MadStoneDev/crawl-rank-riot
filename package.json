@@ -9,7 +9,10 @@
     "dev": "ts-node src/app.ts",
     "lint": "eslint . --ext .ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "samples:generate": "ts-node src/scripts/generate-v1-samples.ts",
+    "apikey": "ts-node src/scripts/api-key.ts"
   },
   "repository": {
     "type": "git",
@@ -25,6 +28,7 @@
   "homepage": "https://github.com/MadStoneDev/crawl-rank-riot#readme",
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",
+    "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "entities": "^6.0.1",

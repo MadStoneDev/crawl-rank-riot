@@ -2,11 +2,43 @@ import { describe, it, expect } from "vitest";
 import {
   classifyPageType,
   isContentPage,
+  isPublicUrl,
   isSelfCanonical,
   UrlProcessor,
 } from "./url";
 
 const BASE = "https://blubookkeepers.com";
+
+describe("isPublicUrl — default SSRF guard (production strictness)", () => {
+  // These hosts are IP literals, so the guard checks them directly without DNS
+  // and the result is deterministic. This is the guard every production scan
+  // uses; the injectable guard in the Scanner only ever loosens it inside tests.
+  it("rejects IPv4 loopback", async () => {
+    expect(await isPublicUrl("http://127.0.0.1/")).toBe(false);
+    expect(await isPublicUrl("http://127.0.0.1:8080/x")).toBe(false);
+  });
+
+  it("rejects IPv4 private ranges", async () => {
+    expect(await isPublicUrl("http://10.0.0.1/")).toBe(false);
+    expect(await isPublicUrl("http://172.16.5.4/")).toBe(false);
+    expect(await isPublicUrl("http://192.168.1.1/")).toBe(false);
+  });
+
+  it("rejects IPv4 link-local, unspecified and 0.0.0.0/8", async () => {
+    expect(await isPublicUrl("http://169.254.169.254/")).toBe(false); // cloud metadata
+    expect(await isPublicUrl("http://0.0.0.0/")).toBe(false);
+  });
+
+  it("rejects IPv6 loopback, unique-local and link-local", async () => {
+    expect(await isPublicUrl("http://[::1]/")).toBe(false);
+    expect(await isPublicUrl("http://[fd00::1]/")).toBe(false);
+    expect(await isPublicUrl("http://[fe80::1]/")).toBe(false);
+  });
+
+  it("allows a public IP literal", async () => {
+    expect(await isPublicUrl("http://93.184.216.34/")).toBe(true); // example.com
+  });
+});
 
 describe("isSelfCanonical (P0.3)", () => {
   it("treats a relative canonical that resolves to the page as self", () => {
@@ -41,6 +73,35 @@ describe("isSelfCanonical (P0.3)", () => {
   it("returns false for a null/empty canonical", () => {
     expect(isSelfCanonical(null, "https://example.com/about")).toBe(false);
     expect(isSelfCanonical("", "https://example.com/about")).toBe(false);
+  });
+});
+
+describe("tracking-param stripping (U-04) + self-compare (CN-04)", () => {
+  const up = new UrlProcessor(BASE);
+
+  it("U-04: strips the extended click-ID set but keeps real params", () => {
+    expect(up.normalize(`${BASE}/p?gbraid=1&wbraid=2&ttclid=3&utm_id=4&id=9`)).toBe(
+      `${BASE}/p?id=9`,
+    );
+  });
+
+  it("U-04: does NOT strip ref by default (per-project, default off)", () => {
+    expect(up.normalize(`${BASE}/p?ref=partner`)).toBe(`${BASE}/p?ref=partner`);
+  });
+
+  it("U-04: strips ref when the project opts in", () => {
+    const upRef = new UrlProcessor(BASE, { stripRef: true });
+    expect(upRef.normalize(`${BASE}/p?ref=partner`)).toBe(`${BASE}/p`);
+  });
+
+  it("CN-04: a canonical with tracking params is self vs the cleaned page URL", () => {
+    expect(
+      isSelfCanonical(`${BASE}/p?utm_source=x`, `${BASE}/p`),
+    ).toBe(true);
+  });
+
+  it("CN-04: param order doesn't cause a self-canonical mismatch", () => {
+    expect(isSelfCanonical(`${BASE}/p?b=2&a=1`, `${BASE}/p?a=1&b=2`)).toBe(true);
   });
 });
 
@@ -114,6 +175,36 @@ describe("UrlProcessor.normalize param folding", () => {
 
   it("keeps a meaningful, valued param", () => {
     expect(up.normalize(`${BASE}/search?id=5`)).toBe(`${BASE}/search?id=5`);
+  });
+
+  it("U-02: sorts params so order variants canonicalise to one URL", () => {
+    expect(up.normalize(`${BASE}/p?b=2&a=1`)).toBe(`${BASE}/p?a=1&b=2`);
+    expect(up.normalize(`${BASE}/p?size=l&color=red`)).toBe(
+      up.normalize(`${BASE}/p?color=red&size=l`),
+    );
+  });
+});
+
+describe("UrlProcessor.normalize scheme handling (U-01)", () => {
+  it("upgrades http→https for the project's own host when the project is https", () => {
+    const up = new UrlProcessor("https://blubookkeepers.com");
+    expect(up.normalize("http://blubookkeepers.com/about")).toBe(
+      "https://blubookkeepers.com/about",
+    );
+  });
+
+  it("preserves http for an external host (no blind upgrade)", () => {
+    const up = new UrlProcessor("https://blubookkeepers.com");
+    expect(up.normalize("http://partner.example/page")).toBe(
+      "http://partner.example/page",
+    );
+  });
+
+  it("does NOT force https on a genuinely http-only project", () => {
+    const up = new UrlProcessor("http://legacy-intranet.example");
+    expect(up.normalize("http://legacy-intranet.example/home")).toBe(
+      "http://legacy-intranet.example/home",
+    );
   });
 });
 

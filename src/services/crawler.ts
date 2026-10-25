@@ -1,4 +1,4 @@
-import { Scanner } from "./scanner";
+import { Scanner, ScannerDeps } from "./scanner";
 import { UrlProcessor, isPublicUrl } from "../utils/url";
 import { CrawlOptions, ScanResult } from "../types";
 import { getSupabaseServiceClient } from "./database/client";
@@ -6,9 +6,56 @@ import { isJavaScriptHeavySite, closeSharedBrowserPool } from "../utils/browser"
 import { ScanLogger } from "./scan-logger";
 import { isCancelled } from "./scan-cancellation";
 import { proxyFetch, isProxyConfigured } from "../utils/proxy";
-import { USER_AGENT } from "../config/identity";
+import { USER_AGENT, BOT_NAME } from "../config/identity";
+import { parseRobots, isPathAllowed, getCrawlDelay, RobotsTxt } from "../utils/robots";
 
 const BROWSER_USER_AGENT = USER_AGENT;
+
+/** Never let a hostile/absurd Crawl-delay stall a scan indefinitely (RB-02). */
+const MAX_ROBOTS_CRAWL_DELAY_MS = 30_000;
+
+/**
+ * Per-batch concurrency to use (PL-02). When the host declares a Crawl-delay we
+ * serialise requests (cap 1) and let the per-URL delay space them, so we never
+ * fire a burst of parallel requests at a host that explicitly asked us to slow
+ * down. With no Crawl-delay the configured global concurrency applies — a
+ * single-origin scan at the default of 3 is gentle, and this keeps scan times
+ * unchanged for the common case.
+ */
+export function effectiveConcurrency(
+  maxConcurrent: number,
+  crawlDelayMs: number,
+): number {
+  if (crawlDelayMs > 0) return 1;
+  return Math.max(1, maxConcurrent);
+}
+
+export interface PartialCrawlStatus {
+  partial: boolean;
+  /** "complete" | "max_pages" | "timeout". */
+  reason: string;
+  pages_crawled: number;
+  queue_remaining: number;
+}
+
+/**
+ * Describe whether a crawl covered the site or stopped short (PL-03), so the
+ * pipeline can mark a timed-out / page-capped scan "partial" and the UI can
+ * caveat a headline score computed from only a fraction of the pages.
+ */
+export function describePartialCrawl(c: {
+  crawlCompleted: boolean;
+  crawlStopReason: string;
+  queueRemainingAtStop: number;
+  pagesCrawled: number;
+}): PartialCrawlStatus {
+  return {
+    partial: !c.crawlCompleted,
+    reason: c.crawlStopReason,
+    pages_crawled: c.pagesCrawled,
+    queue_remaining: c.queueRemainingAtStop,
+  };
+}
 
 export class WebCrawler {
   private scanner: Scanner;
@@ -21,11 +68,24 @@ export class WebCrawler {
   private maxConcurrentRequests: number = 3;
   private crawlMode: "seo" | "audit" = "seo";
   public crawlCompleted = false;
+  // Why the crawl stopped and how much was left unvisited (PL-03). Lets the
+  // pipeline mark a timed-out / page-capped crawl "partial" so a score computed
+  // from a fraction of the site isn't presented as the whole site's health.
+  public crawlStopReason: "complete" | "max_pages" | "timeout" = "complete";
+  public queueRemainingAtStop = 0;
   // Bot-protection tracking — blocked pages are dropped from results, so these
   // counters are the only signal that the crawl was challenged
   public botBlockedCount = 0;
   public botBlockedHomepage = false;
   public botBlockSampleError: string | undefined;
+
+  // robots.txt obedience (RB-01/RB-02). Loaded once per crawl.
+  private robots: RobotsTxt | null = null;
+  private obeyRobots = true;
+  private robotsCrawlDelayMs = 0;
+  private readonly productTokens = [BOT_NAME];
+  /** True when robots.txt disallowed the seed URL itself (for a clear failure). */
+  public robotsDisallowedSeed = false;
 
   private scanId: string | null = null;
   private projectId: string | null = null;
@@ -33,8 +93,12 @@ export class WebCrawler {
   private progressUpdateInterval: number = 1000;
   public logger: ScanLogger | null = null;
 
-  constructor(baseUrl: string, scanId?: string, projectId?: string) {
-    this.scanner = new Scanner();
+  // `scannerDeps` is the Scanner's DI seam (SSRF guard + fetch). It defaults to
+  // the production strict guard; ONLY test code passes overrides (e.g. a guard
+  // that permits a 127.0.0.1 fixture server). There is deliberately no env var
+  // or runtime flag, so no production path can loosen the guard.
+  constructor(baseUrl: string, scanId?: string, projectId?: string, scannerDeps?: ScannerDeps) {
+    this.scanner = new Scanner(scannerDeps);
     this.urlProcessor = new UrlProcessor(baseUrl);
     this.scanId = scanId || null;
     this.projectId = projectId || null;
@@ -59,6 +123,14 @@ export class WebCrawler {
 
       if (this.urlProcessor.shouldExclude(item.url, excludePatterns, this.crawlMode)) {
         console.log(`🚫 Skipping excluded URL: ${item.url}`);
+        return;
+      }
+
+      // Honour robots.txt (RB-01). A disallowed seed is recorded so the pipeline
+      // can report exactly why the crawl produced nothing.
+      if (!this.isAllowedByRobots(item.url)) {
+        if (item.depth === 0) this.robotsDisallowedSeed = true;
+        this.logger?.info("crawl", `Skipping robots-disallowed URL: ${item.url}`, { url: item.url });
         return;
       }
 
@@ -140,7 +212,8 @@ export class WebCrawler {
         }
       }
 
-      const delay = needsHeadless ? 2000 : 500;
+      // Base politeness delay, raised to the robots Crawl-delay when larger (RB-02).
+      const delay = Math.max(needsHeadless ? 2000 : 500, this.robotsCrawlDelayMs);
       await this.delay(delay);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -268,9 +341,12 @@ export class WebCrawler {
       crawlMode = "seo",
       customSitemapPaths = [],
       seedPaths = [],
+      seedUrls = [],
       wwwPreference,
+      obeyRobots = true,
     } = options;
     this.crawlMode = crawlMode;
+    this.obeyRobots = obeyRobots !== false;
     // Default timeout scales with maxPages: ~2s per page, min 5 minutes
     const timeout = options.timeout ?? Math.max(300_000, maxPages * 2_000);
 
@@ -304,6 +380,10 @@ export class WebCrawler {
     const baseDomain = this.urlProcessor.getBaseDomain();
     this.logger?.info("init", `Base domain resolved: ${baseDomain}`);
 
+    // Load robots.txt and honour it for our UA (RB-01/RB-02), unless an
+    // authorised owner override disabled it.
+    await this.loadRobots(cleanSeedUrl);
+
     // Add seed URL (will be normalized with correct www preference)
     const normalizedSeedUrl = this.urlProcessor.normalize(cleanSeedUrl);
     this.queue.push({ url: normalizedSeedUrl, depth: 0 });
@@ -325,6 +405,24 @@ export class WebCrawler {
       }
     }
 
+    // Explicit seed URLs (Stage 4 "urls" job scope): crawl each at depth 0 so
+    // they survive maxDepth=0 and raise no discovery of their own. Absent/empty
+    // ⇒ unchanged. Resolved against the base seed so bare paths also work.
+    for (const seedUrl of seedUrls) {
+      try {
+        const normalized = this.urlProcessor.normalize(
+          new URL(seedUrl, normalizedSeedUrl).toString(),
+        );
+        if (!this.queued.has(normalized)) {
+          this.queue.push({ url: normalized, depth: 0 });
+          this.queued.add(normalized);
+          this.logger?.info("init", `Seeded explicit URL: ${normalized}`);
+        }
+      } catch {
+        this.logger?.warn("init", `Ignoring invalid seed URL: ${seedUrl}`);
+      }
+    }
+
     // Check for sitemaps first if enabled
     if (checkSitemaps) {
       this.logger?.info("sitemap", "Checking for sitemaps...");
@@ -341,9 +439,13 @@ export class WebCrawler {
       Date.now() - startTime < timeout &&
       !isCancelled(this.scanId)
     ) {
-      // Get next batch of URLs to process
+      // Get next batch of URLs to process. Crawl-delay hosts are served one at
+      // a time so politeness spacing isn't undone by a parallel burst (PL-02).
       const batch = this.getNextBatch(
-        Math.min(this.maxConcurrentRequests, this.queue.length),
+        Math.min(
+          effectiveConcurrency(this.maxConcurrentRequests, this.robotsCrawlDelayMs),
+          this.queue.length,
+        ),
       );
 
       if (batch.length === 0) {
@@ -379,18 +481,22 @@ export class WebCrawler {
     // Log why the loop exited
     const elapsed = Date.now() - startTime;
     const blocked = this.visited.size - this.results.length;
+    this.queueRemainingAtStop = this.queue.length;
     if (this.queue.length === 0) {
       this.crawlCompleted = true;
+      this.crawlStopReason = "complete";
       this.logger?.info("crawl", `Crawl finished: queue empty after ${Math.round(elapsed / 1000)}s`, {
         pages_found: this.results.length, pages_blocked: blocked, elapsed_s: Math.round(elapsed / 1000),
       });
     } else if (this.results.length >= maxPages) {
       this.crawlCompleted = false;
+      this.crawlStopReason = "max_pages";
       this.logger?.warn("crawl", `Crawl stopped: reached maxPages limit (${maxPages})`, {
         pages_found: this.results.length, queue_remaining: this.queue.length, elapsed_s: Math.round(elapsed / 1000),
       });
     } else {
       this.crawlCompleted = false;
+      this.crawlStopReason = "timeout";
       this.logger?.warn("crawl", `Crawl stopped: timeout reached (${Math.round(timeout / 1000)}s)`, {
         pages_found: this.results.length, queue_remaining: this.queue.length, elapsed_s: Math.round(elapsed / 1000),
       });
@@ -452,6 +558,11 @@ export class WebCrawler {
 
       if (this.urlProcessor.shouldExclude(cleanUrl, [], this.crawlMode)) {
         console.log(`🚫 Excluding URL: ${cleanUrl}`);
+        continue;
+      }
+
+      // Don't enqueue robots-disallowed links (RB-01).
+      if (!this.isAllowedByRobots(cleanUrl)) {
         continue;
       }
 
@@ -629,7 +740,8 @@ export class WebCrawler {
             if (
               !this.visited.has(cleanUrl) &&
               !this.queued.has(cleanUrl) &&
-              !this.urlProcessor.shouldExclude(cleanUrl, [], this.crawlMode)
+              !this.urlProcessor.shouldExclude(cleanUrl, [], this.crawlMode) &&
+              this.isAllowedByRobots(cleanUrl)
             ) {
               const urlDepth = this.calculateUrlDepth(
                 cleanUrl,
@@ -656,6 +768,54 @@ export class WebCrawler {
 
   private calculateUrlDepth(url: string, baseUrl: string): number {
     return this.urlProcessor.getPathDepth(url);
+  }
+
+  /**
+   * Fetch and parse robots.txt once per crawl. Non-fatal: if robots.txt can't
+   * be fetched we proceed (absence of robots.txt means "allowed").
+   */
+  private async loadRobots(seedUrl: string): Promise<void> {
+    if (!this.obeyRobots) {
+      this.logger?.info("init", "robots.txt obedience disabled for this crawl (authorised override)");
+      return;
+    }
+    try {
+      const origin = new URL(seedUrl).origin;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const response = await proxyFetch(`${origin}/robots.txt`, {
+        headers: { "User-Agent": BROWSER_USER_AGENT },
+        signal: controller.signal,
+        redirect: "follow",
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        this.logger?.info("init", `No robots.txt (HTTP ${response.status}) — crawling all paths`);
+        return;
+      }
+      const content = await response.text();
+      this.robots = parseRobots(content);
+      const delaySec = getCrawlDelay(this.robots, this.productTokens);
+      if (delaySec && delaySec > 0) {
+        this.robotsCrawlDelayMs = Math.min(delaySec * 1000, MAX_ROBOTS_CRAWL_DELAY_MS);
+      }
+      this.logger?.info(
+        "init",
+        `robots.txt loaded: ${this.robots.groups.length} group(s)` +
+          (this.robotsCrawlDelayMs ? `, crawl-delay ${this.robotsCrawlDelayMs / 1000}s` : ""),
+      );
+    } catch (error) {
+      this.logger?.warn(
+        "init",
+        `Failed to load robots.txt (proceeding, treating as allowed): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /** Whether robots.txt permits our UA to fetch `url` (RB-01). */
+  private isAllowedByRobots(url: string): boolean {
+    if (!this.obeyRobots || !this.robots) return true;
+    return isPathAllowed(this.robots, url, this.productTokens);
   }
 
   private delay(ms: number): Promise<void> {

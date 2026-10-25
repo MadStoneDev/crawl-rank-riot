@@ -1,5 +1,7 @@
 import { parseProjectSettings } from "./project-settings";
 import { getSupabaseServiceClient } from "../services/database/client";
+import { stage4Db } from "../services/api/v1/stage4-db";
+import { config } from "../config";
 import { runScanPipeline } from "../services/scan-pipeline";
 
 export function computeNextScanAt(
@@ -38,12 +40,14 @@ export class CrawlScheduler {
       () => {
         this.reapStaleScans();
         this.checkAndScheduleCrawls();
+        this.purgeExpiredJobPages();
       },
       60 * 60 * 1000,
     );
 
     this.reapStaleScans();
     this.checkAndScheduleCrawls();
+    this.purgeExpiredJobPages();
   }
 
   stop(): void {
@@ -94,6 +98,30 @@ export class CrawlScheduler {
       }
     } catch (error) {
       console.error("Error reaping stale scans:", error);
+    }
+  }
+
+  /**
+   * Retention for the /api/v1 per-job page snapshots (api_job_pages): delete
+   * rows (and their stored cleaned content) older than
+   * config.retention.apiJobPagesDays (default 90). Best-effort; runs hourly on
+   * the same tick as the other scheduler work. Keeps the snapshot table — the
+   * largest API-only table — bounded.
+   */
+  private async purgeExpiredJobPages(): Promise<void> {
+    try {
+      const days = config.retention.apiJobPagesDays;
+      const threshold = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      const { error } = await stage4Db()
+        .from("api_job_pages")
+        .delete()
+        .lt("created_at", threshold);
+      if (error) {
+        console.error("Error purging expired api_job_pages:", error.message ?? error);
+      }
+    } catch (error) {
+      // Non-fatal (e.g. the Stage 4 migration isn't applied yet).
+      console.error("Error purging expired api_job_pages:", error);
     }
   }
 

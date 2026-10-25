@@ -493,7 +493,6 @@ export class AuditAnalyzer {
     const findings: string[] = [];
     let score = 100;
     let usesJQuery = false;
-    let usesOldFrameworks = false;
     let hasModernBuildTools = false;
 
     // Check for jQuery across all pages
@@ -539,7 +538,6 @@ export class AuditAnalyzer {
     return {
       score: Math.max(0, Math.min(100, score)),
       usesJQuery,
-      usesOldFrameworks,
       hasModernBuildTools,
       findings,
     };
@@ -554,15 +552,23 @@ export class AuditAnalyzer {
     let score = 100;
     const findings: string[] = [];
 
-    // Calculate averages
-    const validLoadTimes = this.scanResults.filter((r) => r.load_time_ms > 0);
+    // Calculate averages. Timing is only comparable within one scan method:
+    // headless navigation blocks images/fonts/media, so its load/first-byte
+    // times exclude the heaviest resources and must not be averaged with HTTP
+    // timings (PF-02). Prefer HTTP-timed pages; fall back to headless only if a
+    // scan was entirely headless (so the number is at least internally
+    // consistent, never a mix).
+    const httpTimed = this.scanResults.filter((r) => r.scan_method === "http");
+    const timingBasis = httpTimed.length > 0 ? httpTimed : this.scanResults;
+
+    const validLoadTimes = timingBasis.filter((r) => r.load_time_ms > 0);
     const avgLoadTime =
       validLoadTimes.length > 0
         ? validLoadTimes.reduce((sum, r) => sum + r.load_time_ms, 0) /
           validLoadTimes.length
         : 0;
 
-    const validFBT = this.scanResults.filter((r) => r.first_byte_time_ms > 0);
+    const validFBT = timingBasis.filter((r) => r.first_byte_time_ms > 0);
     const avgFirstByteTime =
       validFBT.length > 0
         ? validFBT.reduce((sum, r) => sum + r.first_byte_time_ms, 0) /
@@ -793,30 +799,19 @@ export class AuditAnalyzer {
       findings.push("Site properly uses HTTPS");
     }
 
-    // Check for favicon. Primary signal is the favicon_url the scanner extracts
-    // from the page head; fall back to scanning the serialised result for a
-    // favicon reference (covers older shapes and /favicon.ico mentions).
-    hasValidFavicon = this.scanResults.some((r) => {
-      if (r.favicon_url) return true;
-      const content = JSON.stringify(r).toLowerCase();
-      return (
-        content.includes("favicon") ||
-        content.includes("apple-touch-icon") ||
-        content.includes('rel="icon"') ||
-        content.includes("rel='icon'")
-      );
-    });
+    // Favicon: use the structured favicon_url the parser extracts from the head
+    // (§7.22) rather than substring-scanning the serialised result, which
+    // false-matched on any "favicon"/"icon" text anywhere in the JSON.
+    hasValidFavicon = this.scanResults.some((r) => !!r.favicon_url);
 
     if (!hasValidFavicon) {
       score -= 5;
       findings.push("No favicon detected");
     }
 
-    // Check for mobile viewport meta tag
-    mobileResponsive = this.scanResults.some((r) => {
-      const content = JSON.stringify(r);
-      return content.includes('name="viewport"');
-    });
+    // Mobile viewport: use the parser's structured has_viewport_meta flag
+    // instead of substring-scanning the serialised result (§7.22).
+    mobileResponsive = this.scanResults.some((r) => !!r.has_viewport_meta);
 
     if (!mobileResponsive) {
       score -= 20;

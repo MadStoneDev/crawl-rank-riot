@@ -20,6 +20,28 @@ describe("computeScoreReport", () => {
     expect(report.categories.aeo.score).toBe(100);
   });
 
+  it("SC-01: exposes a pass-rate axis alongside the health score", () => {
+    // At compute time both axes equal the pass-rate; scan-pipeline later
+    // overwrites `score`/`overall` with the weighted model, leaving these.
+    const report = computeScoreReport([
+      makeOptimizedPage(),
+      makeScanResult({ status: 200, is_indexable: true, title: "", meta_description: "" }),
+    ]);
+    expect(report.overallPassRate).toBe(report.overall);
+    for (const cat of ["technical", "content", "media", "aeo"] as const) {
+      expect(report.categories[cat].passRate).toBe(report.categories[cat].score);
+    }
+    // The pass-rate axis reflects real failing checks (missing title/meta).
+    expect(report.categories.content.passRate).toBeLessThan(100);
+  });
+
+  it("SC-01: blocked crawl zeroes both axes", () => {
+    const report = computeScoreReport([makeOptimizedPage()], { blocked: true });
+    expect(report.overall).toBe(0);
+    expect(report.overallPassRate).toBe(0);
+    expect(report.categories.technical.passRate).toBe(0);
+  });
+
   it("stays numerically identical to the legacy computeSeoScore adapter", () => {
     // Parity guard: computeSeoScore now delegates here, so a mixed corpus must
     // produce the same four category numbers + overall through both entry points.
