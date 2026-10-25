@@ -26,6 +26,16 @@ export interface BusinessSocial {
   url: string;
 }
 
+/** One opening-hours period for a single day, parsed from schema.org data. */
+export interface OpeningHoursPeriod {
+  /** Full English weekday name, e.g. "Monday". */
+  day: string;
+  /** Opening time, usually "HH:MM". */
+  opens: string;
+  /** Closing time, usually "HH:MM". */
+  closes: string;
+}
+
 export interface BusinessInfo {
   /** The page these facts were found on. */
   source_url: string;
@@ -33,7 +43,10 @@ export interface BusinessInfo {
   phones: string[];
   emails: string[];
   address: BusinessAddress | null;
+  /** Human-readable hours as authored (schema.org strings / spec labels). */
   opening_hours: string[];
+  /** The same hours normalized to one { day, opens, closes } entry per day. */
+  opening_hours_structured: OpeningHoursPeriod[];
   service_areas: string[];
   socials: BusinessSocial[];
 }
@@ -62,6 +75,22 @@ function socialPlatform(url: string): string | null {
     if (host === domain || host.endsWith(`.${domain}`)) return platform;
   }
   return null;
+}
+
+/**
+ * Canonical key for de-duplicating social links across trivial URL variants —
+ * leading www., trailing slash, http vs https, query/hash, and case (PC-07).
+ * The first original URL seen for a key is the one kept for display.
+ */
+function socialKey(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const host = u.host.toLowerCase().replace(/^www\./, "");
+    const path = u.pathname.replace(/\/+$/, "").toLowerCase();
+    return `${host}${path}`;
+  } catch {
+    return null;
+  }
 }
 
 /** Flatten JSON-LD: unwrap top-level arrays and { @graph: [...] } wrappers. */
@@ -143,6 +172,85 @@ function parseOpeningHours(node: Record<string, unknown>): string[] {
   return out;
 }
 
+const WEEKDAYS = [
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+];
+
+const DAY_ALIASES: Record<string, string> = {
+  mo: "Monday", mon: "Monday", monday: "Monday",
+  tu: "Tuesday", tue: "Tuesday", tues: "Tuesday", tuesday: "Tuesday",
+  we: "Wednesday", wed: "Wednesday", wednesday: "Wednesday",
+  th: "Thursday", thu: "Thursday", thur: "Thursday", thurs: "Thursday", thursday: "Thursday",
+  fr: "Friday", fri: "Friday", friday: "Friday",
+  sa: "Saturday", sat: "Saturday", saturday: "Saturday",
+  su: "Sunday", sun: "Sunday", sunday: "Sunday",
+};
+
+/** Normalize a schema.org day (abbrev, full name, or schema.org URL) to a full weekday name. */
+function normalizeDay(value: string): string | null {
+  const key = value.trim().replace(/^https?:\/\/schema\.org\//i, "").toLowerCase();
+  return DAY_ALIASES[key] ?? null;
+}
+
+/** Expand an inclusive weekday range (e.g. Monday..Friday), supporting wrap-around. */
+function expandDayRange(from: string, to: string): string[] {
+  const a = WEEKDAYS.indexOf(from);
+  const b = WEEKDAYS.indexOf(to);
+  if (a === -1 || b === -1) return [];
+  const out: string[] = [];
+  for (let i = a, guard = 0; guard < 7; guard++) {
+    out.push(WEEKDAYS[i]);
+    if (i === b) break;
+    i = (i + 1) % 7;
+  }
+  return out;
+}
+
+/**
+ * Parse a schema.org `openingHours` string such as "Mo-Fr 09:00-17:00" or
+ * "Sa,Su 10:00-14:00" into one period per day. Returns [] if it doesn't match.
+ */
+function parseHoursString(s: string): OpeningHoursPeriod[] {
+  const m = s.trim().match(/^([A-Za-z,\s-]+?)\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/);
+  if (!m) return [];
+  const [, dayPart, opens, closes] = m;
+  const days: string[] = [];
+  for (const token of dayPart.split(",")) {
+    const t = token.trim();
+    if (!t) continue;
+    if (t.includes("-")) {
+      const [from, to] = t.split("-").map((x) => x.trim());
+      const nf = normalizeDay(from);
+      const nt = normalizeDay(to);
+      if (nf && nt) days.push(...expandDayRange(nf, nt));
+    } else {
+      const nd = normalizeDay(t);
+      if (nd) days.push(nd);
+    }
+  }
+  return days.map((day) => ({ day, opens, closes }));
+}
+
+/** Structured hours from both `openingHours` strings and `openingHoursSpecification`. */
+function parseOpeningHoursStructured(node: Record<string, unknown>): OpeningHoursPeriod[] {
+  const out: OpeningHoursPeriod[] = [];
+  for (const h of asStringArray(node["openingHours"])) out.push(...parseHoursString(h));
+  const spec = node["openingHoursSpecification"];
+  const specs = Array.isArray(spec) ? spec : spec ? [spec] : [];
+  for (const s of specs) {
+    if (!s || typeof s !== "object") continue;
+    const o = s as Record<string, unknown>;
+    const opens = typeof o["opens"] === "string" ? (o["opens"] as string) : "";
+    const closes = typeof o["closes"] === "string" ? (o["closes"] as string) : "";
+    if (!opens && !closes) continue;
+    for (const d of asStringArray(o["dayOfWeek"])) {
+      const day = normalizeDay(d);
+      if (day) out.push({ day, opens, closes });
+    }
+  }
+  return out;
+}
+
 function parseServiceAreas(v: unknown): string[] {
   const items = Array.isArray(v) ? v : v !== undefined ? [v] : [];
   const out: string[] = [];
@@ -164,13 +272,19 @@ export function extractBusinessInfo(result: ScanResult): BusinessInfo {
   const emails: string[] = [];
   const openingHours: string[] = [];
   const serviceAreas: string[] = [];
-  const socialsByUrl = new Map<string, BusinessSocial>();
+  const openingHoursStructured: OpeningHoursPeriod[] = [];
+  const socialsByKey = new Map<string, BusinessSocial>();
   let name: string | null = null;
   let address: BusinessAddress | null = null;
 
   const addSocial = (url: string) => {
     const platform = socialPlatform(url);
-    if (platform && !socialsByUrl.has(url)) socialsByUrl.set(url, { platform, url });
+    if (!platform) return;
+    // De-dup across www / trailing-slash / http-https / case variants, keeping
+    // the first original URL seen for display (PC-07).
+    const key = socialKey(url);
+    if (!key || socialsByKey.has(key)) return;
+    socialsByKey.set(key, { platform, url });
   };
 
   // 1. JSON-LD Organization / LocalBusiness nodes (richest source).
@@ -181,6 +295,7 @@ export function extractBusinessInfo(result: ScanResult): BusinessInfo {
     for (const e of asStringArray(node["email"])) emails.push(e.replace(/^mailto:/i, ""));
     if (!address) address = parseAddress(node["address"]);
     openingHours.push(...parseOpeningHours(node));
+    openingHoursStructured.push(...parseOpeningHoursStructured(node));
     serviceAreas.push(...parseServiceAreas(node["areaServed"]));
     for (const s of asStringArray(node["sameAs"])) addSocial(s);
   }
@@ -199,6 +314,15 @@ export function extractBusinessInfo(result: ScanResult): BusinessInfo {
     name = result.open_graph["og:site_name"];
   }
 
+  // De-dup identical day/opens/closes periods (ranges and specs can overlap).
+  const structuredSeen = new Set<string>();
+  const openingHoursStructuredUniq = openingHoursStructured.filter((p) => {
+    const k = `${p.day}|${p.opens}|${p.closes}`;
+    if (structuredSeen.has(k)) return false;
+    structuredSeen.add(k);
+    return true;
+  });
+
   return {
     source_url: result.url,
     name,
@@ -206,8 +330,9 @@ export function extractBusinessInfo(result: ScanResult): BusinessInfo {
     emails: uniq(emails),
     address,
     opening_hours: uniq(openingHours),
+    opening_hours_structured: openingHoursStructuredUniq,
     service_areas: uniq(serviceAreas),
-    socials: [...socialsByUrl.values()],
+    socials: [...socialsByKey.values()],
   };
 }
 
