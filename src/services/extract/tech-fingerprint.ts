@@ -99,6 +99,8 @@ export function fingerprintTech(result: ScanResult): TechFingerprint {
   const assetUrls = [
     ...(result.script_srcs ?? []),
     ...(result.stylesheet_hrefs ?? []),
+    // Resource-hint script URLs count as real loaded assets (PC-08).
+    ...(result.preload_hrefs ?? []),
   ].map((u) => u.toLowerCase());
   const externalHosts = (result.external_links ?? []).map((l) => hostOf(l.url));
   const haystack = [...assetUrls, ...externalHosts];
@@ -116,6 +118,24 @@ export function fingerprintTech(result: ScanResult): TechFingerprint {
   for (const sig of SIGNATURES) {
     const hit = haystack.some((h) => sig.patterns.some((p) => h.includes(p)));
     if (hit) buckets[sig.category].add(sig.name);
+  }
+
+  // Inline analytics config is invisible to URL matching (consent managers,
+  // Partytown, next/script, and inline gtag/dataLayer snippets). Scan inline
+  // <script> bodies for GA4 / GTM signals too (PC-08).
+  const inlineText = (result.inline_scripts ?? []).join("\n");
+  if (inlineText) {
+    const hasGa4 =
+      /\bG-[A-Z0-9]{6,12}\b/.test(inlineText) ||
+      /\bgtag\s*\(/.test(inlineText) ||
+      /googletagmanager\.com\/gtag/i.test(inlineText) ||
+      /google-analytics\.com\/(analytics|ga)\.js/i.test(inlineText) ||
+      /\bga\s*\(\s*['"]create['"]/.test(inlineText);
+    if (hasGa4) buckets.analytics.add("Google Analytics");
+    const hasGtm =
+      /\bGTM-[A-Z0-9]{4,}\b/.test(inlineText) ||
+      /googletagmanager\.com\/gtm\.js/i.test(inlineText);
+    if (hasGtm) buckets.analytics.add("Google Tag Manager");
   }
 
   let platform = result.detected_platform ?? null;

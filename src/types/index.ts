@@ -152,6 +152,12 @@ export interface ScanResult {
   // from actual bundle paths instead of guessing from anchor hrefs.
   script_srcs?: string[];
   stylesheet_hrefs?: string[];
+  // Inline <script> bodies (no src) and resource-hint script URLs (preload /
+  // modulepreload / prefetch). In-memory only; used by tech-fingerprint to
+  // detect analytics configured inline or loaded via preload — the gtag/GTM a
+  // <script src>-only scan misses (PC-08).
+  inline_scripts?: string[];
+  preload_hrefs?: string[];
 
   // Cleaned main-area text (nav/header/footer/aside stripped — the same text
   // word_count/readability are derived from). In-memory only; persisted

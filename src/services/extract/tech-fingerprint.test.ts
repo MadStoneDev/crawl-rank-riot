@@ -78,4 +78,29 @@ describe("fingerprintTech (Stage 4)", () => {
     expect(roll.payments).toEqual(["Stripe"]);
     expect(roll.analytics).toEqual(["Plausible"]);
   });
+
+  it("detects inline GA4 and GTM config a URL-only scan would miss (PC-08)", () => {
+    const fp = fingerprintTech(page({
+      inline_scripts: [
+        "window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('consent','default',{});gtag('config','G-8TL2E4F9CH');",
+        "(function(w,d,s,l,i){})(window,document,'script','dataLayer','GTM-K6S8KCK5');",
+      ],
+    }));
+    expect(fp.analytics).toEqual(["Google Analytics", "Google Tag Manager"]);
+  });
+
+  it("detects analytics preloaded via a resource hint (PC-08)", () => {
+    const fp = fingerprintTech(page({
+      preload_hrefs: [
+        "https://www.googletagmanager.com/gtm.js?id=GTM-K6S8KCK5",
+        "https://www.googletagmanager.com/gtag/js?id=G-8TL2E4F9CH",
+      ],
+    }));
+    expect(fp.analytics).toEqual(["Google Analytics", "Google Tag Manager"]);
+  });
+
+  it("does not flag analytics on inline scripts without analytics (PC-08)", () => {
+    const fp = fingerprintTech(page({ inline_scripts: ["console.log('hello');const x=1;"] }));
+    expect(fp.analytics).toEqual([]);
+  });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { extractFromHtml, decodeHtmlBody } from "./parse-html";
+import { fingerprintTech } from "./tech-fingerprint";
 
 /**
  * Deterministic OFFLINE golden tests over real pages captured once from three
@@ -175,5 +176,14 @@ describe("before/after golden: Next.js (ravenci.solutions)", () => {
 
   it("J-02: captures html lang on the HTTP path", () => {
     expect(result.accessibility?.html_lang).toBe("en-AU");
+  });
+
+  it("PC-08: detects GA4 and GTM configured inline / preloaded (not <script src>)", () => {
+    // ravenci loads GA/GTM via next/third-parties: the IDs live in an inline
+    // RSC payload and in <link rel=preload> hints, not in a static <script src>,
+    // so the old URL-only fingerprint reported analytics as empty.
+    const fp = fingerprintTech(result);
+    expect(fp.analytics).toContain("Google Analytics");
+    expect(fp.analytics).toContain("Google Tag Manager");
   });
 });

@@ -451,6 +451,8 @@ export class Scanner {
     result.css_count = techData.cssCount;
     result.script_srcs = techData.scriptSrcs;
     result.stylesheet_hrefs = techData.stylesheetHrefs;
+    result.inline_scripts = techData.inlineScripts;
+    result.preload_hrefs = techData.preloadHrefs;
     result.structured_data = techData.structuredData;
     result.schema_types = techData.schemaTypes;
 
@@ -944,6 +946,8 @@ export class Scanner {
     cssCount: number;
     scriptSrcs: string[];
     stylesheetHrefs: string[];
+    inlineScripts: string[];
+    preloadHrefs: string[];
     structuredData: any[];
     schemaTypes: string[];
   }> {
@@ -955,6 +959,24 @@ export class Scanner {
         ).map((s) => (s as HTMLScriptElement).src);
         const stylesheetHrefs = Array.from(
           document.querySelectorAll('link[rel="stylesheet"]'),
+        ).map((l) => (l as HTMLLinkElement).href);
+        // Inline <script> bodies + resource-hint script URLs, for analytics
+        // configured inline or loaded via preload (PC-08).
+        const inlineScripts = Array.from(
+          document.querySelectorAll("script:not([src])"),
+        )
+          .filter((s) => {
+            const t = ((s as HTMLScriptElement).type || "").toLowerCase();
+            return !t.includes("ld+json") && t !== "application/json";
+          })
+          .map((s) => s.textContent || "")
+          .filter((t) => t.trim().length > 0)
+          .slice(0, 50)
+          .map((t) => t.slice(0, 20000));
+        const preloadHrefs = Array.from(
+          document.querySelectorAll(
+            'link[rel~="preload"],link[rel~="modulepreload"],link[rel~="prefetch"]',
+          ),
         ).map((l) => (l as HTMLLinkElement).href);
         const jsCount = scriptSrcs.length;
         const cssCount = stylesheetHrefs.length;
@@ -998,6 +1020,8 @@ export class Scanner {
           cssCount,
           scriptSrcs,
           stylesheetHrefs,
+          inlineScripts,
+          preloadHrefs,
           structuredData,
           schemaTypes: [...new Set(schemaTypes)], // Remove duplicates
         };
@@ -1008,6 +1032,8 @@ export class Scanner {
         cssCount: 0,
         scriptSrcs: [],
         stylesheetHrefs: [],
+        inlineScripts: [],
+        preloadHrefs: [],
         structuredData: [],
         schemaTypes: [],
       };
