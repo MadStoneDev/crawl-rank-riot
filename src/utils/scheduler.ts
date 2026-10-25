@@ -83,14 +83,19 @@ export class CrawlScheduler {
         `Reaping ${staleScans.length} stale scans that have been in_progress for over 2 hours`,
       );
 
+      const staleReason = "Scan timed out — no progress for over 2 hours.";
       for (const scan of staleScans) {
         await supabase
           .from("scans")
           .update({
             status: "failed",
             completed_at: new Date().toISOString(),
+            // Populate the canonical failure_reason column, not just
+            // summary_stats, so a reaped scan carries a reason everywhere the
+            // app reads failures — consistent with markScanFailed (PC-04).
+            failure_reason: staleReason,
             summary_stats: {
-              error_message: "Scan timed out — no progress for over 2 hours",
+              error_message: staleReason,
               failed_at: new Date().toISOString(),
             },
           })
@@ -308,14 +313,18 @@ export class CrawlScheduler {
       );
 
       const supabase = getSupabaseServiceClient();
+      const auditFailReason =
+        error instanceof Error ? error.message : "Unknown error";
       await supabase
         .from("scans")
         .update({
           status: "failed",
           completed_at: new Date().toISOString(),
+          // Set failure_reason too (not only summary_stats) so a setup-time
+          // failure is reported consistently with pipeline failures (PC-04).
+          failure_reason: auditFailReason,
           summary_stats: {
-            error_message:
-              error instanceof Error ? error.message : "Unknown error",
+            error_message: auditFailReason,
             failed_at: new Date().toISOString(),
           },
         })
