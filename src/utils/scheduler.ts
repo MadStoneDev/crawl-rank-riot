@@ -26,9 +26,70 @@ export function computeNextScanAt(
 
 const STALE_SCAN_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
 
+/**
+ * Reason stamped on scans reset because the single crawler process stopped
+ * mid-scan — a restart (startup recovery) or a graceful shutdown. Also surfaced
+ * on the linked /api/v1 job, whose status is derived from its scan.
+ */
+export const INTERRUPTED_BY_RESTART_REASON = "Interrupted by a server restart";
+
 export class CrawlScheduler {
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
+
+  /**
+   * Fail every scan still marked in_progress. The crawler is a single process,
+   * so once it (re)starts nothing is actually crawling any more — an in_progress
+   * row is a ghost from a process that died mid-scan, and it blocks the project
+   * behind the 409 scan_in_progress guard until the 2-hour stale reaper clears
+   * it. Running this on startup (before the scheduler starts) frees the project
+   * immediately instead of after a two-hour wait.
+   *
+   * api_jobs have no status column of their own — a job's status is derived from
+   * its linked scan (serializers.jobStatusFromScan) — so failing the scan also
+   * moves any "running" API job to "failed" carrying this reason. One bulk
+   * update (status = in_progress → failed) handles both. Returns the number of
+   * scans reset. Best-effort: never throws, so a transient DB error can't stop
+   * the server from booting.
+   */
+  async recoverInterruptedScans(
+    reason: string = INTERRUPTED_BY_RESTART_REASON,
+  ): Promise<number> {
+    try {
+      const supabase = getSupabaseServiceClient();
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
+        .from("scans")
+        .update({
+          status: "failed",
+          completed_at: now,
+          // Canonical column + summary_stats mirror, consistent with the stale
+          // reaper and markScanFailed (PC-04), so the reason shows everywhere.
+          failure_reason: reason,
+          summary_stats: { error_message: reason, failed_at: now },
+        })
+        .eq("status", "in_progress")
+        .select("id");
+
+      if (error) {
+        console.error("Error recovering interrupted scans:", error);
+        return 0;
+      }
+
+      const count = data?.length ?? 0;
+      if (count > 0) {
+        console.log(
+          `Reset ${count} interrupted scan(s) left in_progress by a server restart`,
+        );
+      } else {
+        console.log("No interrupted scans to reset on startup");
+      }
+      return count;
+    } catch (error) {
+      console.error("Error recovering interrupted scans:", error);
+      return 0;
+    }
+  }
 
   start(): void {
     if (this.isRunning) return;
