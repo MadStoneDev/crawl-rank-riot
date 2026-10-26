@@ -8,6 +8,7 @@ import { getSupabaseServiceClient } from "../../services/database/client";
 import { runScanPipeline, ScanMode } from "../../services/scan-pipeline";
 import { requestCancel } from "../../services/scan-cancellation";
 import { parseProjectSettings } from "../../utils/project-settings";
+import { isShuttingDown } from "../../utils/lifecycle";
 import { ApiKeyRequest, requireScope } from "../../middleware/api-key-auth";
 import { recordUsage, getCurrentUsage } from "../../services/api/v1/usage";
 import { sendV1, sendV1Error } from "../../services/api/v1/respond";
@@ -90,6 +91,12 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
   // step throws, preventing an orphaned in_progress scan (PC-03).
   let createdScanId: string | null = null;
   try {
+    // Refuse new jobs while the process is shutting down — a scan accepted now
+    // can never finish (single-process crawler) and would block its project.
+    if (isShuttingDown()) {
+      sendV1Error(res, 503, "service_unavailable", "The crawler is restarting; please retry in a moment.");
+      return;
+    }
     const type: ScanMode = req.body?.type === "audit" ? "audit" : "seo";
     const projectId = req.body?.project_id;
     if (!projectId || typeof projectId !== "string") {

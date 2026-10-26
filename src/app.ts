@@ -4,6 +4,7 @@ import routes from "./routes/index"; // Updated path to point to routes/index.ts
 import v1Routes from "./routes/v1/index";
 import { config, validateConfig } from "./config";
 import { crawlScheduler } from "./utils/scheduler";
+import { beginShutdown } from "./utils/lifecycle";
 import { errorHandlerMiddleware } from "./services/api/responses";
 import express, { Request, Response, NextFunction } from "express";
 
@@ -102,22 +103,27 @@ const server = app.listen(PORT, async () => {
   console.log("Automatic crawl scheduler started");
 });
 
-// Graceful shutdown
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received, shutting down gracefully");
+// Graceful shutdown. Stop accepting new scans (beginShutdown makes the scan
+// entry points return 503), stop the scheduler, and best-effort mark the
+// in-flight scan(s) interrupted so the next process doesn't have to wait for the
+// startup reaper. Then drain HTTP connections and exit. Startup recovery is the
+// real guarantee; this just shortens the window.
+async function gracefulShutdown(signal: string): Promise<void> {
+  console.log(`${signal} received, shutting down gracefully`);
+  beginShutdown();
   crawlScheduler.stop();
+  try {
+    await crawlScheduler.recoverInterruptedScans();
+  } catch (error) {
+    console.error("Error marking in-flight scans interrupted on shutdown:", error);
+  }
   server.close(() => {
     process.exit(0);
   });
-});
+}
 
-process.on("SIGINT", () => {
-  console.log("SIGINT received, shutting down gracefully");
-  crawlScheduler.stop();
-  server.close(() => {
-    process.exit(0);
-  });
-});
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 process.on("uncaughtException", (error) => {
   console.error("Uncaught Exception:", error);

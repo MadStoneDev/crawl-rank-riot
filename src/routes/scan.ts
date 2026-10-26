@@ -9,6 +9,17 @@ import { AuthenticatedRequest } from "../middleware/auth";
 import { parseProjectSettings } from "../utils/project-settings";
 import { runScanPipeline } from "../services/scan-pipeline";
 import { requestCancel } from "../services/scan-cancellation";
+import { isShuttingDown } from "../utils/lifecycle";
+
+/** 503 while the process is shutting down: a scan accepted now can never finish
+ *  (single-process crawler) and would be left blocking its project. */
+const SHUTTING_DOWN_ERROR = () =>
+  new AppError(
+    "The crawler is restarting; please retry in a moment.",
+    "SERVICE_UNAVAILABLE",
+    undefined,
+    503,
+  );
 
 const router = Router();
 
@@ -19,6 +30,8 @@ router.post(
   "/scan",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      if (isShuttingDown()) return next(SHUTTING_DOWN_ERROR());
+
       const { project_id, options = {} } = req.body;
 
       // Validate inputs
@@ -166,6 +179,8 @@ router.post(
   "/scan/audit",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      if (isShuttingDown()) return next(SHUTTING_DOWN_ERROR());
+
       const { project_id, options = {} } = req.body;
 
       // Validate inputs
