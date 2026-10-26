@@ -1413,6 +1413,13 @@ export class Scanner {
     result.js_count = parsed.js_count ?? 0;
     result.stylesheet_hrefs = parsed.stylesheet_hrefs ?? [];
     result.css_count = parsed.css_count ?? 0;
+    // Inline <script> bodies and preload/prefetch asset hints — required by the
+    // tech_fingerprint module to detect analytics configured inline or preloaded
+    // (GA4/GTM via consent managers, next/third-parties). The headless path sets
+    // these too (see extractTechnicalData); without copying them here the HTTP
+    // path silently drops them and analytics comes back empty (PC-08 regression).
+    result.inline_scripts = parsed.inline_scripts ?? [];
+    result.preload_hrefs = parsed.preload_hrefs ?? [];
 
     result.has_viewport_meta = parsed.has_viewport_meta ?? false;
     result.has_mixed_content = parsed.has_mixed_content ?? false;
