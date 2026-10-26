@@ -6,7 +6,7 @@ import { isJavaScriptHeavySite, getSharedBrowserPool, detectPlatformFromHeaders,
 import { proxyFetch, getProxyCredentials, isProxyConfigured } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 import { Page } from "puppeteer";
-import { extractFromHtml, deriveCleanTitle, isHtmlContentType, decodeHtmlBody, parseLinkHeaderCanonical } from "./extract/parse-html";
+import { extractFromHtml, applyParsedHtml, deriveCleanTitle, isHtmlContentType, decodeHtmlBody, parseLinkHeaderCanonical } from "./extract/parse-html";
 import { isSoft404 } from "./extract/soft404";
 
 /** Decode HTML entities in every value of a string record (OG / Twitter tags). */
@@ -1278,7 +1278,7 @@ export class Scanner {
           );
         }
 
-        await this.processHtml(result, html, urlProcessor);
+        await this.processHtml(result, html);
 
         // Canonical declared in the HTTP `Link` header (CN-05). Merge it with
         // any HTML <link rel=canonical>: a header canonical and a differing HTML
@@ -1360,79 +1360,12 @@ export class Scanner {
   private async processHtml(
     result: ScanResult,
     html: string,
-    urlProcessor: UrlProcessor,
   ): Promise<void> {
-    // Single DOM-string extraction path (P-06): cheerio parses the raw HTML and
-    // fills every DOM-derivable field, with the parser-level correctness fixes
-    // baked in (see src/services/extract/parse-html.ts). Replaces the old
-    // per-field regex extraction that lived here.
-    const parsed = extractFromHtml(html, result.url);
-
-    result.title = parsed.title ?? "";
-    result.title_cleaned = parsed.title_cleaned;
-    if (parsed.meta_description !== undefined) result.meta_description = parsed.meta_description;
-    result.favicon_url = parsed.favicon_url ?? null;
-
-    result.h1s = parsed.h1s ?? [];
-    result.h2s = parsed.h2s ?? [];
-    result.h3s = parsed.h3s ?? [];
-    result.h4s = parsed.h4s ?? [];
-    result.h5s = parsed.h5s ?? [];
-    result.h6s = parsed.h6s ?? [];
-    result.heading_hierarchy_valid = parsed.heading_hierarchy_valid ?? true;
-    result.heading_hierarchy_issues = parsed.heading_hierarchy_issues ?? [];
-
-    result.internal_links = parsed.internal_links ?? [];
-    result.external_links = parsed.external_links ?? [];
-    result.images = parsed.images ?? [];
-
-    result.content_length = parsed.content_length ?? 0;
-    result.word_count = parsed.word_count ?? 0;
-    result.lead_paragraph_words = parsed.lead_paragraph_words ?? 0;
-    result.content_hash = parsed.content_hash;
-    result.readability_score = parsed.readability_score;
-    result.keywords = parsed.keywords ?? [];
-
-    result.canonical_url = parsed.canonical_url ?? null;
-    result.canonical_urls = parsed.canonical_urls;
-    result.canonical_is_self = isSelfCanonical(result.canonical_url, result.url);
-
-    // Robots: merge the meta signal with any X-Robots-Tag header already applied
-    // in httpScan (header noindex must not be cleared by a permissive meta).
-    result.has_robots_noindex = result.has_robots_noindex || !!parsed.meta_noindex;
-    result.has_robots_nofollow = result.has_robots_nofollow || !!parsed.meta_nofollow;
-    result.is_indexable = !result.has_robots_noindex;
-
-    result.open_graph = parsed.open_graph ?? {};
-    result.twitter_card = parsed.twitter_card ?? {};
-    result.structured_data = parsed.structured_data ?? [];
-    result.schema_types = parsed.schema_types ?? [];
-    result.has_invalid_structured_data = parsed.has_invalid_structured_data;
-
-    result.script_srcs = parsed.script_srcs ?? [];
-    result.js_count = parsed.js_count ?? 0;
-    result.stylesheet_hrefs = parsed.stylesheet_hrefs ?? [];
-    result.css_count = parsed.css_count ?? 0;
-    // Inline <script> bodies and preload/prefetch asset hints — required by the
-    // tech_fingerprint module to detect analytics configured inline or preloaded
-    // (GA4/GTM via consent managers, next/third-parties). The headless path sets
-    // these too (see extractTechnicalData); without copying them here the HTTP
-    // path silently drops them and analytics comes back empty (PC-08 regression).
-    result.inline_scripts = parsed.inline_scripts ?? [];
-    result.preload_hrefs = parsed.preload_hrefs ?? [];
-
-    result.has_viewport_meta = parsed.has_viewport_meta ?? false;
-    result.has_mixed_content = parsed.has_mixed_content ?? false;
-    result.hreflang_tags = parsed.hreflang_tags ?? [];
-    result.url_issues = parsed.url_issues ?? [];
-    result.has_contact_form = parsed.has_contact_form ?? false;
-    result.cls_risk_images = parsed.cls_risk_images ?? 0;
-    result.accessibility = parsed.accessibility;
-    result.has_cookie_consent = parsed.has_cookie_consent ?? false;
-    result.resource_hints = parsed.resource_hints;
-
-    // Soft-404: a 2xx response whose title/H1 reads as "not found" (S-01).
-    result.soft_404 = isSoft404(result.status, result.title, result.h1s);
+    // Parse the fetched HTML and map every parser field onto the result through
+    // the one shared mapping (parse-html.applyParsedHtml), so the HTTP and
+    // headless routes can't drift on which fields they populate (PC-08). result
+    // already has url, status and any X-Robots-Tag header flags set.
+    applyParsedHtml(result, extractFromHtml(html, result.url));
 
     // Network step (not pure): probe image file sizes.
     await this.fetchImageFileSizes(result.images);

@@ -1,7 +1,8 @@
 import { load, type CheerioAPI } from "cheerio";
 import { ScanResult } from "../../types";
-import { UrlProcessor } from "../../utils/url";
+import { UrlProcessor, isSelfCanonical } from "../../utils/url";
 import { computeContentHash, computeReadabilityScore, countWords, extractKeywords } from "./text-metrics";
+import { isSoft404 } from "./soft404";
 
 /**
  * The ONE DOM-string extractor (P-06). Given raw HTML (the server response on
@@ -518,6 +519,93 @@ export function extractFromHtml(html: string, finalUrl: string): ParsedHtml {
   out.main_text = contentText;
 
   return out;
+}
+
+/**
+ * The ONE place parser output is written onto a ScanResult. Both scan routes use
+ * it: the HTTP path passes extractFromHtml(serverHtml), the headless path passes
+ * extractFromHtml(page.content()). Centralising it means a new parser field is
+ * carried on both routes at once — a field can't be copied on one and forgotten
+ * on the other (the PC-08 class of bug). See field-mapping.test.ts, which fails
+ * if any field extractFromHtml produces is left unmapped here.
+ *
+ * `result` must already have `url` and `status` set (both routes do so from the
+ * transport layer before extracting), and any X-Robots-Tag header flags applied
+ * — the robots merge below must not clear a header noindex with a permissive
+ * meta. Transport/render fields (timings, security headers, redirect, size,
+ * scan_method, schema_source) are the caller's job, not the parser's.
+ */
+export function applyParsedHtml(result: ScanResult, parsed: ParsedHtml): void {
+  result.title = parsed.title ?? "";
+  result.title_cleaned = parsed.title_cleaned;
+  if (parsed.meta_description !== undefined) result.meta_description = parsed.meta_description;
+  result.favicon_url = parsed.favicon_url ?? null;
+
+  result.h1s = parsed.h1s ?? [];
+  result.h2s = parsed.h2s ?? [];
+  result.h3s = parsed.h3s ?? [];
+  result.h4s = parsed.h4s ?? [];
+  result.h5s = parsed.h5s ?? [];
+  result.h6s = parsed.h6s ?? [];
+  result.heading_hierarchy_valid = parsed.heading_hierarchy_valid ?? true;
+  result.heading_hierarchy_issues = parsed.heading_hierarchy_issues ?? [];
+
+  result.internal_links = parsed.internal_links ?? [];
+  result.external_links = parsed.external_links ?? [];
+  result.images = parsed.images ?? [];
+
+  result.content_length = parsed.content_length ?? 0;
+  result.word_count = parsed.word_count ?? 0;
+  result.lead_paragraph_words = parsed.lead_paragraph_words ?? 0;
+  result.content_hash = parsed.content_hash;
+  result.readability_score = parsed.readability_score;
+  result.keywords = parsed.keywords ?? [];
+  // Cleaned main text, kept in memory for the Stage 4 per-page snapshot
+  // (api_job_pages.content). Neither route copied it before, so that column was
+  // always empty — mapping it here fixes both routes at once.
+  result.main_text = parsed.main_text;
+
+  result.canonical_url = parsed.canonical_url ?? null;
+  result.canonical_urls = parsed.canonical_urls;
+  result.canonical_is_self = isSelfCanonical(result.canonical_url, result.url);
+
+  // Robots: merge the meta signal with any X-Robots-Tag header already applied
+  // by the caller (header noindex must not be cleared by a permissive meta).
+  result.has_robots_noindex = result.has_robots_noindex || !!parsed.meta_noindex;
+  result.has_robots_nofollow = result.has_robots_nofollow || !!parsed.meta_nofollow;
+  result.is_indexable = !result.has_robots_noindex;
+
+  result.open_graph = parsed.open_graph ?? {};
+  result.twitter_card = parsed.twitter_card ?? {};
+  result.structured_data = parsed.structured_data ?? [];
+  result.schema_types = parsed.schema_types ?? [];
+  result.has_invalid_structured_data = parsed.has_invalid_structured_data;
+
+  result.script_srcs = parsed.script_srcs ?? [];
+  result.js_count = parsed.js_count ?? 0;
+  result.stylesheet_hrefs = parsed.stylesheet_hrefs ?? [];
+  result.css_count = parsed.css_count ?? 0;
+  // Inline <script> bodies and preload/prefetch asset hints — the
+  // tech_fingerprint module reads these to detect analytics configured inline or
+  // preloaded (GA4/GTM via consent managers, next/third-parties). Dropping them
+  // on one route is what made analytics come back empty (PC-08).
+  result.inline_scripts = parsed.inline_scripts ?? [];
+  result.preload_hrefs = parsed.preload_hrefs ?? [];
+
+  result.has_viewport_meta = parsed.has_viewport_meta ?? false;
+  result.has_mixed_content = parsed.has_mixed_content ?? false;
+  result.hreflang_tags = parsed.hreflang_tags ?? [];
+  result.url_issues = parsed.url_issues ?? [];
+  result.has_contact_form = parsed.has_contact_form ?? false;
+  result.cls_risk_images = parsed.cls_risk_images ?? 0;
+  result.accessibility = parsed.accessibility;
+  result.has_cookie_consent = parsed.has_cookie_consent ?? false;
+  result.resource_hints = parsed.resource_hints;
+  result.contact_links = parsed.contact_links;
+
+  // Soft-404: a 2xx response whose title/H1 reads as "not found" (S-01).
+  // Status-derived but computed here so both routes flag it identically.
+  result.soft_404 = isSoft404(result.status, result.title, result.h1s);
 }
 
 function detectContactForm($: CheerioAPI): boolean {
