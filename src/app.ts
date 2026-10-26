@@ -85,9 +85,17 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.use(errorHandlerMiddleware);
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+
+  // The crawler is a single process: any scan still marked in_progress after a
+  // (re)start is a ghost from the previous process that died mid-scan and is now
+  // blocking its project behind the 409 scan_in_progress guard. Fail those
+  // (and, via their linked scan, any "running" API jobs) BEFORE the scheduler
+  // starts, so a redeploy frees projects immediately instead of after the 2-hour
+  // stale reaper. Best-effort — it never throws, so boot proceeds regardless.
+  await crawlScheduler.recoverInterruptedScans();
 
   // Start the crawl scheduler
   crawlScheduler.start();
