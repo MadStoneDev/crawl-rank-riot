@@ -209,3 +209,29 @@ describe("analyzePageIssues — load-time method gating (PF-02)", () => {
     expect(types({ scan_method: "headless", size_bytes: big })).not.toContain("large_page_size");
   });
 });
+
+// The poor_readability threshold (< 30 Flesch, > 100 words) is applied to the
+// MAIN-CONTENT readability score. Both scan paths now compute that score the same
+// way (shared parser), so the rule can't fire differently by scan path. These
+// pin the boundary so a future change to how readability is measured can't
+// silently move the rule. See docs/audit/09-headless-mapping.md.
+describe("analyzePageIssues — poor_readability threshold", () => {
+  it("fires below 30 with substantial content (the headless-aligned WordPress case)", () => {
+    // Headless now yields a main-content Flesch of ~18 where the old whole-body
+    // measure read ~30; both are judged against the same bar the HTTP path uses.
+    expect(types({ readability_score: 18, word_count: 370 })).toContain("poor_readability");
+  });
+
+  it("does NOT fire at exactly 30 (bar is strict '< 30')", () => {
+    expect(types({ readability_score: 30, word_count: 370 })).not.toContain("poor_readability");
+  });
+
+  it("does NOT fire on thin content even when readability is very low (word_count guard)", () => {
+    expect(types({ readability_score: 10, word_count: 100 })).not.toContain("poor_readability");
+    expect(types({ readability_score: 10, word_count: 101 })).toContain("poor_readability");
+  });
+
+  it("does NOT fire when readability_score is undefined", () => {
+    expect(types({ readability_score: undefined, word_count: 370 })).not.toContain("poor_readability");
+  });
+});
