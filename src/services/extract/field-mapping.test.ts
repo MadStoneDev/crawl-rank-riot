@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { extractFromHtml, applyParsedHtml, decodeHtmlBody, type ParsedHtml } from "./parse-html";
+import { Scanner } from "../scanner";
 import type { ScanResult } from "../../types";
 
 /**
@@ -88,5 +89,42 @@ describe("applyParsedHtml — shared field mapping (both routes)", () => {
     );
     expect(result.canonical_url).toBe("https://acme.test/contact");
     expect(result.soft_404).toBe(false);
+  });
+});
+
+describe("headless route (extractPageData) uses the same shared mapping", () => {
+  // A minimal puppeteer Page stand-in: the refactored extractPageData only reads
+  // page.content() (the rendered DOM) and page.evaluate() (the LCP probe, which
+  // needs a real browser — stubbed to undefined here). No puppeteer is launched.
+  function fakePage(renderedHtml: string) {
+    return {
+      content: async () => renderedHtml,
+      evaluate: async () => undefined,
+    };
+  }
+
+  it("populates every parser field on the headless route (ravenci golden)", async () => {
+    const dir = join(__dirname, "__fixtures__", "before-after");
+    const bytes = readFileSync(join(dir, "nextjs-ravenci-home.html"));
+    const html = decodeHtmlBody(new Uint8Array(bytes), "text/html; charset=utf-8");
+    const url = "https://ravenci.solutions/";
+
+    // Relaxed guard + a fetch stub (image HEADs → 404) injected via deps, never
+    // an env flag (CLAUDE.md). The headless assembly is otherwise real.
+    const scanner = new Scanner({
+      urlGuard: async () => true,
+      fetchImpl: (async () => new Response(null, { status: 404 })) as never,
+    });
+
+    const result = baseResult(url);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (scanner as any).extractPageData(fakePage(html), result);
+
+    // Same guard as the HTTP route: the headless route maps the identical
+    // parser fields because both now go through applyParsedHtml.
+    assertEveryParserFieldMapped(extractFromHtml(html, url), result);
+    expect(result.scan_method).toBe("headless");
+    expect((result.main_text ?? "").length).toBeGreaterThan(0);
+    expect(result.inline_scripts).toBeDefined();
   });
 });
