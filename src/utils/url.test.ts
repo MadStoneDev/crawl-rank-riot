@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildSitemapCandidateUrls,
   classifyPageType,
   isContentPage,
   isPublicUrl,
@@ -230,5 +231,30 @@ describe("UrlProcessor.shouldExclude — calendar feeds & event views", () => {
 
   it("does not exclude an ordinary content page", () => {
     expect(up.shouldExclude(`${BASE}/about`)).toBe(false);
+  });
+});
+
+describe("buildSitemapCandidateUrls — PC-05 sitemap URL joining", () => {
+  it("does not double the slash for a root seed URL with a trailing slash", () => {
+    const urls = buildSitemapCandidateUrls("https://site.com/");
+    expect(urls).toContain("https://site.com/sitemap.xml");
+    expect(urls).toContain("https://site.com/robots.txt");
+    // No path double-slash anywhere (the protocol's "://" is not a match).
+    expect(urls.some((u) => /[^:]\/\/[^/]/.test(u))).toBe(false);
+  });
+
+  it("handles a seed URL without a trailing slash", () => {
+    const urls = buildSitemapCandidateUrls("https://site.com");
+    expect(urls).toContain("https://site.com/sitemap.xml");
+    expect(urls).toContain("https://site.com/sitemap_index.xml");
+  });
+
+  it("resolves custom sitemap paths (relative and absolute) against the base", () => {
+    const urls = buildSitemapCandidateUrls("https://site.com/", [
+      "/custom-sitemap.xml",
+      "https://cdn.site.com/s.xml",
+    ]);
+    expect(urls).toContain("https://site.com/custom-sitemap.xml");
+    expect(urls).toContain("https://cdn.site.com/s.xml");
   });
 });

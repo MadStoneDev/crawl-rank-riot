@@ -94,4 +94,59 @@ describe("extractBusinessInfo (Stage 4)", () => {
     }));
     expect(info.address).toEqual({ raw: "1 Main St, Sydney NSW 2000" });
   });
+
+  it("de-duplicates socials across www / trailing-slash / http-https / case variants (PC-07)", () => {
+    const info = extractBusinessInfo(page({
+      structured_data: [
+        {
+          "@type": "Organization",
+          sameAs: [
+            "https://facebook.com/acme",
+            "https://www.facebook.com/acme/",
+            "http://facebook.com/Acme",
+          ],
+        },
+      ],
+      external_links: [
+        { url: "https://facebook.com/acme?ref=nav", anchor_text: "", rel_attributes: [] },
+      ],
+    }));
+    // One entry, keeping the first original URL seen.
+    expect(info.socials).toEqual([{ platform: "facebook", url: "https://facebook.com/acme" }]);
+  });
+
+  it("returns structured opening hours per day alongside the raw text (PC-07)", () => {
+    const info = extractBusinessInfo(page({
+      structured_data: [
+        {
+          "@type": "LocalBusiness",
+          openingHours: ["Sa 10:00-14:00"],
+          openingHoursSpecification: [
+            { dayOfWeek: ["Monday", "Tuesday"], opens: "09:00", closes: "17:00" },
+          ],
+        },
+      ],
+    }));
+    // Raw text is still produced unchanged.
+    expect(info.opening_hours).toContain("Monday, Tuesday 09:00-17:00");
+    expect(info.opening_hours).toContain("Sa 10:00-14:00");
+    // Structured per-day: openingHours strings first, then the spec.
+    expect(info.opening_hours_structured).toEqual([
+      { day: "Saturday", opens: "10:00", closes: "14:00" },
+      { day: "Monday", opens: "09:00", closes: "17:00" },
+      { day: "Tuesday", opens: "09:00", closes: "17:00" },
+    ]);
+  });
+
+  it("expands weekday ranges in openingHours strings (PC-07)", () => {
+    const info = extractBusinessInfo(page({
+      structured_data: [{ "@type": "LocalBusiness", openingHours: ["Mo-Fr 09:00-17:00"] }],
+    }));
+    expect(info.opening_hours_structured.map((p) => p.day)).toEqual([
+      "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+    ]);
+    expect(
+      info.opening_hours_structured.every((p) => p.opens === "09:00" && p.closes === "17:00"),
+    ).toBe(true);
+  });
 });

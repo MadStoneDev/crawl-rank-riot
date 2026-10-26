@@ -368,6 +368,30 @@ export function extractFromHtml(html: string, finalUrl: string): ParsedHtml {
   $("script[src]").each((_, el) => { const s = $(el).attr("src"); if (s) scriptSrcs.push(s); });
   out.script_srcs = scriptSrcs;
   out.js_count = scriptSrcs.length;
+  // Inline <script> bodies (no src) for detecting analytics configured inline —
+  // gtag/dataLayer/GTM snippets a URL-only scan misses (PC-08). Bounded so a
+  // pathological page can't exhaust memory; JSON-LD / JSON data blocks skipped.
+  const inlineScripts: string[] = [];
+  $("script:not([src])").each((_, el) => {
+    if (inlineScripts.length >= 50) return;
+    const type = ($(el).attr("type") || "").toLowerCase();
+    if (type.includes("ld+json") || type === "application/json") return;
+    const code = $(el).html();
+    if (code && code.trim()) inlineScripts.push(code.slice(0, 20000));
+  });
+  out.inline_scripts = inlineScripts;
+  // Resource-hint script URLs (preload / modulepreload / prefetch) are real
+  // assets the page loads; include them so analytics preloaded this way (e.g.
+  // next/third-parties preloading googletagmanager) is detected (PC-08).
+  const preloadHrefs: string[] = [];
+  $("link[href]").each((_, el) => {
+    const rel = ($(el).attr("rel") || "").toLowerCase();
+    if (/\b(preload|modulepreload|prefetch)\b/.test(rel)) {
+      const h = $(el).attr("href");
+      if (h) preloadHrefs.push(h);
+    }
+  });
+  out.preload_hrefs = preloadHrefs;
   const stylesheetHrefs: string[] = [];
   $('link[rel="stylesheet" i][href]').each((_, el) => {
     const h = $(el).attr("href"); if (h) stylesheetHrefs.push(h);

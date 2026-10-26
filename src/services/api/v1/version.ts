@@ -9,4 +9,7 @@
 export const API_VERSION = "v1" as const;
 // 1.1.0 (Stage 4): additive — projects, job scope + modules + attribution, and
 // the per-job pages endpoints. All 1.0.0 fields are unchanged.
-export const SCHEMA_VERSION = "1.1.0" as const;
+// 1.2.0 (PC-07): additive — business_info.opening_hours_structured
+// ({ day, opens, closes } per day) alongside the existing opening_hours text.
+// All earlier fields are unchanged.
+export const SCHEMA_VERSION = "1.2.0" as const;

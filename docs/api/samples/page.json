@@ -1,6 +1,6 @@
 {
   "api_version": "v1",
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "data": {
     "object": "page",
     "id": "9f0a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c",
@@ -113,6 +113,33 @@
         },
         "opening_hours": [
           "Monday, Tuesday, Wednesday, Thursday, Friday 09:00-17:00"
+        ],
+        "opening_hours_structured": [
+          {
+            "day": "Monday",
+            "opens": "09:00",
+            "closes": "17:00"
+          },
+          {
+            "day": "Tuesday",
+            "opens": "09:00",
+            "closes": "17:00"
+          },
+          {
+            "day": "Wednesday",
+            "opens": "09:00",
+            "closes": "17:00"
+          },
+          {
+            "day": "Thursday",
+            "opens": "09:00",
+            "closes": "17:00"
+          },
+          {
+            "day": "Friday",
+            "opens": "09:00",
+            "closes": "17:00"
+          }
         ],
         "service_areas": [
           "Sydney",

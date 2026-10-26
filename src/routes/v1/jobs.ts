@@ -86,6 +86,9 @@ const URLS_SCOPE_CAP = 50;
 
 // POST /api/v1/jobs — create a scan job.
 router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res: Response): Promise<void> => {
+  // Tracks a scans row we created so the catch can roll it back if a later
+  // step throws, preventing an orphaned in_progress scan (PC-03).
+  let createdScanId: string | null = null;
   try {
     const type: ScanMode = req.body?.type === "audit" ? "audit" : "seo";
     const projectId = req.body?.project_id;
@@ -148,25 +151,6 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
       return;
     }
 
-    const { data: scan, error: scanError } = await supabase
-      .from("scans")
-      .insert({
-        project_id: projectId,
-        scan_type: type,
-        status: "in_progress",
-        started_at: new Date().toISOString(),
-        pages_scanned: 0,
-        links_scanned: 0,
-        issues_found: 0,
-        last_progress_update: new Date().toISOString(),
-      })
-      .select()
-      .single();
-    if (scanError || !scan) {
-      sendV1Error(res, 500, "database_error", "Could not create the scan.");
-      return;
-    }
-
     const projectSettings = parseProjectSettings(project.settings, project.url);
     const options = clampOptions(type, req.body?.options ?? {}, projectSettings);
 
@@ -207,6 +191,31 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
       Object.assign(options, { maxDepth: 0, maxPages: capped.length, checkSitemaps: false, seedPaths: [], seedUrls: capped.slice(1) });
     }
 
+    // Create the scan row only after scope validation above has passed, so an
+    // invalid page/urls scope can no longer orphan an in_progress scan (PC-03).
+    const { data: scan, error: scanError } = await supabase
+      .from("scans")
+      .insert({
+        project_id: projectId,
+        scan_type: type,
+        status: "in_progress",
+        started_at: new Date().toISOString(),
+        pages_scanned: 0,
+        links_scanned: 0,
+        issues_found: 0,
+        last_progress_update: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if (scanError || !scan) {
+      // Log the underlying Postgres error server-side; never leak it to the
+      // client, which only gets the generic message (PC-02).
+      console.error("[v1/jobs] failed to create scan row", { projectId, error: scanError });
+      sendV1Error(res, 500, "database_error", "Could not create the scan.");
+      return;
+    }
+    createdScanId = scan.id;
+
     const { data: job, error: jobError } = await stage4Db()
       .from("api_jobs")
       .insert({
@@ -224,9 +233,23 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
       .select(JOB_COLS)
       .single();
     if (jobError || !job) {
+      console.error("[v1/jobs] failed to create api_jobs row; rolling back scan", {
+        projectId,
+        scanId: scan.id,
+        error: jobError,
+      });
+      // Compensating cleanup: the scans row is created first (api_jobs.scan_id
+      // references it) but the job insert failed, so delete the now-orphaned
+      // in_progress scan — otherwise it blocks every future scan for this
+      // project via the 409 guard until cleared by hand (PC-03).
+      await supabase.from("scans").delete().eq("id", scan.id);
+      createdScanId = null;
       sendV1Error(res, 500, "database_error", "Could not create the job.");
       return;
     }
+    // Job persisted: the scan is now legitimately owned by a job, so stop
+    // tracking it for rollback.
+    createdScanId = null;
 
     void recordUsage(req.apiKey!.id, { jobs: 1 });
 
@@ -243,7 +266,18 @@ router.post("/jobs", requireScope("jobs:write"), async (req: ApiKeyRequest, res:
       issues_found: 0,
       failure_reason: null,
     }));
-  } catch {
+  } catch (err) {
+    // Log the real error server-side for every failure on this path (PC-02).
+    console.error("[v1/jobs] unexpected error creating job", err);
+    // Roll back a half-created scan so a thrown error can't leave the project
+    // permanently blocked by the 409 guard (PC-03).
+    if (createdScanId) {
+      try {
+        await getSupabaseServiceClient().from("scans").delete().eq("id", createdScanId);
+      } catch (cleanupErr) {
+        console.error("[v1/jobs] failed to roll back orphaned scan", createdScanId, cleanupErr);
+      }
+    }
     sendV1Error(res, 500, "internal_error", "Could not create the job.");
   }
 });
