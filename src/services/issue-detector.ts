@@ -379,7 +379,7 @@ export async function detectAndStoreIssues(
  */
 async function resolvePageIds(
   projectId: string,
-  urls: string[],
+  _urls: string[],
 ): Promise<Map<string, string>> {
   const supabase = getSupabaseServiceClient();
   const map = new Map<string, string>();

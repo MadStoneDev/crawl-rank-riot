@@ -73,7 +73,7 @@ export function getSupabaseServiceClient(): SupabaseClient<Database> {
 export async function testDatabaseConnection(): Promise<boolean> {
   try {
     const supabase = getSupabaseServiceClient();
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("profiles")
       .select("id")
       .limit(1);

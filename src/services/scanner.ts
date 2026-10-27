@@ -377,7 +377,7 @@ export class Scanner {
           this.delay(5000),
         ]);
       }
-    } catch (error) {
+    } catch {
       console.log("⚠️ Dynamic content wait timeout, continuing with scan...");
     }
   }

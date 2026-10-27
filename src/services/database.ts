@@ -687,13 +687,13 @@ async function cleanupRemovedPages(
  */
 export async function getScanResults(
   projectId: string,
-  scanId?: string,
+  _scanId?: string,
 ): Promise<{ pages: any[]; links: any[] }> {
   const supabase = getSupabaseServiceClient();
 
   try {
     // Get pages
-    let pagesQuery = supabase
+    const pagesQuery = supabase
       .from("pages")
       .select("*")
       .eq("project_id", projectId)

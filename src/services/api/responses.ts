@@ -53,7 +53,7 @@ export function errorHandlerMiddleware(
   err: any,
   req: Request,
   res: Response,
-  next: NextFunction,
+  _next: NextFunction,
 ): void {
   // Log the error for debugging (excluding request body to prevent sensitive data leakage)
   console.error("Error occurred:", {

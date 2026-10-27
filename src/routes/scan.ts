@@ -1,10 +1,7 @@
 import { AppError } from "../utils/error";
 import { getSupabaseServiceClient } from "../services/database/client";
 import { Router, Request, Response, NextFunction } from "express";
-import {
-  createSuccessResponse,
-  errorHandlerMiddleware,
-} from "../services/api/responses";
+import { createSuccessResponse } from "../services/api/responses";
 import { AuthenticatedRequest } from "../middleware/auth";
 import { parseProjectSettings } from "../utils/project-settings";
 import { runScanPipeline } from "../services/scan-pipeline";

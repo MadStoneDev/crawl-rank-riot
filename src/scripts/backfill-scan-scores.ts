@@ -32,7 +32,9 @@ import "dotenv/config";
 // one from `ws` (already present via puppeteer) when the global is missing. This
 // touches only this script's process, not the shared production client.
 if (typeof (globalThis as any).WebSocket === "undefined") {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // Conditional CommonJS polyfill: a top-level import can't be guarded, and this
+  // runs only when the global is missing (Node < 22), never in production.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   (globalThis as any).WebSocket = require("ws");
 }
 

@@ -107,7 +107,9 @@ export function getProxyCredentials(): { username: string; password: string } | 
         password: decodeURIComponent(parsed.password),
       };
     }
-  } catch {}
+  } catch {
+    // Malformed proxy URL → treat as no credentials.
+  }
   return null;
 }
 

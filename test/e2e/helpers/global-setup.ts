@@ -5,6 +5,5 @@ import { assertLocalSupabase } from "./guard";
 // production data.
 export default function setup(): void {
   const { url } = assertLocalSupabase();
-  // eslint-disable-next-line no-console
   console.log(`[e2e] using local Supabase at ${url}`);
 }

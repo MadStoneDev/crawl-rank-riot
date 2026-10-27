@@ -1,5 +1,4 @@
 import { SiteLevelData, ScanResult } from "../types";
-import { isPublicUrl } from "../utils/url";
 import { proxyFetch } from "../utils/proxy";
 import { USER_AGENT } from "../config/identity";
 import { parseRobots, isPathAllowed, type RobotsTxt } from "../utils/robots";
@@ -418,7 +417,7 @@ function extractLocsFromXml(xml: string): string[] {
 function normalizeForComparison(url: string): string {
   try {
     const parsed = new URL(url);
-    let path = parsed.pathname.replace(/\/+$/, "") || "/";
+    const path = parsed.pathname.replace(/\/+$/, "") || "/";
     return `${parsed.protocol}//${parsed.hostname}${path}`.toLowerCase();
   } catch {
     return url.toLowerCase().replace(/\/+$/, "");

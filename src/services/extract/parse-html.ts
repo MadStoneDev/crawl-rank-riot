@@ -668,7 +668,7 @@ function extractAccessibility($: CheerioAPI): NonNullable<ScanResult["accessibil
 
 /** Minimal CSS.escape for id attribute selectors (Node has no global CSS). */
 function cssEscape(value: string): string {
-  return value.replace(/["\\\]\[#.:>+~*^$|=()\s]/g, "\\$&");
+  return value.replace(/["\\\][#.:>+~*^$|=()\s]/g, "\\$&");
 }
 
 /**

@@ -283,7 +283,6 @@ export function writeSamples(dir: string = SAMPLES_DIR): void {
   fs.mkdirSync(dir, { recursive: true });
   for (const [name, contents] of Object.entries(buildSamples())) {
     fs.writeFileSync(path.join(dir, name), contents);
-    // eslint-disable-next-line no-console
     console.log(`wrote ${path.join(dir, name)}`);
   }
 }

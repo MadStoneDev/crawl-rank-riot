@@ -753,7 +753,7 @@ export class WebCrawler {
     }
   }
 
-  private calculateUrlDepth(url: string, baseUrl: string): number {
+  private calculateUrlDepth(url: string, _baseUrl: string): number {
     return this.urlProcessor.getPathDepth(url);
   }
 

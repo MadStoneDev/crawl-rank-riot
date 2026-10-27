@@ -215,7 +215,7 @@ export class UrlProcessor {
     try {
       const url = new URL(this.baseUrl);
       this.baseDomain = url.hostname.toLowerCase();
-    } catch (error) {
+    } catch {
       throw new Error(`Invalid base URL: ${baseUrl}`);
     }
   }
@@ -422,7 +422,7 @@ export class UrlProcessor {
               nonWwwCount++;
             }
           }
-        } catch (error) {
+        } catch {
           // Skip invalid URLs
         }
       }
@@ -579,7 +579,7 @@ export class UrlProcessor {
       const urlWithoutWww = urlDomain.replace(/^www\./, "");
 
       return baseWithoutWww === urlWithoutWww;
-    } catch (error) {
+    } catch {
       return false;
     }
   }
@@ -600,7 +600,7 @@ export class UrlProcessor {
       }
 
       return this.normalize(resolved.href);
-    } catch (error) {
+    } catch {
       return null;
     }
   }
@@ -691,7 +691,7 @@ export class UrlProcessor {
         .split("/")
         .filter((part) => part.length > 0);
       return pathParts.length;
-    } catch (error) {
+    } catch {
       return 0;
     }
   }
@@ -759,7 +759,7 @@ export class UrlProcessor {
       if (paramCount > 3) {
         priority -= 2;
       }
-    } catch (error) {
+    } catch {
       // Ignore error
     }
 
@@ -794,7 +794,7 @@ export class UrlProcessor {
       }
 
       return this.normalize(trimmed);
-    } catch (error) {
+    } catch {
       return null;
     }
   }

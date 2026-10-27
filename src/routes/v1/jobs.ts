@@ -18,7 +18,6 @@ import {
   serializeJob,
   serializeReport,
   serializeIssue,
-  serializeUsage,
   serializePageListItem,
   serializePageDetail,
   domainOf,
