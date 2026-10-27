@@ -50,6 +50,57 @@ export type Database = {
           },
         ]
       }
+      api_job_pages: {
+        Row: {
+          id: string
+          job_id: string
+          page_id: string | null
+          url: string
+          http_status: number | null
+          data: Json
+          content: string | null
+          modules: Json
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          job_id: string
+          page_id?: string | null
+          url: string
+          http_status?: number | null
+          data?: Json
+          content?: string | null
+          modules?: Json
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          job_id?: string
+          page_id?: string | null
+          url?: string
+          http_status?: number | null
+          data?: Json
+          content?: string | null
+          modules?: Json
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "api_job_pages_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "api_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "api_job_pages_page_id_fkey"
+            columns: ["page_id"]
+            isOneToOne: false
+            referencedRelation: "pages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       api_jobs: {
         Row: {
           id: string
@@ -61,6 +112,11 @@ export type Database = {
           request: Json
           created_at: string
           updated_at: string
+          external_ref: string | null
+          metadata: Json
+          scope: string
+          modules: Json | null
+          result: Json | null
         }
         Insert: {
           id?: string
@@ -72,6 +128,11 @@ export type Database = {
           request?: Json
           created_at?: string
           updated_at?: string
+          external_ref?: string | null
+          metadata?: Json
+          scope?: string
+          modules?: Json | null
+          result?: Json | null
         }
         Update: {
           id?: string
@@ -83,6 +144,11 @@ export type Database = {
           request?: Json
           created_at?: string
           updated_at?: string
+          external_ref?: string | null
+          metadata?: Json
+          scope?: string
+          modules?: Json | null
+          result?: Json | null
         }
         Relationships: [
           {
@@ -193,6 +259,48 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "api_keys_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      api_projects: {
+        Row: {
+          project_id: string
+          user_id: string
+          external_ref: string | null
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          project_id: string
+          user_id: string
+          external_ref?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          project_id?: string
+          user_id?: string
+          external_ref?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "api_projects_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: true
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "api_projects_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "users"
@@ -800,6 +908,7 @@ export type Database = {
           paddle_subscription_id: string | null
           subscription_period_end: string | null
           role: string | null
+          api_access: boolean
         }
         Insert: {
           id: string
@@ -815,6 +924,7 @@ export type Database = {
           paddle_subscription_id?: string | null
           subscription_period_end?: string | null
           role?: string | null
+          api_access?: boolean
         }
         Update: {
           id?: string
@@ -830,6 +940,7 @@ export type Database = {
           paddle_subscription_id?: string | null
           subscription_period_end?: string | null
           role?: string | null
+          api_access?: boolean
         }
         Relationships: []
       }
