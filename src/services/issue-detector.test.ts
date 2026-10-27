@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { analyzePageIssues } from "./issue-detector";
+import {
+  analyzePageIssues,
+  detectInternalLinkingIssues,
+} from "./issue-detector";
 import type { ScanResult } from "../types";
 
 /** A healthy HTML page; override per test. */
@@ -233,5 +236,159 @@ describe("analyzePageIssues — poor_readability threshold", () => {
 
   it("does NOT fire when readability_score is undefined", () => {
     expect(types({ readability_score: undefined, word_count: 370 })).not.toContain("poor_readability");
+  });
+});
+
+describe("analyzePageIssues — deep_page (F-D12)", () => {
+  it("fires on an indexable content page at depth 4", () => {
+    expect(types({ depth: 4 })).toContain("deep_page");
+  });
+
+  it("does NOT fire at depth 3 (recommended max is 3)", () => {
+    expect(types({ depth: 3 })).not.toContain("deep_page");
+  });
+
+  it("does NOT fire on a deep noindex page", () => {
+    expect(
+      types({ depth: 6, has_robots_noindex: true }),
+    ).not.toContain("deep_page");
+    expect(types({ depth: 6, is_indexable: false })).not.toContain("deep_page");
+  });
+
+  it("does NOT fire on a deep non-content page (tag/pagination/archive)", () => {
+    expect(
+      types({ url: "https://example.com/tag/news", depth: 6 }),
+    ).not.toContain("deep_page");
+    expect(
+      types({ url: "https://example.com/page/5", depth: 6 }),
+    ).not.toContain("deep_page");
+  });
+
+  it("records the depth in details", () => {
+    const issues = analyzePageIssues(
+      makeResult({ depth: 5 }),
+      "p",
+      "pg",
+      "sc",
+    );
+    const deep = issues.find((i) => i.issue_type === "deep_page");
+    expect(deep?.details).toMatchObject({ depth: 5 });
+  });
+});
+
+describe("detectInternalLinkingIssues — orphan vs weak (F-D12)", () => {
+  // Run internal-linking detection over a set of pages with explicit inbound
+  // counts. Pages default to a depth-1 indexable content page.
+  function linkIssues(
+    pages: {
+      url: string;
+      id: string;
+      inbound: number;
+      over?: Partial<ScanResult>;
+    }[],
+    variants: string[] = [],
+  ) {
+    const results = pages.map((p) =>
+      makeResult({ url: p.url, depth: 1, ...p.over }),
+    );
+    const pageIdMap = new Map(pages.map((p) => [p.url, p.id]));
+    const inboundCount = new Map(pages.map((p) => [p.id, p.inbound]));
+    return detectInternalLinkingIssues(
+      results,
+      inboundCount,
+      pageIdMap,
+      new Set(variants),
+      "p",
+      "sc",
+    );
+  }
+
+  const typesFor = (
+    pages: Parameters<typeof linkIssues>[0],
+    variants: string[] = [],
+  ) => linkIssues(pages, variants).map((i) => i.issue_type);
+
+  it("flags a content page with 0 inbound links as orphan_page, not weak", () => {
+    const types = typesFor([
+      { url: "https://example.com/a", id: "a", inbound: 0 },
+    ]);
+    expect(types).toContain("orphan_page");
+    expect(types).not.toContain("weak_internal_linking");
+  });
+
+  it("flags 1 and 2 inbound links as weak_internal_linking, not orphan", () => {
+    for (const inbound of [1, 2]) {
+      const types = typesFor([
+        { url: "https://example.com/a", id: "a", inbound },
+      ]);
+      expect(types).toContain("weak_internal_linking");
+      expect(types).not.toContain("orphan_page");
+    }
+  });
+
+  it("does NOT flag a page with 3+ inbound links", () => {
+    expect(
+      typesFor([{ url: "https://example.com/a", id: "a", inbound: 3 }]),
+    ).toEqual([]);
+  });
+
+  it("excludes the home page (depth 0) even with 0 inbound", () => {
+    expect(
+      typesFor([
+        { url: "https://example.com/", id: "home", inbound: 0, over: { depth: 0 } },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("excludes non-content pages (tag/pagination)", () => {
+    expect(
+      typesFor([
+        { url: "https://example.com/tag/x", id: "t", inbound: 0 },
+        { url: "https://example.com/page/2", id: "pg2", inbound: 1 },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("excludes canonicalised variants", () => {
+    expect(
+      typesFor(
+        [{ url: "https://example.com/quote?x=1", id: "v", inbound: 0 }],
+        ["https://example.com/quote?x=1"],
+      ),
+    ).toEqual([]);
+  });
+
+  it("does NOT flag weak_internal_linking on a noindex or non-indexable page", () => {
+    expect(
+      typesFor([
+        {
+          url: "https://example.com/a",
+          id: "a",
+          inbound: 2,
+          over: { has_robots_noindex: true },
+        },
+      ]),
+    ).toEqual([]);
+    expect(
+      typesFor([
+        {
+          url: "https://example.com/b",
+          id: "b",
+          inbound: 2,
+          over: { is_indexable: false },
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("records the inbound count in details", () => {
+    const orphan = linkIssues([
+      { url: "https://example.com/a", id: "a", inbound: 0 },
+    ])[0];
+    expect(orphan.details).toMatchObject({ inbound_links: 0 });
+    const weak = linkIssues([
+      { url: "https://example.com/b", id: "b", inbound: 2 },
+    ])[0];
+    expect(weak.details).toMatchObject({ inbound_links: 2 });
   });
 });

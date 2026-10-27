@@ -150,32 +150,26 @@ export async function detectAndStoreIssues(
         .not("destination_page_id", "is", null)
         .in("destination_page_id", nonHomepageIds);
 
-      const pagesWithInbound = new Set(
-        (inboundLinks || []).map((l) => l.destination_page_id),
-      );
-
-      for (const result of results) {
-        if (result.depth === 0) continue;
-        // Tag/category/author/pagination pages are reachable through archive
-        // navigation, not in-content links; flagging them as orphans is noise
-        // (they were the bulk of false orphans on real sites).
-        if (!isContentPage(result.url)) continue;
-        // A canonicalised variant (e.g. /quote?x → /quote) isn't a real orphan.
-        if (canonicalisedVariants.has(result.url)) continue;
-        const pageId = pageIdMap.get(result.url);
-        if (!pageId) continue;
-        if (!pagesWithInbound.has(pageId)) {
-          allIssues.push({
-            project_id: projectId,
-            page_id: pageId,
-            scan_id: scanId,
-            issue_type: "orphan_page",
-            severity: "medium",
-            description: "Page has no internal links pointing to it (orphan page)",
-            details: { url: result.url, inbound_links: 0 },
-          });
-        }
+      // Count inbound internal links per destination page. 0 inbound → orphan;
+      // 1–2 inbound → weak internal linking (F-D12). Counting (rather than mere
+      // presence) lets the two be mutually exclusive: an orphan is never also
+      // flagged weak.
+      const inboundCount = new Map<string, number>();
+      for (const l of inboundLinks || []) {
+        const id = l.destination_page_id;
+        if (id) inboundCount.set(id, (inboundCount.get(id) ?? 0) + 1);
       }
+
+      allIssues.push(
+        ...detectInternalLinkingIssues(
+          results,
+          inboundCount,
+          pageIdMap,
+          canonicalisedVariants,
+          projectId,
+          scanId,
+        ),
+      );
     }
 
     // Step 3c-2: Persist per-page inlink/outlink counts (for the link-graph
@@ -552,6 +546,66 @@ function detectCrossPageDuplicates(
     }
   }
 
+  return issues;
+}
+
+/**
+ * Classify each page by how many inbound internal links point at it (F-D12).
+ * 0 inbound → `orphan_page` (medium); 1–2 inbound → `weak_internal_linking`
+ * (low). The two are mutually exclusive by the count. Both are limited to
+ * non-home, indexable content pages that aren't canonicalised variants — the
+ * same filters the orphan check has always used, with the indexability guard
+ * added for the weak case so noindex/non-indexable pages aren't flagged.
+ *
+ * Pure (no DB): `inboundCount` is page_id → inbound internal link count, built
+ * by the caller from the page_links table, so this is unit-testable.
+ */
+export function detectInternalLinkingIssues(
+  results: ScanResult[],
+  inboundCount: Map<string, number>,
+  pageIdMap: Map<string, string>,
+  canonicalisedVariants: Set<string>,
+  projectId: string,
+  scanId: string,
+): DetectedIssue[] {
+  const issues: DetectedIssue[] = [];
+  for (const result of results) {
+    if (result.depth === 0) continue;
+    // Tag/category/author/pagination pages are reachable through archive
+    // navigation, not in-content links; flagging them is noise (they were the
+    // bulk of false orphans on real sites).
+    if (!isContentPage(result.url)) continue;
+    // A canonicalised variant (e.g. /quote?x → /quote) isn't a real orphan.
+    if (canonicalisedVariants.has(result.url)) continue;
+    const pageId = pageIdMap.get(result.url);
+    if (!pageId) continue;
+    const count = inboundCount.get(pageId) ?? 0;
+    if (count === 0) {
+      issues.push({
+        project_id: projectId,
+        page_id: pageId,
+        scan_id: scanId,
+        issue_type: "orphan_page",
+        severity: "medium",
+        description: "Page has no internal links pointing to it (orphan page)",
+        details: { url: result.url, inbound_links: 0 },
+      });
+    } else if (
+      count < 3 &&
+      result.is_indexable !== false &&
+      !result.has_robots_noindex
+    ) {
+      issues.push({
+        project_id: projectId,
+        page_id: pageId,
+        scan_id: scanId,
+        issue_type: "weak_internal_linking",
+        severity: "low",
+        description: `Page has only ${count} internal link(s) pointing to it (recommended at least 3). Pages with few internal links are discovered and ranked less well.`,
+        details: { url: result.url, inbound_links: count },
+      });
+    }
+  }
   return issues;
 }
 
@@ -1497,6 +1551,24 @@ export function analyzePageIssues(
         { url: result.url, external_link_count: result.external_links.length },
       );
     }
+  }
+
+  // Deep page (F-D12): an indexable content page buried >= 4 clicks from the
+  // home page is crawled less often and is harder for users to reach. Only
+  // indexable content pages are flagged — tag/pagination/archive and noindex
+  // pages are expected to sit deep and aren't a problem to fix.
+  if (
+    result.depth >= 4 &&
+    isContentPage(result.url) &&
+    result.is_indexable !== false &&
+    !result.has_robots_noindex
+  ) {
+    addIssue(
+      "deep_page",
+      "low",
+      `Page is ${result.depth} clicks from the home page (recommended max 3). Deep pages are crawled less often and are harder for users to find.`,
+      { url: result.url, depth: result.depth },
+    );
   }
 
   return issues;

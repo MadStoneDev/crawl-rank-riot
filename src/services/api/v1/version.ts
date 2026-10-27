@@ -12,4 +12,7 @@ export const API_VERSION = "v1" as const;
 // 1.2.0 (PC-07): additive — business_info.opening_hours_structured
 // ({ day, opens, closes } per day) alongside the existing opening_hours text.
 // All earlier fields are unchanged.
-export const SCHEMA_VERSION = "1.2.0" as const;
+// 1.3.0 (F-D12): additive — two new technical issue types the crawler now
+// persists, deep_page and weak_internal_linking. No response shape changed;
+// issue_type is an open string, so this only widens the set of values seen.
+export const SCHEMA_VERSION = "1.3.0" as const;
