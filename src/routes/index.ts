@@ -1,5 +1,6 @@
 ﻿import { Router } from "express";
 import scanRouter from "./scan"; // Make sure this path is correct
+import keysRouter from "./keys";
 import { authMiddleware } from "../middleware/auth";
 import { isPublicUrl } from "../utils/url";
 import { USER_AGENT } from "../config/identity";
@@ -82,6 +83,10 @@ router.get("/debug/fetch", async (req, res) => {
 
   res.json({ url, steps });
 });
+
+// User-facing API-key management (protected by JWT auth). Mounted before the
+// scan catch-all so /api/keys resolves here.
+router.use("/keys", authMiddleware, keysRouter);
 
 // Scan routes (protected by JWT auth)
 router.use("/", authMiddleware, scanRouter);
