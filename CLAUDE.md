@@ -114,7 +114,7 @@ Analytics/Logs or Vector**. Files go to Cloudflare R2. Connect directly, not thr
 
 ## Other services
 
-- **Upstash:** always the **Oceania** region.
+- **Redis:** use the self-hosted **Valkey** (Redis-compatible) on Coolify's internal network, via `ioredis` and `VALKEY_URL`, with a per-project key prefix. Don't add a hosted Redis SaaS.
 - Prefer self-hosted or no external service over adding a new SaaS dependency. Ask first.
 
 ## Git
